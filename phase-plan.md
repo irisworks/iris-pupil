@@ -5,6 +5,7 @@
 Pupil (this repo, currently just README/LICENSE/CLAUDE.md) is an open-source framework for testing AI agents and catching regressions. The user wants a plan for the **Phase 1 MVP**: scenario runner, one driver, Langfuse integration, manual scoring, regression history.
 
 Decisions made with the user:
+
 - **TypeScript/Node (ESM), npm** — matches sibling IRIS repos (Node ≥20, `"type": "module"`, tsc/NodeNext, `.js` import specifiers, tsx for dev).
 - **REST API driver first**; Slack/MCP are Phase 2.
 - **First real target: IRIS agent** (`iris-runtime`, sibling repo). Verified facts from exploring it:
@@ -55,9 +56,22 @@ driver:
   preset: iris-http
   config:
     baseUrl: http://127.0.0.1:3000
-    auth: { type: bearer, tokenEnv: IRIS_API_TOKEN }   # header omitted if unset
-    createConversation: { method: POST, path: /sessions, body: {originChannel: pupil, originThreadTs: "{{runId}}:{{scenarioSlug}}"}, conversationIdFrom: "$.sessionId" }
-    sendMessage: { method: POST, path: "/sessions/{{conversationId}}/message", body: {text: "{{text}}"}, replyFrom: "$.text", timeoutStatus: [504] }
+    auth: { type: bearer, tokenEnv: IRIS_API_TOKEN } # header omitted if unset
+    createConversation:
+      {
+        method: POST,
+        path: /sessions,
+        body: { originChannel: pupil, originThreadTs: "{{runId}}:{{scenarioSlug}}" },
+        conversationIdFrom: "$.sessionId",
+      }
+    sendMessage:
+      {
+        method: POST,
+        path: "/sessions/{{conversationId}}/message",
+        body: { text: "{{text}}" },
+        replyFrom: "$.text",
+        timeoutStatus: [504],
+      }
     closeConversation: { method: POST, path: "/sessions/{{conversationId}}/reset" }
 ```
 
@@ -98,17 +112,17 @@ Plain `node:http` server mimicking IRIS endpoints (`/health`, `/sessions`, `/ses
 
 ## Milestones (each independently verifiable)
 
-| # | Deliverable | Verification |
-|---|---|---|
-| M0 | Scaffold: package.json, tsconfigs, vitest, commander skeleton; update CLAUDE.md with real commands | `npm run build && node dist/cli/main.js --version`; `npm run check` green |
-| M1 | Core types + scenario schema/loader (incl. README shorthand) | vitest: loads multi-turn + shorthand fixtures; invalid YAML rejected with file/path |
-| M2 | Mock agent | vitest: full session lifecycle incl. scripted 504 |
-| M3 | REST driver + template engine + iris-http preset + registry | vitest against mock agent: session create, reply/latency extraction, bearer header, 504-as-retryable |
-| M4 | Runner + assertions/thresholds + verdicts + store write; wire `pupil run` | `pupil run examples/mock` prints table, writes `.pupil/runs/*.json`; scripted failure ⇒ exit 1 |
-| M5 | Compare + `list`/`report`/`baseline`/`compare` commands | Run twice with a regressed mock script: compare shows 1 regressed, exit 1 |
-| M6 | Manual scoring flow + judge stub | `manual:` scenario ⇒ NEEDS_REVIEW; `pupil score ... pass` ⇒ report shows PASS re-aggregated |
-| M7 | Langfuse enrichment | vitest vs stubbed Langfuse HTTP fixture; missing env ⇒ clean skip |
-| M8 | `examples/iris/` suite vs live local iris-runtime; docs polish | Manual: `pupil run examples/iris --baseline` against IRIS on :3000 with real Langfuse traces |
+| #   | Deliverable                                                                                        | Verification                                                                                         |
+| --- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| M0  | Scaffold: package.json, tsconfigs, vitest, commander skeleton; update CLAUDE.md with real commands | `npm run build && node dist/cli/main.js --version`; `npm run check` green                            |
+| M1  | Core types + scenario schema/loader (incl. README shorthand)                                       | vitest: loads multi-turn + shorthand fixtures; invalid YAML rejected with file/path                  |
+| M2  | Mock agent                                                                                         | vitest: full session lifecycle incl. scripted 504                                                    |
+| M3  | REST driver + template engine + iris-http preset + registry                                        | vitest against mock agent: session create, reply/latency extraction, bearer header, 504-as-retryable |
+| M4  | Runner + assertions/thresholds + verdicts + store write; wire `pupil run`                          | `pupil run examples/mock` prints table, writes `.pupil/runs/*.json`; scripted failure ⇒ exit 1       |
+| M5  | Compare + `list`/`report`/`baseline`/`compare` commands                                            | Run twice with a regressed mock script: compare shows 1 regressed, exit 1                            |
+| M6  | Manual scoring flow + judge stub                                                                   | `manual:` scenario ⇒ NEEDS_REVIEW; `pupil score ... pass` ⇒ report shows PASS re-aggregated          |
+| M7  | Langfuse enrichment                                                                                | vitest vs stubbed Langfuse HTTP fixture; missing env ⇒ clean skip                                    |
+| M8  | `examples/iris/` suite vs live local iris-runtime; docs polish                                     | Manual: `pupil run examples/iris --baseline` against IRIS on :3000 with real Langfuse traces         |
 
 M0–M5 are the critical path (runner + regression detection); M6/M7 additive; M8 is real-world validation.
 

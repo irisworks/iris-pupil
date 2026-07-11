@@ -1,0 +1,21 @@
+id: iris-multi-turn
+name: Iris multi-turn conversation
+tags:
+  - iris
+  - multi-turn
+driver:
+  type: rest
+  preset: iris-http
+input:
+  messages:
+    - role: user
+      content: Hello Iris.
+    - role: assistant
+      content: Hello. How can I help?
+    - role: user
+      content: Summarize what Pupil tests.
+expect:
+  assertions:
+    - type: regex
+      target: response.text
+      value: "test(s|ing)"

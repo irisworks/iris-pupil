@@ -18,12 +18,12 @@ Knowing that it still works after today's change is hard.
 
 Questions every team eventually asks:
 
-* Did this prompt change break an existing workflow?
-* Is the agent taking more turns than before?
-* Which tool call failed?
-* Did task completion improve or regress?
-* How does this version compare to last week's release?
-* What changed between two model versions?
+- Did this prompt change break an existing workflow?
+- Is the agent taking more turns than before?
+- Which tool call failed?
+- Did task completion improve or regress?
+- How does this version compare to last week's release?
+- What changed between two model versions?
 
 Pupil helps answer these questions with repeatable evaluations and measurable quality metrics.
 
@@ -31,19 +31,19 @@ Pupil helps answer these questions with repeatable evaluations and measurable qu
 
 ## Core Principles
 
-* **Framework agnostic**
+- **Framework agnostic**
   Test any AI agent, regardless of the underlying framework.
 
-* **Black-box by default**
+- **Black-box by default**
   Evaluate agents through their public interface, just like a real user.
 
-* **Regression first**
+- **Regression first**
   Detect when previously working scenarios begin to fail.
 
-* **Observability friendly**
+- **Observability friendly**
   Integrates with existing tracing platforms such as Langfuse rather than replacing them.
 
-* **Open and extensible**
+- **Open and extensible**
   Add new connectors, evaluators, and scoring plugins with minimal effort.
 
 ---
@@ -52,15 +52,15 @@ Pupil helps answer these questions with repeatable evaluations and measurable qu
 
 Pupil can measure:
 
-* Task completion
-* Success rate
-* Number of turns
-* Tool usage
-* Latency
-* Cost
-* Human intervention
-* Failure modes
-* Custom business KPIs
+- Task completion
+- Success rate
+- Number of turns
+- Tool usage
+- Latency
+- Cost
+- Human intervention
+- Failure modes
+- Custom business KPIs
 
 ---
 
@@ -102,8 +102,7 @@ Pupil focuses on orchestrating evaluations and scoring outcomes while leveraging
 ```yaml
 scenario: Book a meeting
 
-input:
-  Schedule a 30 minute meeting with John tomorrow at 2 PM.
+input: Schedule a 30 minute meeting with John tomorrow at 2 PM.
 
 expected:
   - Calendar event created
@@ -123,16 +122,16 @@ scores:
 
 Planned integrations include:
 
-* Iris
-* Slack
-* Microsoft Teams
-* MCP
-* REST APIs
-* Langfuse
-* OpenTelemetry
-* GitHub Actions
-* Playwright
-* Copilot Studio
+- Iris
+- Slack
+- Microsoft Teams
+- MCP
+- REST APIs
+- Langfuse
+- OpenTelemetry
+- GitHub Actions
+- Playwright
+- Copilot Studio
 
 ---
 
@@ -140,26 +139,26 @@ Planned integrations include:
 
 ### Phase 1
 
-* Scenario runner
-* Slack driver
-* Langfuse integration
-* Manual scoring
-* Regression history
+- Scenario runner
+- Slack driver
+- Langfuse integration
+- Manual scoring
+- Regression history
 
 ### Phase 2
 
-* YAML scenario definitions
-* Plugin architecture
-* GitHub Actions integration
-* Automatic regression reports
-* Team dashboards
+- YAML scenario definitions
+- Plugin architecture
+- GitHub Actions integration
+- Automatic regression reports
+- Team dashboards
 
 ### Phase 3
 
-* Multi-agent evaluation
-* Benchmark suites
-* Enterprise connectors
-* Hosted Pupil Cloud
+- Multi-agent evaluation
+- Benchmark suites
+- Enterprise connectors
+- Hosted Pupil Cloud
 
 ---
 
@@ -174,4 +173,3 @@ Pupil brings continuous quality engineering to AI agents by making evaluations r
 ## Origin
 
 Pupil was originally developed as part of the **IRIS** ecosystem and is designed to work with any AI agent framework.
-
