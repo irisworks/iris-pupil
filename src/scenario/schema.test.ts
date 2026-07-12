@@ -8,27 +8,36 @@ describe("normalizeScenario", () => {
       input: "Hello",
     });
 
-    expect(scenario.turns).toEqual([{ role: "user", content: "Hello" }]);
+    expect(scenario.turns).toEqual([{ user: "Hello", expect: [] }]);
     expect(scenario.driver).toEqual({ type: "rest", config: {} });
   });
 
-  it("keeps multi-turn messages as first-class turns", () => {
+  it("keeps multi-turn user actions as first-class turns", () => {
     const scenario = normalizeScenario({
       id: "multi",
-      input: {
-        messages: [
-          { role: "user", content: "Hello" },
-          { role: "assistant", content: "Hi" },
-          { role: "user", content: "Continue" },
-        ],
-      },
+      turns: [
+        { user: "Hello" },
+        {
+          user: "Continue",
+          expect: [{ type: "contains", target: "response.text", value: "done" }],
+        },
+      ],
     });
 
-    expect(scenario.turns).toHaveLength(3);
-    expect(scenario.turns[1].role).toBe("assistant");
+    expect(scenario.turns).toHaveLength(2);
+    expect(scenario.turns[1]).toEqual({
+      user: "Continue",
+      expect: [{ type: "contains", target: "response.text", value: "done", caseSensitive: false }],
+    });
   });
 
   it("reports actionable validation errors", () => {
     expect(() => normalizeScenario({ input: "missing id" }, "bad.yaml")).toThrow(/bad\.yaml:id:/);
+  });
+
+  it("reports file and path context for invalid shorthand input", () => {
+    expect(() => normalizeScenario({ id: "bad", input: { messages: [] } }, "bad.yaml")).toThrow(
+      /bad\.yaml:input:/,
+    );
   });
 });

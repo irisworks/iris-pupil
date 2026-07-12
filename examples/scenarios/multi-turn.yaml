@@ -6,14 +6,13 @@ tags:
 driver:
   type: rest
   preset: iris-http
-input:
-  messages:
-    - role: user
-      content: Hello Iris.
-    - role: assistant
-      content: Hello. How can I help?
-    - role: user
-      content: Summarize what Pupil tests.
+turns:
+  - user: Hello Iris.
+    expect:
+      - type: contains
+        target: response.text
+        value: hello
+  - user: Summarize what Pupil tests.
 expect:
   assertions:
     - type: regex

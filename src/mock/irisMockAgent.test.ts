@@ -49,4 +49,28 @@ describe("IRIS mock agent", () => {
 
     expect(response.status).toBe(504);
   });
+
+  it("closes even when a request is hanging", async () => {
+    mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = (await fetch(`${baseUrl}/sessions`, { method: "POST" }).then((response) =>
+      response.json(),
+    )) as { sessionId: string };
+
+    const controller = new AbortController();
+    const hangingRequest = fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "__hang__" }),
+      signal: controller.signal,
+    }).catch(() => undefined);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(mock.close()).resolves.toBeUndefined();
+    mock = undefined;
+
+    controller.abort();
+    await hangingRequest;
+  });
 });
