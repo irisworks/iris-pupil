@@ -4,13 +4,6 @@ import { PupilError } from "../core/types.js";
 
 const metadataSchema = z.record(z.unknown()).default({});
 
-const messageSchema = z.object({
-  role: z.enum(["system", "user", "assistant"]).default("user"),
-  content: z.string().min(1, "message content is required"),
-  name: z.string().optional(),
-  metadata: metadataSchema.optional(),
-});
-
 const driverSchema = z
   .object({
     type: z.string().min(1, "driver.type is required").default("rest"),
@@ -25,6 +18,13 @@ const assertionSchema = z
     target: z.string().min(1).default("response.text"),
     value: z.string(),
     caseSensitive: z.boolean().default(false),
+  })
+  .strict();
+
+const turnSchema = z
+  .object({
+    user: z.string().min(1, "turn.user is required"),
+    expect: z.array(assertionSchema).default([]),
   })
   .strict();
 
@@ -74,7 +74,7 @@ const rawScenarioSchema = z
     metadata: metadataSchema.optional(),
     driver: driverSchema.optional(),
     input: z.unknown().optional(),
-    turns: z.array(messageSchema).optional(),
+    turns: z.array(turnSchema).optional(),
     expect: expectSchema.optional(),
     assertions: z.array(assertionSchema).optional(),
     thresholds: z.array(thresholdSchema).optional(),
@@ -87,37 +87,36 @@ const rawScenarioSchema = z
     path: ["input"],
   });
 
+const inputObjectSchema = z
+  .object({
+    text: z.string().optional(),
+    message: z.string().optional(),
+    user: z.string().optional(),
+  })
+  .strict();
+
 export type RawScenario = z.infer<typeof rawScenarioSchema>;
 
-function normalizeInput(input: unknown): Scenario["turns"] {
+function normalizeInput(input: unknown, sourceFile?: string): Scenario["turns"] {
   if (typeof input === "string") {
-    return [{ role: "user", content: input }];
+    return [{ user: input, expect: [] }];
   }
 
-  const objectInput = z
-    .object({
-      text: z.string().optional(),
-      message: z.string().optional(),
-      messages: z.array(messageSchema).optional(),
-    })
-    .strict()
-    .parse(input);
-
-  if (objectInput.messages) {
-    return objectInput.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-      ...(message.name !== undefined && { name: message.name }),
-      ...(message.metadata !== undefined && { metadata: message.metadata }),
-    }));
+  const parsedInput = inputObjectSchema.safeParse(input);
+  if (!parsedInput.success) {
+    throw formatScenarioValidationError(parsedInput.error, sourceFile, ["input"]);
   }
 
-  const content = objectInput.text ?? objectInput.message;
-  if (content) {
-    return [{ role: "user", content }];
+  const objectInput = parsedInput.data;
+  const user = objectInput.user ?? objectInput.text ?? objectInput.message;
+  if (user) {
+    return [{ user, expect: [] }];
   }
 
-  throw new PupilError("input requires a string, text, message, or messages");
+  throw new PupilError("input requires a string, text, message, or user", {
+    file: sourceFile,
+    path: "input",
+  });
 }
 
 export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
@@ -127,7 +126,7 @@ export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
   }
 
   const scenario = parsed.data;
-  const turns = scenario.turns ?? normalizeInput(scenario.input);
+  const turns = scenario.turns ?? normalizeInput(scenario.input, sourceFile);
   const expectations = scenario.expect ?? { assertions: [], thresholds: [] };
 
   return {
@@ -152,10 +151,15 @@ export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
   };
 }
 
-export function formatScenarioValidationError(error: ZodError, file?: string): PupilError {
+export function formatScenarioValidationError(
+  error: ZodError,
+  file?: string,
+  pathPrefix: string[] = [],
+): PupilError {
   const details = error.issues
     .map((issue) => {
-      const path = issue.path.length > 0 ? issue.path.join(".") : "<root>";
+      const fullPath = [...pathPrefix, ...issue.path];
+      const path = fullPath.length > 0 ? fullPath.join(".") : "<root>";
       return `${file ? `${file}:` : ""}${path}: ${issue.message}`;
     })
     .join("\n");

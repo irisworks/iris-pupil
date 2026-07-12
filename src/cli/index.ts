@@ -1,18 +1,13 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 import { discoverScenarioFiles, loadScenarioFile, loadScenarios } from "../scenario/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 
 const program = new Command();
 
-function isCommanderHelpDisplayed(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "commander.helpDisplayed"
-  );
+function isSuccessfulCommanderExit(error: unknown): boolean {
+  return error instanceof CommanderError && error.exitCode === 0;
 }
 
 program.name("pupil").description("Continuous quality engineering for AI agents.").version("0.1.0");
@@ -71,7 +66,7 @@ async function main(): Promise<void> {
   try {
     await program.parseAsync(process.argv);
   } catch (error) {
-    if (isCommanderHelpDisplayed(error)) {
+    if (isSuccessfulCommanderExit(error)) {
       process.exit(0);
     }
     console.error(error instanceof Error ? error.message : String(error));

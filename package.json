@@ -21,8 +21,9 @@
   ],
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
-    "check": "prettier --check . && npm run build && vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "prettier --check . && npm run typecheck && npm run build && vitest run",
     "format": "prettier --write .",
     "test": "vitest run"
   },
