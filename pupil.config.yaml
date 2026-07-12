@@ -1,0 +1,19 @@
+scenarios: examples/scenarios
+
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    baseUrl: ${IRIS_BASE_URL:-http://127.0.0.1:3000}
+    auth:
+      type: bearer
+      token: ${IRIS_API_TOKEN:-}
+
+history:
+  dir: .pupil
+
+langfuse:
+  enabled: auto
+  host: ${LANGFUSE_HOST:-}
+  publicKey: ${LANGFUSE_PUBLIC_KEY:-}
+  secretKey: ${LANGFUSE_SECRET_KEY:-}
