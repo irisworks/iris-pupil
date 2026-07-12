@@ -15,13 +15,6 @@ export class PupilError extends Error {
   }
 }
 
-export interface AgentMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-  name?: string;
-  metadata?: Record<string, unknown>;
-}
-
 export interface ScenarioDriverRef {
   type: string;
   preset?: string;
@@ -61,6 +54,11 @@ export interface ScenarioExpectations {
   judge?: JudgeConfig;
 }
 
+export interface ScenarioTurn {
+  user: string;
+  expect: AssertionCheck[];
+}
+
 export interface Scenario {
   id: string;
   name: string;
@@ -68,7 +66,7 @@ export interface Scenario {
   tags: string[];
   metadata: Record<string, unknown>;
   driver: ScenarioDriverRef;
-  turns: AgentMessage[];
+  turns: ScenarioTurn[];
   expect: ScenarioExpectations;
   sourceFile?: string;
 }

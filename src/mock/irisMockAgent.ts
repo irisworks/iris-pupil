@@ -205,6 +205,7 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
       });
     },
     close() {
+      server.closeAllConnections();
       return new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
