@@ -56,4 +56,22 @@ describe("loadPupilConfig", () => {
       /pupil\.config\.yaml:driver\.config\.baseUrl/,
     );
   });
+
+  it("fails invalid YAML with config file context", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "driver:\n  type: [rest\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /Invalid YAML in .*pupil\.config\.yaml/,
+    );
+  });
+
+  it("rejects unknown config fields with path context", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "randomThing: true\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /pupil\.config\.yaml:<root>: Unrecognized key\(s\) in object: 'randomThing'/,
+    );
+  });
 });
