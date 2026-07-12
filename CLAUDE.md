@@ -19,7 +19,7 @@ node dist/cli/index.js discover examples/scenarios
 node dist/cli/index.js mock-agent --port 5050
 ```
 
-During local development, run the CLI through `node dist/cli/index.js` after `npm run build`.
+During local development, run the CLI through `node dist/cli/index.js` after `npm run build`. Default project settings live in `pupil.config.yaml`; `src/core/config.ts` resolves `${ENV_VAR}` and `${ENV_VAR:-default}` references before validation.
 
 ## What Pupil Is
 
@@ -46,7 +46,7 @@ Scenarios are YAML definitions with inputs, expected outcomes, thresholds, optio
 ## Development Workflow
 
 1. Keep scenario files readable and versionable YAML.
-2. Keep core types in `src/core` and scenario-specific schema/loading in `src/scenario`.
+2. Keep core types/config in `src/core` and scenario-specific schema/loading in `src/scenario`.
 3. Add drivers behind `src/driver` without coupling them to CLI command parsing.
 4. Store run history as JSON or JSONL so regression output remains git-diffable.
 5. Keep Langfuse as enrichment evidence, not the source of truth for Pupil results.
