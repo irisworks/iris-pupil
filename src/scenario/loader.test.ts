@@ -1,5 +1,5 @@
 import { mkdtemp, rm, symlink, writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { discoverScenarioFiles, loadScenarios } from "./loader.js";
@@ -14,6 +14,25 @@ afterEach(async () => {
 });
 
 describe("scenario loader", () => {
+  it("loads valid fixture scenarios recursively in stable id order", async () => {
+    const fixtureRoot = resolve("src/scenario/__fixtures__/valid");
+
+    const scenarios = await loadScenarios(fixtureRoot);
+
+    expect(scenarios.map((scenario) => scenario.id)).toEqual(["a-multi-turn", "z-shorthand"]);
+    expect(scenarios[0]?.tags).toEqual(["regression"]);
+    expect(scenarios[0]?.metadata).toEqual({ owner: "irisflow" });
+    expect(scenarios[0]?.turns).toHaveLength(2);
+    expect(scenarios[1]?.tags).toEqual(["smoke", "shorthand"]);
+    expect(scenarios[1]?.metadata).toEqual({ owner: "pupil" });
+    expect(scenarios[1]?.turns).toEqual([{ user: "Hello from shorthand.", expect: [] }]);
+  });
+
+  it("fails invalid fixture scenarios with actionable file and path context", async () => {
+    const fixtureRoot = resolve("src/scenario/__fixtures__/invalid");
+
+    await expect(loadScenarios(fixtureRoot)).rejects.toThrow(/missing-id\.yaml:id:/);
+  });
   it("discovers YAML recursively in stable order", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-loader-"));
     await mkdir(join(tmpRoot, "nested"));
