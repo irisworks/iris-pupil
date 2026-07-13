@@ -25,6 +25,13 @@ describe("loadPupilConfig", () => {
     });
   });
 
+  it("fails when an explicit config path does not exist", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+
+    await expect(loadPupilConfig({ cwd: tmpRoot, configPath: "missing.yaml" })).rejects.toThrow(
+      /Pupil config file does not exist: .*missing\.yaml/,
+    );
+  });
   it("loads config and resolves environment references", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
