@@ -38,6 +38,16 @@ describe("scenario loader", () => {
     await expect(loadScenarios(tmpRoot)).rejects.toThrow(/bad\.yaml:id:/);
   });
 
+  it("rejects duplicate scenario ids across nested folders with both files in the error", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-loader-"));
+    await mkdir(join(tmpRoot, "nested"));
+    await writeFile(join(tmpRoot, "one.yaml"), "id: duplicate\ninput: hello\n");
+    await writeFile(join(tmpRoot, "nested", "two.yaml"), "id: duplicate\ninput: hello again\n");
+
+    await expect(loadScenarios(tmpRoot)).rejects.toThrow(/Duplicate scenario id "duplicate"/);
+    await expect(loadScenarios(tmpRoot)).rejects.toThrow(/one\.yaml/);
+    await expect(loadScenarios(tmpRoot)).rejects.toThrow(/two\.yaml/);
+  });
   it("does not loop forever on a symlinked directory cycle", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-loader-"));
     await mkdir(join(tmpRoot, "nested"));
