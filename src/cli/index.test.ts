@@ -27,4 +27,18 @@ describe("pupil CLI", () => {
     expect(result.status).toBe(1);
     expect(result.stderr.match(/unknown command/g)).toHaveLength(1);
   });
+  it.each([
+    [["--port", "abc"], "port must be an integer between 0 and 65535"],
+    [["--port", "-1"], "port must be an integer between 0 and 65535"],
+    [["--port", "70000"], "port must be an integer between 0 and 65535"],
+    [["--delay-ms", "abc"], "delay-ms must be a non-negative integer"],
+    [["--delay-ms", "-5"], "delay-ms must be a non-negative integer"],
+  ])("rejects invalid numeric mock-agent option %s", (args, message) => {
+    const result = spawnSync(process.execPath, [cliPath, "mock-agent", ...args], {
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(message);
+  });
 });

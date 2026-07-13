@@ -140,7 +140,7 @@ Planned integrations include:
 ### Phase 1
 
 - Scenario runner
-- Slack driver
+- REST driver
 - Langfuse integration
 - Manual scoring
 - Regression history
