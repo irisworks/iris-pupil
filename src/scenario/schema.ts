@@ -10,6 +10,7 @@ const driverSchema = z
     preset: z.string().optional(),
     config: metadataSchema.optional(),
   })
+  .strict()
   .default({ type: "rest", config: {} });
 
 const assertionSchema = z
