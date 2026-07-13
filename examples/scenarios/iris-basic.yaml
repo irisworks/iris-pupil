@@ -1,0 +1,22 @@
+id: iris-basic
+name: Iris basic response
+tags:
+  - iris
+  - smoke
+metadata:
+  owner: irisflow
+driver:
+  type: rest
+  preset: iris-http
+input: Hello Iris, confirm you are online.
+expect:
+  assertions:
+    - type: contains
+      target: response.text
+      value: online
+  thresholds:
+    - metric: latency_ms
+      max: 30000
+  manual:
+    required: true
+    prompt: Confirm the reply is useful and on-task.
