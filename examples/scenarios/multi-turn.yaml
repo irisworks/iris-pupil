@@ -1,0 +1,20 @@
+id: iris-multi-turn
+name: Iris multi-turn conversation
+tags:
+  - iris
+  - multi-turn
+driver:
+  type: rest
+  preset: iris-http
+turns:
+  - user: Hello Iris.
+    expect:
+      - type: contains
+        target: response.text
+        value: hello
+  - user: Summarize what Pupil tests.
+expect:
+  assertions:
+    - type: regex
+      target: response.text
+      value: "test(s|ing)"

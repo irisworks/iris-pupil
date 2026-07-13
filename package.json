@@ -1,0 +1,45 @@
+{
+  "name": "@irisworks/pupil",
+  "version": "0.1.0",
+  "description": "Continuous quality engineering for AI agents.",
+  "type": "module",
+  "bin": {
+    "pupil": "dist/cli/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "prettier --check . && npm run typecheck && npm run build && vitest run",
+    "format": "prettier --write .",
+    "test": "npm run build && vitest run"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}
