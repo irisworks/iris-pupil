@@ -45,6 +45,30 @@ describe("loadPupilConfig", () => {
     expect(config.history.dir).toBe(".pupil-test");
   });
 
+  it("substitutes a set-but-empty value for plain ${VAR}, matching bash", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "driver:\n  config:\n    baseUrl: ${IRIS_BASE_URL}\n",
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, env: { IRIS_BASE_URL: "" } });
+
+    expect(config.driver.config.baseUrl).toBe("");
+  });
+
+  it("still falls back for ${VAR:-fallback} when VAR is set but empty", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "driver:\n  config:\n    baseUrl: ${IRIS_BASE_URL:-http://127.0.0.1:3000}\n",
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, env: { IRIS_BASE_URL: "" } });
+
+    expect(config.driver.config.baseUrl).toBe("http://127.0.0.1:3000");
+  });
+
   it("fails with file and path context for missing env vars", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
