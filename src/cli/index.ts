@@ -1,14 +1,30 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
-import { Command, CommanderError } from "commander";
-import { discoverScenarioFiles, loadScenarioFile, loadScenarios } from "../scenario/index.js";
+import { Command, CommanderError, InvalidArgumentError } from "commander";
+import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 
 const program = new Command();
 const packageManifest = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
 ) as { version: string };
+
+function parsePort(value: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new InvalidArgumentError("port must be an integer between 0 and 65535");
+  }
+  return port;
+}
+
+function parseNonNegativeInteger(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError(`${name} must be a non-negative integer`);
+  }
+  return parsed;
+}
 
 program
   .name("pupil")
@@ -29,11 +45,10 @@ program
   .description("Recursively discover and validate YAML scenarios.")
   .argument("<path>", "Scenario file or directory")
   .action(async (path: string) => {
-    const files = await discoverScenarioFiles(path);
     const scenarios = await loadScenarios(path);
     console.log(`Discovered ${scenarios.length} scenario${scenarios.length === 1 ? "" : "s"}.`);
     for (const scenario of scenarios) {
-      console.log(`- ${scenario.id} (${scenario.sourceFile ?? files[0]})`);
+      console.log(`- ${scenario.id} (${scenario.sourceFile ?? "<unknown>"})`);
     }
   });
 
@@ -50,14 +65,19 @@ program
 program
   .command("mock-agent")
   .description("Start an IRIS-compatible mock HTTP agent.")
-  .option("-p, --port <port>", "Port to listen on", "5050")
+  .option("-p, --port <port>", "Port to listen on", parsePort, 5050)
   .option("--host <host>", "Host to bind", "127.0.0.1")
-  .option("--delay-ms <delayMs>", "Default response delay in milliseconds", "0")
-  .action(async (options: { port: string; host: string; delayMs: string }) => {
+  .option(
+    "--delay-ms <delayMs>",
+    "Default response delay in milliseconds",
+    (value) => parseNonNegativeInteger(value, "delay-ms"),
+    0,
+  )
+  .action(async (options: { port: number; host: string; delayMs: number }) => {
     const mock = createIrisMockAgent({
-      port: Number(options.port),
+      port: options.port,
       host: options.host,
-      defaultDelayMs: Number(options.delayMs),
+      defaultDelayMs: options.delayMs,
     });
     const address = await mock.listen();
     console.log(`IRIS mock agent listening on http://${address.host}:${address.port}`);

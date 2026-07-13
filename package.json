@@ -25,6 +25,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "check": "prettier --check . && npm run typecheck && npm run build && vitest run",
     "format": "prettier --write .",
+    "prepack": "npm run build",
     "test": "npm run build && vitest run"
   },
   "dependencies": {

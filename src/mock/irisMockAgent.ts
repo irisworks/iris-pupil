@@ -37,6 +37,8 @@ export interface IrisMockAgent {
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
+  if (res.destroyed || res.writableEnded) return;
+
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
@@ -106,6 +108,15 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
   const rules = options.rules ?? [];
   const requests: RecordedMockRequest[] = [];
   const sessions = new Map<string, MockSession>();
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  function schedule(callback: () => void, delayMs: number): void {
+    const timer = setTimeout(() => {
+      pendingTimers.delete(timer);
+      callback();
+    }, delayMs);
+    pendingTimers.add(timer);
+  }
 
   const server = createServer(async (req, res) => {
     const method = req.method ?? "GET";
@@ -158,7 +169,9 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
           rule?.status ?? (text.includes("__500__") ? 500 : text.includes("__504__") ? 504 : 200);
         const reply = rule?.reply ?? `Mock Iris received: ${text}`;
 
-        setTimeout(() => {
+        schedule(() => {
+          if (res.destroyed || res.writableEnded) return;
+
           if (status >= 500) {
             json(res, status, { error: `mock ${status}` });
             return;
@@ -205,6 +218,10 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
       });
     },
     close() {
+      for (const timer of pendingTimers) {
+        clearTimeout(timer);
+      }
+      pendingTimers.clear();
       server.closeAllConnections();
       return new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
