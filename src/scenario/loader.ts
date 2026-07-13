@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import type { Scenario } from "../core/types.js";
@@ -10,6 +10,7 @@ const YAML_EXTENSIONS = new Set([".yaml", ".yml"]);
 export async function discoverScenarioFiles(path: string): Promise<string[]> {
   const root = resolve(path);
   const found: string[] = [];
+  const visitedDirs = new Set<string>();
 
   async function visit(current: string): Promise<void> {
     const currentStat = await stat(current);
@@ -23,6 +24,14 @@ export async function discoverScenarioFiles(path: string): Promise<string[]> {
     if (!currentStat.isDirectory()) {
       return;
     }
+
+    // Symlinked directories can loop back on an ancestor; guard on the
+    // resolved real path so such cycles don't recurse forever.
+    const realDir = await realpath(current);
+    if (visitedDirs.has(realDir)) {
+      return;
+    }
+    visitedDirs.add(realDir);
 
     const entries = await readdir(current, { withFileTypes: true });
     const ordered = entries.sort((left, right) => left.name.localeCompare(right.name));

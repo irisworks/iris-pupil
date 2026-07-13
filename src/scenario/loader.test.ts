@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -36,5 +36,17 @@ describe("scenario loader", () => {
     await writeFile(join(tmpRoot, "bad.yaml"), "name: Bad\ninput: hello\n");
 
     await expect(loadScenarios(tmpRoot)).rejects.toThrow(/bad\.yaml:id:/);
+  });
+
+  it("does not loop forever on a symlinked directory cycle", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-loader-"));
+    await mkdir(join(tmpRoot, "nested"));
+    await writeFile(join(tmpRoot, "nested", "a.yaml"), "id: a\ninput: hello\n");
+    await symlink(tmpRoot, join(tmpRoot, "nested", "loop"), "dir");
+
+    const files = await discoverScenarioFiles(tmpRoot);
+    expect(files.map((file) => file.replaceAll("\\", "/"))).toEqual([
+      `${tmpRoot.replaceAll("\\", "/")}/nested/a.yaml`,
+    ]);
   });
 });
