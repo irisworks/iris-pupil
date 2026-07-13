@@ -108,9 +108,15 @@ function resolveEnvRefs(value: unknown, env: EnvSource, file: string, path = "<r
 
 export async function loadPupilConfig(options: LoadConfigOptions = {}): Promise<PupilConfig> {
   const cwd = options.cwd ?? process.cwd();
+  const hasExplicitConfigPath = options.configPath !== undefined;
   const configPath = resolve(cwd, options.configPath ?? DEFAULT_CONFIG_FILE);
 
   if (!existsSync(configPath)) {
+    if (hasExplicitConfigPath) {
+      throw new PupilError(`Pupil config file does not exist: ${configPath}`, {
+        file: configPath,
+      });
+    }
     return pupilConfigSchema.parse({});
   }
 
