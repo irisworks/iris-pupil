@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import { Command, CommanderError } from "commander";
 import { discoverScenarioFiles, loadScenarioFile, loadScenarios } from "../scenario/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 
 const program = new Command();
+const packageManifest = JSON.parse(
+  readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
+) as { version: string };
 
-function isSuccessfulCommanderExit(error: unknown): boolean {
-  return error instanceof CommanderError && error.exitCode === 0;
-}
-
-program.name("pupil").description("Continuous quality engineering for AI agents.").version("0.1.0");
+program
+  .name("pupil")
+  .description("Continuous quality engineering for AI agents.")
+  .version(packageManifest.version);
 
 program
   .command("validate")
@@ -66,8 +69,8 @@ async function main(): Promise<void> {
   try {
     await program.parseAsync(process.argv);
   } catch (error) {
-    if (isSuccessfulCommanderExit(error)) {
-      process.exit(0);
+    if (error instanceof CommanderError) {
+      process.exit(error.exitCode);
     }
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

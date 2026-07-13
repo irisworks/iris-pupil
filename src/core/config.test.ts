@@ -74,4 +74,16 @@ describe("loadPupilConfig", () => {
       /pupil\.config\.yaml:<root>: Unrecognized key\(s\) in object: 'randomThing'/,
     );
   });
+
+  it("rejects unknown nested config fields with path context", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "driver:\n  presett: iris-http\nlangfuse:\n  hostt: http://localhost:3000\n",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /pupil\.config\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/,
+    );
+  });
 });

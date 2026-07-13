@@ -40,4 +40,12 @@ describe("normalizeScenario", () => {
       /bad\.yaml:input:/,
     );
   });
+  it("rejects unknown driver fields with file and path context", () => {
+    expect(() =>
+      normalizeScenario(
+        { id: "bad-driver", input: "Hello", driver: { presett: "iris-http" } },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/);
+  });
 });

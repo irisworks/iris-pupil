@@ -20,4 +20,11 @@ describe("pupil CLI", () => {
     expect(result.stdout).toContain("Usage: pupil");
     expect(result.stderr.trim()).toBe("");
   });
+
+  it("does not duplicate Commander parse errors", () => {
+    const result = spawnSync(process.execPath, [cliPath, "unknown-command"], { encoding: "utf-8" });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr.match(/unknown command/g)).toHaveLength(1);
+  });
 });

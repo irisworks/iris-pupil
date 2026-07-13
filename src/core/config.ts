@@ -21,12 +21,14 @@ const driverConfigSchema = z
     preset: z.string().optional(),
     config: z.record(z.unknown()).default({}),
   })
+  .strict()
   .default({ type: "rest", config: {} });
 
 const historyConfigSchema = z
   .object({
     dir: z.string().min(1).default(".pupil"),
   })
+  .strict()
   .default({ dir: ".pupil" });
 
 const langfuseConfigSchema = z
@@ -36,6 +38,7 @@ const langfuseConfigSchema = z
     publicKey: z.string().optional(),
     secretKey: z.string().optional(),
   })
+  .strict()
   .default({ enabled: "auto" });
 
 const pupilConfigSchema = z
