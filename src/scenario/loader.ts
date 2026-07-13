@@ -68,9 +68,27 @@ export async function loadScenarioFile(file: string): Promise<Scenario> {
   return normalizeScenario(parsed, absoluteFile);
 }
 
+function assertUniqueScenarioIds(scenarios: Scenario[]): void {
+  const firstById = new Map<string, Scenario>();
+
+  for (const scenario of scenarios) {
+    const existing = firstById.get(scenario.id);
+    if (existing) {
+      throw new PupilError(
+        `Duplicate scenario id "${scenario.id}" in ${existing.sourceFile ?? "<unknown>"} and ${
+          scenario.sourceFile ?? "<unknown>"
+        }`,
+        { file: scenario.sourceFile, path: "id" },
+      );
+    }
+    firstById.set(scenario.id, scenario);
+  }
+}
+
 export async function loadScenarios(path: string): Promise<Scenario[]> {
   const files = await discoverScenarioFiles(path);
   const scenarios = await Promise.all(files.map((file) => loadScenarioFile(file)));
+  assertUniqueScenarioIds(scenarios);
   return scenarios.sort((left, right) => {
     const byId = left.id.localeCompare(right.id);
     if (byId !== 0) return byId;
