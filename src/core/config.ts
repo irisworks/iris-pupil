@@ -68,8 +68,16 @@ function resolveEnvString(value: string, env: EnvSource, file: string, path: str
     /\$\{([A-Z0-9_]+)(:-([^}]*))?\}/gi,
     (_match, name: string, _fallbackPart, fallback: string | undefined) => {
       const envValue = env[name];
-      if (envValue !== undefined && envValue !== "") return envValue;
-      if (fallback !== undefined) return fallback;
+      const hasFallback = fallback !== undefined;
+
+      // ${VAR:-fallback} matches bash `:-`: falls back when VAR is unset OR empty.
+      if (hasFallback) {
+        return envValue ? envValue : fallback;
+      }
+
+      // Plain ${VAR} matches bash `$VAR`: a set-but-empty value substitutes
+      // as an empty string; only a genuinely unset variable is an error.
+      if (envValue !== undefined) return envValue;
       throw new PupilError(`Missing environment variable ${name} referenced by ${file}:${path}`, {
         file,
         path,
