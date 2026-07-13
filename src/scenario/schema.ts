@@ -86,6 +86,10 @@ const rawScenarioSchema = z
   .refine((value) => value.input !== undefined || value.turns !== undefined, {
     message: "scenario requires input or turns",
     path: ["input"],
+  })
+  .refine((value) => !(value.input !== undefined && value.turns !== undefined), {
+    message: "scenario cannot define both input and turns",
+    path: ["turns"],
   });
 
 const inputObjectSchema = z
