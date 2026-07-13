@@ -40,6 +40,20 @@ describe("normalizeScenario", () => {
       /bad\.yaml:input:/,
     );
   });
+
+  it("rejects scenarios declaring both string-form input and turns", () => {
+    expect(() =>
+      normalizeScenario({ id: "confusing", input: "Hello", turns: [{ user: "Hi" }] }, "bad.yaml"),
+    ).toThrow(/bad\.yaml:turns: scenario cannot define both input and turns/);
+  });
+
+  it("rejects scenarios declaring both object-form input and turns", () => {
+    for (const input of [{ text: "Hello" }, { user: "Hello" }]) {
+      expect(() =>
+        normalizeScenario({ id: "confusing", input, turns: [{ user: "Hi" }] }, "bad.yaml"),
+      ).toThrow(/bad\.yaml:turns: scenario cannot define both input and turns/);
+    }
+  });
   it("rejects unknown driver fields with file and path context", () => {
     expect(() =>
       normalizeScenario(
