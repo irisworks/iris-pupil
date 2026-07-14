@@ -13,7 +13,7 @@ const driverSchema = z
   .strict()
   .default({ type: "rest", config: {} });
 
-const assertionSchema = z
+const textAssertionSchema = z
   .object({
     type: z.enum(["contains", "not_contains", "equals", "regex"]),
     target: z.string().min(1).default("response.text"),
@@ -21,6 +21,21 @@ const assertionSchema = z
     caseSensitive: z.boolean().default(false),
   })
   .strict();
+
+const jsonPathAssertionSchema = z
+  .object({
+    type: z.literal("jsonpath"),
+    target: z.string().min(1).default("response.raw"),
+    path: z.string().min(1, "jsonpath assertion requires path"),
+    equals: z.unknown().optional(),
+    exists: z.boolean().optional(),
+  })
+  .strict()
+  .refine((value) => value.equals !== undefined || value.exists !== undefined, {
+    message: "jsonpath assertion requires equals or exists",
+  });
+
+const assertionSchema = z.union([textAssertionSchema, jsonPathAssertionSchema]);
 
 const turnSchema = z
   .object({
@@ -64,6 +79,7 @@ const expectSchema = z
     manual: manualSchema.optional(),
     judge: judgeSchema.optional(),
   })
+  .strict()
   .default({ assertions: [], thresholds: [] });
 
 const rawScenarioSchema = z
@@ -75,7 +91,7 @@ const rawScenarioSchema = z
     metadata: metadataSchema.optional(),
     driver: driverSchema.optional(),
     input: z.unknown().optional(),
-    turns: z.array(turnSchema).optional(),
+    turns: z.array(turnSchema).min(1, "scenario requires at least one turn").optional(),
     expect: expectSchema.optional(),
     assertions: z.array(assertionSchema).optional(),
     thresholds: z.array(thresholdSchema).optional(),
