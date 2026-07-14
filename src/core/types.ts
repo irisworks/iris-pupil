@@ -1,4 +1,24 @@
-export type Verdict = "pass" | "fail" | "needs_review" | "error";
+/** Final outcome for an assertion, scenario, or full run. */
+export enum Verdict {
+  Pass = "pass",
+  NeedsReview = "needs_review",
+  Fail = "fail",
+  Error = "error",
+}
+
+const VERDICT_SEVERITY: Record<Verdict, number> = {
+  [Verdict.Pass]: 0,
+  [Verdict.NeedsReview]: 1,
+  [Verdict.Fail]: 2,
+  [Verdict.Error]: 3,
+};
+
+/** Aggregate child verdicts conservatively: error > fail > needs_review > pass. */
+export function aggregateVerdicts(verdicts: readonly Verdict[]): Verdict {
+  return verdicts.reduce((current, next) => {
+    return VERDICT_SEVERITY[next] > VERDICT_SEVERITY[current] ? next : current;
+  }, Verdict.Pass);
+}
 
 export interface PupilErrorContext {
   file?: string;
@@ -21,12 +41,23 @@ export interface ScenarioDriverRef {
   config: Record<string, unknown>;
 }
 
-export interface AssertionCheck {
+export interface TextAssertionCheck {
   type: "contains" | "not_contains" | "equals" | "regex";
   target: string;
   value: string;
   caseSensitive: boolean;
 }
+
+export interface JsonPathAssertionCheck {
+  type: "jsonpath";
+  target: string;
+  path: string;
+  equals?: unknown;
+  exists?: boolean;
+}
+
+/** Assertion Pupil can evaluate against an agent response. */
+export type AssertionCheck = TextAssertionCheck | JsonPathAssertionCheck;
 
 export interface ThresholdCheck {
   metric: string;
@@ -69,4 +100,54 @@ export interface Scenario {
   turns: ScenarioTurn[];
   expect: ScenarioExpectations;
   sourceFile?: string;
+}
+
+export interface TurnRecord {
+  index: number;
+  user: string;
+  response?: {
+    text?: string;
+    raw?: unknown;
+  };
+  startedAt: string;
+  completedAt?: string;
+  latencyMs?: number;
+  assertions: Score[];
+  error?: string;
+}
+
+export interface Score {
+  name: string;
+  verdict: Verdict;
+  reason?: string;
+  value?: unknown;
+  metadata: Record<string, unknown>;
+}
+
+export interface ScenarioResult {
+  scenarioId: string;
+  scenarioName: string;
+  verdict: Verdict;
+  scores: Score[];
+  turns: TurnRecord[];
+  startedAt: string;
+  completedAt: string;
+  metrics: Record<string, number>;
+  sourceFile?: string;
+}
+
+export interface RunResult {
+  runId: string;
+  verdict: Verdict;
+  results: ScenarioResult[];
+  startedAt: string;
+  completedAt: string;
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    needsReview: number;
+    errors: number;
+  };
+  metadata: Record<string, unknown>;
 }
