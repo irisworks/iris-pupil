@@ -1,0 +1,17 @@
+id: a-multi-turn
+name: Multi turn scenario
+tags:
+  - regression
+metadata:
+  owner: irisflow
+turns:
+  - user: Hello Iris.
+    expect:
+      - type: contains
+        target: response.text
+        value: hello
+  - user: Confirm status.
+expect:
+  thresholds:
+    - metric: latency_ms
+      max: 30000
