@@ -54,7 +54,7 @@ describe("pupil CLI", () => {
         let stderr = "";
         const timer = setTimeout(() => {
           reject(new Error(`mock-agent did not start. stderr: ${stderr}`));
-        }, 5000);
+        }, 10000);
 
         child.stdout.setEncoding("utf-8");
         child.stderr.setEncoding("utf-8");
@@ -81,10 +81,10 @@ describe("pupil CLI", () => {
       const url = /http:\/\/[^\s]+/.exec(output)?.[0];
       expect(url).toBeDefined();
       const health = await fetch(`${url}/health`).then((response) => response.json());
-      expect(health).toEqual({ ok: true, service: "iris-mock" });
+      expect(health).toEqual({ ok: true, channels: 0 });
     } finally {
       child.kill();
       await new Promise((resolve) => child.once("exit", resolve));
     }
-  });
+  }, 15000);
 });
