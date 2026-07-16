@@ -1,0 +1,8 @@
+id: z-shorthand
+name: Shorthand scenario
+tags:
+  - smoke
+  - shorthand
+metadata:
+  owner: pupil
+input: Hello from shorthand.
