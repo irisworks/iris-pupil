@@ -13,6 +13,7 @@ export interface IrisMockOptions {
   host?: string;
   defaultDelayMs?: number;
   rules?: IrisMockRule[];
+  apiToken?: string | false;
 }
 
 export interface RecordedMockRequest {
@@ -24,6 +25,8 @@ export interface RecordedMockRequest {
 
 interface MockSession {
   sessionId: string;
+  originChannel: string;
+  originThreadTs: string;
   createdAt: string;
   history: Array<{ role: "user" | "assistant"; content: string; at: string }>;
 }
@@ -67,26 +70,10 @@ function readBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-function messageFromBody(body: unknown): string {
-  if (!body || typeof body !== "object") return "";
-  const record = body as Record<string, unknown>;
-  if (typeof record.text === "string") return record.text;
-  if (typeof record.message === "string") return record.message;
-  if (Array.isArray(record.messages)) {
-    const last = record.messages
-      .slice()
-      .reverse()
-      .find((message) => {
-        return (
-          message &&
-          typeof message === "object" &&
-          "content" in message &&
-          typeof (message as { content?: unknown }).content === "string"
-        );
-      }) as { content?: string } | undefined;
-    return last?.content ?? "";
-  }
-  return "";
+function getStringField(body: unknown, field: string): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const value = (body as Record<string, unknown>)[field];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function getDelayFromText(text: string, fallback: number): number {
@@ -106,6 +93,8 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
   const port = options.port ?? 5050;
   const defaultDelayMs = options.defaultDelayMs ?? 0;
   const rules = options.rules ?? [];
+  const apiToken =
+    options.apiToken === false ? undefined : (options.apiToken ?? process.env.IRIS_API_TOKEN);
   const requests: RecordedMockRequest[] = [];
   const sessions = new Map<string, MockSession>();
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -118,13 +107,20 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
     pendingTimers.add(timer);
   }
 
+  function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
+    if (!apiToken) return true;
+    if (req.headers.authorization === `Bearer ${apiToken}`) return true;
+    json(res, 401, { error: "unauthorized" });
+    return false;
+  }
+
   const server = createServer(async (req, res) => {
     const method = req.method ?? "GET";
     const path = req.url ?? "/";
 
     try {
       if (method === "GET" && path === "/health") {
-        json(res, 200, { ok: true, service: "iris-mock" });
+        json(res, 200, { ok: true, channels: sessions.size });
         return;
       }
 
@@ -139,12 +135,39 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
         return;
       }
 
+      const historyMatch = /^\/sessions\/([^/]+)\/history$/.exec(path);
+      if (method === "GET" && historyMatch) {
+        if (!requireAuth(req, res)) return;
+        const session = sessions.get(decodeURIComponent(historyMatch[1]));
+        if (!session) {
+          json(res, 404, { error: "session not found" });
+          return;
+        }
+        json(res, 200, { sessionId: session.sessionId, history: session.history });
+        return;
+      }
+
+      if (!requireAuth(req, res)) return;
+
       const body = await readBody(req);
       requests.push({ method, path, body, receivedAt: new Date().toISOString() });
 
       if (method === "POST" && path === "/sessions") {
+        const originChannel = getStringField(body, "originChannel");
+        const originThreadTs = getStringField(body, "originThreadTs");
+        if (!originChannel || !originThreadTs) {
+          json(res, 400, { error: "originChannel and originThreadTs are required" });
+          return;
+        }
+
         const sessionId = randomUUID();
-        const session = { sessionId, createdAt: new Date().toISOString(), history: [] };
+        const session = {
+          sessionId,
+          originChannel,
+          originThreadTs,
+          createdAt: new Date().toISOString(),
+          history: [],
+        };
         sessions.set(sessionId, session);
         json(res, 201, session);
         return;
@@ -158,7 +181,11 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
           return;
         }
 
-        const text = messageFromBody(body);
+        const text = getStringField(body, "text");
+        if (!text) {
+          json(res, 400, { error: "text is required" });
+          return;
+        }
         if (text.includes("__hang__")) {
           return;
         }
@@ -192,7 +219,7 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
           return;
         }
         session.history = [];
-        json(res, 200, { ok: true, sessionId: session.sessionId });
+        json(res, 200, { status: "ok", message: "Context cleared" });
         return;
       }
 
