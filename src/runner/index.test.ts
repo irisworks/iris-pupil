@@ -1,0 +1,184 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { afterEach, describe, expect, it } from "vitest";
+import { PupilError, type Scenario, Verdict } from "../core/types.js";
+import {
+  RestDriverError,
+  type RestConversation,
+  type RestDriverResponse,
+} from "../driver/index.js";
+import { createIrisMockAgent, type IrisMockAgent } from "../mock/irisMockAgent.js";
+import { runScenario, runScenarios, type RunnerDriver } from "./index.js";
+
+let mock: IrisMockAgent | undefined;
+
+afterEach(async () => {
+  if (mock) {
+    await mock.close();
+    mock = undefined;
+  }
+});
+
+function scenario(overrides: Partial<Scenario> = {}): Scenario {
+  return {
+    id: "runner-basic",
+    name: "Runner basic",
+    tags: [],
+    metadata: {},
+    driver: {
+      type: "rest",
+      preset: "iris-http",
+      config: {},
+    },
+    turns: [{ user: "please schedule", expect: [] }],
+    expect: { assertions: [], thresholds: [] },
+    ...overrides,
+  };
+}
+
+async function mockBaseUrl(options: Parameters<typeof createIrisMockAgent>[0] = {}) {
+  mock = createIrisMockAgent({ port: 0, ...options });
+  const address = await mock.listen();
+  return `http://${address.host}:${address.port}`;
+}
+
+class FakeDriver implements RunnerDriver {
+  readonly closes: string[];
+  readonly disposals: { count: number };
+
+  constructor(
+    private readonly responseOrError: RestDriverResponse | Error,
+    closeSink: string[],
+    disposalSink: { count: number },
+  ) {
+    this.closes = closeSink;
+    this.disposals = disposalSink;
+  }
+
+  async createConversation(): Promise<RestConversation> {
+    return { id: crypto.randomUUID(), raw: {} };
+  }
+
+  async send(): Promise<RestDriverResponse> {
+    if (this.responseOrError instanceof Error) {
+      throw this.responseOrError;
+    }
+    return this.responseOrError;
+  }
+
+  async closeConversation(conversation: RestConversation): Promise<void> {
+    this.closes.push(conversation.id);
+  }
+
+  dispose(): void {
+    this.disposals.count += 1;
+  }
+}
+
+describe("scenario runner", () => {
+  it("executes a scenario end to end against the IRIS-compatible mock agent", async () => {
+    const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
+
+    const result = await runScenario(scenario(), {
+      driverConfig: { baseUrl, originThreadTs: "thread-1" },
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.turns).toHaveLength(1);
+    expect(result.turns[0]?.response?.text).toBe("Scheduled.");
+    expect(mock?.requests.map((request) => request.path)).toEqual([
+      "/sessions",
+      expect.stringMatching(/^\/sessions\/[0-9a-f-]+\/message$/),
+      expect.stringMatching(/^\/sessions\/[0-9a-f-]+\/reset$/),
+    ]);
+  });
+
+  it("retries transport errors and closes failed conversations", async () => {
+    const closes: string[] = [];
+    const disposals = { count: 0 };
+    const failures = [new RestDriverError(504, { error: "timeout" })];
+
+    const result = await runScenario(scenario(), {
+      retries: 1,
+      driverFactory: () => {
+        const error = failures.shift();
+        return new FakeDriver(error ?? { text: "ok", raw: { text: "ok" } }, closes, disposals);
+      },
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metrics.retries).toBe(1);
+    expect(closes).toHaveLength(2);
+    expect(disposals.count).toBe(2);
+  });
+
+  it("does not retry non-transport contract errors", async () => {
+    const closes: string[] = [];
+    const disposals = { count: 0 };
+    let attempts = 0;
+
+    const result = await runScenario(scenario(), {
+      retries: 2,
+      driverFactory: () => {
+        attempts += 1;
+        return new FakeDriver(
+          new RestDriverError(400, { error: "bad request" }),
+          closes,
+          disposals,
+        );
+      },
+    });
+
+    expect(result.verdict).toBe(Verdict.Error);
+    expect(result.metrics.retries).toBe(0);
+    expect(attempts).toBe(1);
+    expect(closes).toHaveLength(1);
+  });
+
+  it("retries timeout errors only when retry budget is available", async () => {
+    let attempts = 0;
+
+    const result = await runScenario(scenario(), {
+      retries: 1,
+      driverFactory: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new FakeDriver(new PupilError("REST request timed out after 10ms"), [], {
+            count: 0,
+          });
+        }
+        return new FakeDriver({ text: "ok", raw: { text: "ok" } }, [], { count: 0 });
+      },
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(attempts).toBe(2);
+  });
+
+  it("limits scenario concurrency", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const scenarios = ["a", "b", "c", "d"].map((id) => scenario({ id, name: id }));
+
+    const result = await runScenarios(scenarios, {
+      concurrency: 2,
+      driverFactory: () => ({
+        async createConversation() {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          return { id: crypto.randomUUID(), raw: {} };
+        },
+        async send() {
+          await delay(25);
+          return { text: "ok", raw: { text: "ok" } };
+        },
+        async closeConversation() {
+          active -= 1;
+        },
+      }),
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.summary.passed).toBe(4);
+    expect(maxActive).toBeLessThanOrEqual(2);
+  });
+});
