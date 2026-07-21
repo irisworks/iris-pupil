@@ -2,8 +2,10 @@
 
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
-import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
+import { Verdict } from "../core/types.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
+import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
+import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
 
 const program = new Command();
 const packageManifest = JSON.parse(
@@ -24,6 +26,46 @@ function parseNonNegativeInteger(value: string, name: string): number {
     throw new InvalidArgumentError(`${name} must be a non-negative integer`);
   }
   return parsed;
+}
+
+function parsePositiveInteger(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new InvalidArgumentError(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function definedConfig(options: {
+  baseUrl?: string;
+  bearerToken?: string;
+  originThreadTs?: string;
+  timeoutMs?: number;
+}): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries({
+      baseUrl: options.baseUrl,
+      bearerToken: options.bearerToken,
+      originThreadTs: options.originThreadTs,
+      timeoutMs: options.timeoutMs,
+    }).filter(([, value]) => value !== undefined),
+  );
+}
+
+function logProgress(event: RunnerProgressEvent): void {
+  if (event.type === "scenario:start") {
+    console.log(`START ${event.scenarioId}`);
+    return;
+  }
+  if (event.type === "scenario:retry") {
+    console.log(`RETRY ${event.scenarioId} attempt ${event.attempt}/${event.maxAttempts}`);
+    return;
+  }
+  if (event.type === "scenario:pass") {
+    console.log(`PASS ${event.scenarioId}`);
+    return;
+  }
+  console.log(`ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`);
 }
 
 program
@@ -54,13 +96,56 @@ program
 
 program
   .command("run")
-  .description("Run a scenario. REST driver implementation lands in IRIS-87 to IRIS-90.")
-  .argument("<scenario>", "Scenario YAML file")
-  .action(async (scenarioPath: string) => {
-    const scenario = await loadScenarioFile(scenarioPath);
-    console.log(`Scenario loaded: ${scenario.id}`);
-    console.log("Run support is scaffolded; implement driver execution in IRIS-87 to IRIS-90.");
-  });
+  .description("Run one scenario file or a directory of scenarios.")
+  .argument("<path>", "Scenario YAML file or directory")
+  .option("--base-url <url>", "Override driver.config.baseUrl")
+  .option("--bearer-token <token>", "Override bearer auth token")
+  .option("--origin-thread-ts <value>", "Override IRIS originThreadTs")
+  .option("--timeout-ms <timeoutMs>", "Per-scenario timeout in milliseconds", (value) =>
+    parsePositiveInteger(value, "timeout-ms"),
+  )
+  .option(
+    "--retries <retries>",
+    "Retries for transport and timeout errors only",
+    (value) => parseNonNegativeInteger(value, "retries"),
+    0,
+  )
+  .option(
+    "--concurrency <concurrency>",
+    "Number of scenarios to run concurrently",
+    (value) => parsePositiveInteger(value, "concurrency"),
+    1,
+  )
+  .action(
+    async (
+      path: string,
+      options: {
+        baseUrl?: string;
+        bearerToken?: string;
+        originThreadTs?: string;
+        timeoutMs?: number;
+        retries: number;
+        concurrency: number;
+      },
+    ) => {
+      const scenarios = await loadScenarios(path);
+      const result = await runScenarios(scenarios, {
+        timeoutMs: options.timeoutMs,
+        retries: options.retries,
+        concurrency: options.concurrency,
+        driverConfig: definedConfig(options),
+        progress: logProgress,
+      });
+
+      console.log(
+        `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
+      );
+
+      if (result.verdict === Verdict.Error || result.verdict === Verdict.Fail) {
+        process.exitCode = 1;
+      }
+    },
+  );
 
 program
   .command("mock-agent")
