@@ -92,6 +92,97 @@ describe("scenario runner", () => {
     ]);
   });
 
+  it("evaluates turn-level assertions and aggregates failures", async () => {
+    const result = await runScenario(
+      scenario({
+        turns: [
+          {
+            user: "please schedule",
+            expect: [
+              {
+                type: "contains",
+                target: "response.text",
+                value: "Scheduled",
+                caseSensitive: false,
+              },
+              {
+                type: "not_contains",
+                target: "response.text",
+                value: "cancelled",
+                caseSensitive: false,
+              },
+            ],
+          },
+        ],
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { text: "Scheduled." } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.turns[0]?.assertions.map((score) => score.verdict)).toEqual([
+      Verdict.Pass,
+      Verdict.Pass,
+    ]);
+    expect(result.scores).toHaveLength(2);
+  });
+
+  it("marks scenarios failed when turn-level assertions fail", async () => {
+    const result = await runScenario(
+      scenario({
+        turns: [
+          {
+            user: "please schedule",
+            expect: [
+              {
+                type: "contains",
+                target: "response.text",
+                value: "Scheduled",
+                caseSensitive: false,
+              },
+            ],
+          },
+        ],
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Could not do that.", raw: { text: "Could not do that." } }, [], {
+            count: 0,
+          }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Fail);
+    expect(result.turns[0]?.assertions[0]?.verdict).toBe(Verdict.Fail);
+    expect(result.scores[0]?.verdict).toBe(Verdict.Fail);
+  });
+
+  it("evaluates scenario-level assertions against the final response", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [
+            {
+              type: "jsonpath",
+              target: "response.raw",
+              path: "$.status",
+              equals: "ok",
+            },
+          ],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores[0]?.verdict).toBe(Verdict.Pass);
+  });
   it("retries transport errors and closes failed conversations", async () => {
     const closes: string[] = [];
     const disposals = { count: 0 };

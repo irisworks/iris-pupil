@@ -65,6 +65,10 @@ function logProgress(event: RunnerProgressEvent): void {
     console.log(`PASS ${event.scenarioId}`);
     return;
   }
+  if (event.type === "scenario:fail") {
+    console.log(`FAIL ${event.scenarioId}`);
+    return;
+  }
   console.log(`ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`);
 }
 

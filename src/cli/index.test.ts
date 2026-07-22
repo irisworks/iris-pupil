@@ -122,6 +122,85 @@ describe("pupil CLI", () => {
     }
   });
 
+  it("fails pupil run when scenario assertions fail", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "offline" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-fail",
+          "name: CLI run fail",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: online",
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--base-url",
+          `http://${address.host}:${address.port}`,
+          "--origin-thread-ts",
+          "thread-1",
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      child.stdout.setEncoding("utf-8");
+      child.stderr.setEncoding("utf-8");
+
+      const output = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+        (resolve, reject) => {
+          let stdout = "";
+          let stderr = "";
+          const timer = setTimeout(() => {
+            child.kill();
+            reject(new Error(`pupil run did not finish. stderr: ${stderr}`));
+          }, 10000);
+
+          child.stdout.on("data", (chunk: string) => {
+            stdout += chunk;
+          });
+          child.stderr.on("data", (chunk: string) => {
+            stderr += chunk;
+          });
+          child.once("error", (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          child.once("exit", (code) => {
+            clearTimeout(timer);
+            resolve({ code, stdout, stderr });
+          });
+        },
+      );
+
+      expect(output.code).toBe(1);
+      expect(output.stderr).toBe("");
+      expect(output.stdout).toContain("START cli-run-fail");
+      expect(output.stdout).toContain("FAIL cli-run-fail");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("starts mock-agent as a standalone server", async () => {
     const child = spawn(process.execPath, [cliPath, "mock-agent", "--port", "0"], {
       stdio: ["ignore", "pipe", "pipe"],
