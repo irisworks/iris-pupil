@@ -18,6 +18,7 @@ import {
   type RestDriverConfigOverrides,
   type RestDriverResponse,
 } from "../driver/index.js";
+import { aggregateScores, evaluateAssertions } from "../eval/index.js";
 
 export interface RunnerDriver {
   createConversation(
@@ -29,7 +30,7 @@ export interface RunnerDriver {
 }
 
 export interface RunnerProgressEvent {
-  type: "scenario:start" | "scenario:retry" | "scenario:pass" | "scenario:error";
+  type: "scenario:start" | "scenario:retry" | "scenario:pass" | "scenario:fail" | "scenario:error";
   scenarioId: string;
   attempt: number;
   maxAttempts: number;
@@ -225,6 +226,10 @@ async function executeAttempt(
         record.completedAt = completedAt;
         record.latencyMs = Date.parse(completedAt) - Date.parse(startedAt);
         record.response = { text: response.text, raw: response.raw };
+        record.assertions = evaluateAssertions(turn.expect, {
+          response: record.response,
+          turn: record,
+        });
       } catch (error) {
         record.error = errorMessage(error);
         record.completedAt = now();
@@ -277,7 +282,7 @@ export async function runScenario(
     try {
       const turns = await executeAttempt(scenario, driver, context, timeoutMs);
       const completedAt = now();
-      const result: ScenarioResult = {
+      const baseResult: ScenarioResult = {
         scenarioId: scenario.id,
         scenarioName: scenario.name,
         verdict: Verdict.Pass,
@@ -292,7 +297,22 @@ export async function runScenario(
         },
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
-      options.progress?.({ type: "scenario:pass", scenarioId: scenario.id, attempt, maxAttempts });
+      const lastTurn = turns.at(-1);
+      const scenarioScores = evaluateAssertions(scenario.expect.assertions, {
+        response: lastTurn?.response,
+        turn: lastTurn,
+        result: baseResult,
+      });
+      const turnScores = turns.flatMap((turn) => turn.assertions);
+      const scores = [...turnScores, ...scenarioScores];
+      const verdict = aggregateScores(scores);
+      const result: ScenarioResult = { ...baseResult, verdict, scores };
+      options.progress?.({
+        type: verdict === Verdict.Pass ? "scenario:pass" : "scenario:fail",
+        scenarioId: scenario.id,
+        attempt,
+        maxAttempts,
+      });
       return result;
     } catch (error) {
       lastError = error instanceof ScenarioAttemptError ? error.cause : error;
