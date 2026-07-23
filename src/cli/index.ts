@@ -2,7 +2,8 @@
 
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
-import { Verdict } from "../core/types.js";
+import { PupilError, Verdict } from "../core/types.js";
+import { JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
@@ -120,6 +121,7 @@ program
     (value) => parsePositiveInteger(value, "concurrency"),
     1,
   )
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
   .action(
     async (
       path: string,
@@ -130,6 +132,7 @@ program
         timeoutMs?: number;
         retries: number;
         concurrency: number;
+        historyDir: string;
       },
     ) => {
       const scenarios = await loadScenarios(path);
@@ -141,6 +144,16 @@ program
         progress: logProgress,
       });
 
+      let stored;
+      try {
+        stored = await new JsonRunHistoryStore({ dir: options.historyDir }).writeRun(result);
+      } catch (error) {
+        throw new PupilError(
+          `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      console.log(`Saved run: ${stored.runPath}`);
       console.log(
         `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
       );
@@ -182,7 +195,7 @@ async function main(): Promise<void> {
       process.exit(error.exitCode);
     }
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
