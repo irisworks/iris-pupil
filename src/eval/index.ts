@@ -179,14 +179,14 @@ function thresholdName(threshold: ThresholdCheck): string {
 }
 
 function metricKey(metric: string): string {
-  const normalized = metric.toLowerCase();
-  if (normalized === "maxturns" || normalized === "turns" || normalized === "turn_count") {
+  const normalized = metric.toLowerCase().replace(/[_-]/g, "");
+  if (normalized === "maxturns" || normalized === "turns" || normalized === "turncount") {
     return "turns";
   }
-  if (normalized === "maxlatencyms" || normalized === "latencyms" || normalized === "latency_ms") {
+  if (normalized === "maxlatencyms" || normalized === "latencyms") {
     return "latency_ms";
   }
-  if (normalized === "maxcostusd" || normalized === "costusd" || normalized === "cost_usd") {
+  if (normalized === "maxcostusd" || normalized === "costusd") {
     return "cost_usd";
   }
   return metric;
@@ -201,20 +201,15 @@ function skippedThresholdScore(threshold: ThresholdCheck, reason: string): Score
   };
 }
 
-function thresholdPassScore(threshold: ThresholdCheck, value: number, reason: string): Score {
+function thresholdScore(
+  threshold: ThresholdCheck,
+  verdict: Verdict.Pass | Verdict.Fail,
+  value: number,
+  reason: string,
+): Score {
   return {
     name: thresholdName(threshold),
-    verdict: Verdict.Pass,
-    reason,
-    value,
-    metadata: { threshold },
-  };
-}
-
-function thresholdFailScore(threshold: ThresholdCheck, value: number, reason: string): Score {
-  return {
-    name: thresholdName(threshold),
-    verdict: Verdict.Fail,
+    verdict,
     reason,
     value,
     metadata: { threshold },
@@ -241,10 +236,10 @@ export function evaluateThreshold(
   }
 
   if (threshold.max !== undefined && value > threshold.max) {
-    return thresholdFailScore(threshold, value, `Expected ${key} <= ${threshold.max}`);
+    return thresholdScore(threshold, Verdict.Fail, value, `Expected ${key} <= ${threshold.max}`);
   }
   if (threshold.min !== undefined && value < threshold.min) {
-    return thresholdFailScore(threshold, value, `Expected ${key} >= ${threshold.min}`);
+    return thresholdScore(threshold, Verdict.Fail, value, `Expected ${key} >= ${threshold.min}`);
   }
 
   const bounds = [
@@ -253,7 +248,7 @@ export function evaluateThreshold(
   ]
     .filter(Boolean)
     .join(" and ");
-  return thresholdPassScore(threshold, value, `Expected ${key} ${bounds}`);
+  return thresholdScore(threshold, Verdict.Pass, value, `Expected ${key} ${bounds}`);
 }
 
 export function evaluateThresholds(
