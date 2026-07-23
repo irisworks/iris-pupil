@@ -1,4 +1,4 @@
-﻿import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,6 +206,57 @@ describe("pupil CLI", () => {
     }
   });
 
+  it("reports a clean error when run history cannot be written", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "online" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history-file");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-history-error",
+          "name: CLI run history error",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(historyDir, "not a directory");
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--base-url",
+          `http://${address.host}:${address.port}`,
+          "--origin-thread-ts",
+          "thread-1",
+          "--history-dir",
+          historyDir,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(1);
+      expect(output.stdout).toContain("PASS cli-run-history-error");
+      expect(output.stdout).not.toContain("Saved run:");
+      expect(output.stderr).toContain("Failed to save run history:");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("starts mock-agent as a standalone server", async () => {
     const child = spawn(process.execPath, [cliPath, "mock-agent", "--port", "0"], {
       stdio: ["ignore", "pipe", "pipe"],

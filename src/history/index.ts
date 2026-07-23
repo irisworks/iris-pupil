@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { PupilError, type RunResult, type Verdict } from "../core/types.js";
 
@@ -45,9 +45,33 @@ export class JsonRunHistoryStore {
   }
 
   async writeRun(run: RunResult): Promise<StoredRun> {
+    try {
+      const existing = await stat(this.dir);
+      if (!existing.isDirectory()) {
+        throw new PupilError(`History path is not a directory: ${this.dir}`);
+      }
+    } catch (error) {
+      if (error instanceof PupilError) {
+        throw error;
+      }
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+    }
+
     await mkdir(this.runsDir, { recursive: true });
     const runPath = this.runPath(run.runId);
-    await writeFile(runPath, `${JSON.stringify(run, null, 2)}\n`, "utf-8");
+    try {
+      await writeFile(runPath, `${JSON.stringify(run, null, 2)}\n`, {
+        encoding: "utf-8",
+        flag: "wx",
+      });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+        throw new PupilError(`Run history already exists for run id ${run.runId}`);
+      }
+      throw error;
+    }
 
     const entry: RunIndexEntry = {
       runId: run.runId,
