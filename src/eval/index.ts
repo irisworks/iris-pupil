@@ -4,6 +4,7 @@ import {
   type AssertionCheck,
   type Score,
   type ScenarioResult,
+  type ThresholdCheck,
   type TurnRecord,
   Verdict,
 } from "../core/types.js";
@@ -167,4 +168,97 @@ export function evaluateAssertions(
 
 export function aggregateScores(scores: readonly Score[]): Verdict {
   return aggregateVerdicts(scores.map((score) => score.verdict));
+}
+
+export interface ThresholdEvaluationContext {
+  metrics: Record<string, number>;
+}
+
+function thresholdName(threshold: ThresholdCheck): string {
+  return `threshold:${threshold.metric}`;
+}
+
+function metricKey(metric: string): string {
+  const normalized = metric.toLowerCase();
+  if (normalized === "maxturns" || normalized === "turns" || normalized === "turn_count") {
+    return "turns";
+  }
+  if (normalized === "maxlatencyms" || normalized === "latencyms" || normalized === "latency_ms") {
+    return "latency_ms";
+  }
+  if (normalized === "maxcostusd" || normalized === "costusd" || normalized === "cost_usd") {
+    return "cost_usd";
+  }
+  return metric;
+}
+
+function skippedThresholdScore(threshold: ThresholdCheck, reason: string): Score {
+  return {
+    name: thresholdName(threshold),
+    verdict: Verdict.Skip,
+    reason,
+    metadata: { threshold },
+  };
+}
+
+function thresholdPassScore(threshold: ThresholdCheck, value: number, reason: string): Score {
+  return {
+    name: thresholdName(threshold),
+    verdict: Verdict.Pass,
+    reason,
+    value,
+    metadata: { threshold },
+  };
+}
+
+function thresholdFailScore(threshold: ThresholdCheck, value: number, reason: string): Score {
+  return {
+    name: thresholdName(threshold),
+    verdict: Verdict.Fail,
+    reason,
+    value,
+    metadata: { threshold },
+  };
+}
+
+export function evaluateThreshold(
+  threshold: ThresholdCheck,
+  context: ThresholdEvaluationContext,
+): Score {
+  const key = metricKey(threshold.metric);
+  const value = context.metrics[key];
+
+  if (value === undefined) {
+    if (key === "cost_usd") {
+      return skippedThresholdScore(threshold, "Cost metric is missing; skipping cost threshold");
+    }
+    return {
+      name: thresholdName(threshold),
+      verdict: Verdict.Fail,
+      reason: `Metric ${key} is missing`,
+      metadata: { threshold },
+    };
+  }
+
+  if (threshold.max !== undefined && value > threshold.max) {
+    return thresholdFailScore(threshold, value, `Expected ${key} <= ${threshold.max}`);
+  }
+  if (threshold.min !== undefined && value < threshold.min) {
+    return thresholdFailScore(threshold, value, `Expected ${key} >= ${threshold.min}`);
+  }
+
+  const bounds = [
+    threshold.min !== undefined ? `>= ${threshold.min}` : undefined,
+    threshold.max !== undefined ? `<= ${threshold.max}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  return thresholdPassScore(threshold, value, `Expected ${key} ${bounds}`);
+}
+
+export function evaluateThresholds(
+  thresholds: readonly ThresholdCheck[],
+  context: ThresholdEvaluationContext,
+): Score[] {
+  return thresholds.map((threshold) => evaluateThreshold(threshold, context));
 }

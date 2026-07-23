@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { Verdict, type AssertionCheck, type TextAssertionCheck } from "../core/types.js";
-import { aggregateScores, evaluateAssertion, evaluateAssertions } from "./index.js";
+import {
+  aggregateScores,
+  evaluateAssertion,
+  evaluateAssertions,
+  evaluateThreshold,
+  evaluateThresholds,
+} from "./index.js";
 
 const context = {
   response: {
@@ -110,5 +116,52 @@ describe("assertion evaluator", () => {
 
     expect(scores.map((score) => score.verdict)).toEqual([Verdict.Pass, Verdict.Fail]);
     expect(aggregateScores(scores)).toBe(Verdict.Fail);
+  });
+});
+
+describe("threshold evaluator", () => {
+  it("passes maxTurns and maxLatencyMs at boundary values", () => {
+    const scores = evaluateThresholds(
+      [
+        { metric: "maxTurns", max: 2 },
+        { metric: "maxLatencyMs", max: 1500 },
+      ],
+      { metrics: { turns: 2, latency_ms: 1500 } },
+    );
+
+    expect(scores.map((score) => score.verdict)).toEqual([Verdict.Pass, Verdict.Pass]);
+    expect(aggregateScores(scores)).toBe(Verdict.Pass);
+  });
+
+  it("fails maxTurns and maxLatencyMs when measured values exceed max", () => {
+    const scores = evaluateThresholds(
+      [
+        { metric: "maxTurns", max: 2 },
+        { metric: "maxLatencyMs", max: 1500 },
+      ],
+      { metrics: { turns: 3, latency_ms: 1501 } },
+    );
+
+    expect(scores.map((score) => score.verdict)).toEqual([Verdict.Fail, Verdict.Fail]);
+    expect(aggregateScores(scores)).toBe(Verdict.Fail);
+  });
+
+  it("evaluates maxCostUsd when cost data exists", () => {
+    expect(
+      evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, { metrics: { cost_usd: 0.25 } })
+        .verdict,
+    ).toBe(Verdict.Pass);
+    expect(
+      evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, { metrics: { cost_usd: 0.26 } })
+        .verdict,
+    ).toBe(Verdict.Fail);
+  });
+
+  it("skips maxCostUsd cleanly when cost data is missing", () => {
+    const score = evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, { metrics: {} });
+
+    expect(score.verdict).toBe(Verdict.Skip);
+    expect(score.reason).toMatch(/Cost metric is missing/);
+    expect(aggregateScores([score])).toBe(Verdict.Pass);
   });
 });
