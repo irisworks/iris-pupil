@@ -5,3 +5,4 @@ export * from "./mock/irisMockAgent.js";
 export * from "./driver/index.js";
 export * from "./runner/index.js";
 export * from "./eval/index.js";
+export * from "./history/index.js";
