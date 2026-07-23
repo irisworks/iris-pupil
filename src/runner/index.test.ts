@@ -183,6 +183,43 @@ describe("scenario runner", () => {
     expect(result.verdict).toBe(Verdict.Pass);
     expect(result.scores[0]?.verdict).toBe(Verdict.Pass);
   });
+  it("marks scenarios failed when measured thresholds fail", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "maxTurns", max: 0 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Fail);
+    expect(result.scores.some((score) => score.name === "threshold:maxTurns")).toBe(true);
+  });
+
+  it("skips missing cost thresholds without failing the scenario", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "maxCostUsd", max: 0.01 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores.find((score) => score.name === "threshold:maxCostUsd")?.verdict).toBe(
+      Verdict.Skip,
+    );
+  });
   it("retries transport errors and closes failed conversations", async () => {
     const closes: string[] = [];
     const disposals = { count: 0 };

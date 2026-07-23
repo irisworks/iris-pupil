@@ -1,6 +1,7 @@
 /** Final outcome for an assertion, scenario, or full run. */
 export enum Verdict {
   Pass = "pass",
+  Skip = "skip",
   NeedsReview = "needs_review",
   Fail = "fail",
   Error = "error",
@@ -8,6 +9,7 @@ export enum Verdict {
 
 const VERDICT_SEVERITY: Record<Verdict, number> = {
   [Verdict.Pass]: 0,
+  [Verdict.Skip]: 0,
   [Verdict.NeedsReview]: 1,
   [Verdict.Fail]: 2,
   [Verdict.Error]: 3,
