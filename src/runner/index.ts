@@ -18,7 +18,7 @@ import {
   type RestDriverConfigOverrides,
   type RestDriverResponse,
 } from "../driver/index.js";
-import { aggregateScores, evaluateAssertions } from "../eval/index.js";
+import { aggregateScores, evaluateAssertions, evaluateThresholds } from "../eval/index.js";
 
 export interface RunnerDriver {
   createConversation(
@@ -303,8 +303,11 @@ export async function runScenario(
         turn: lastTurn,
         result: baseResult,
       });
+      const thresholdScores = evaluateThresholds(scenario.expect.thresholds, {
+        metrics: baseResult.metrics,
+      });
       const turnScores = turns.flatMap((turn) => turn.assertions);
-      const scores = [...turnScores, ...scenarioScores];
+      const scores = [...turnScores, ...scenarioScores, ...thresholdScores];
       const verdict = aggregateScores(scores);
       const result: ScenarioResult = { ...baseResult, verdict, scores };
       options.progress?.({
