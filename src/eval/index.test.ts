@@ -146,6 +146,31 @@ describe("threshold evaluator", () => {
     expect(aggregateScores(scores)).toBe(Verdict.Fail);
   });
 
+  it("normalizes threshold metric aliases across camel, snake, and kebab case", () => {
+    const scores = evaluateThresholds(
+      [
+        { metric: "max_turns", max: 2 },
+        { metric: "max-latency-ms", max: 1500 },
+        { metric: "max_cost_usd", max: 0.25 },
+      ],
+      { metrics: { turns: 2, latency_ms: 1500, cost_usd: 0.25 } },
+    );
+
+    expect(scores.map((score) => score.verdict)).toEqual([
+      Verdict.Pass,
+      Verdict.Pass,
+      Verdict.Pass,
+    ]);
+  });
+
+  it("evaluates min threshold boundaries", () => {
+    expect(evaluateThreshold({ metric: "turns", min: 2 }, { metrics: { turns: 2 } }).verdict).toBe(
+      Verdict.Pass,
+    );
+    expect(evaluateThreshold({ metric: "turns", min: 2 }, { metrics: { turns: 1 } }).verdict).toBe(
+      Verdict.Fail,
+    );
+  });
   it("evaluates maxCostUsd when cost data exists", () => {
     expect(
       evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, { metrics: { cost_usd: 0.25 } })
