@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
-import { Verdict } from "../core/types.js";
+import { PupilError, Verdict } from "../core/types.js";
 import { JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
@@ -144,7 +144,14 @@ program
         progress: logProgress,
       });
 
-      const stored = await new JsonRunHistoryStore({ dir: options.historyDir }).writeRun(result);
+      let stored;
+      try {
+        stored = await new JsonRunHistoryStore({ dir: options.historyDir }).writeRun(result);
+      } catch (error) {
+        throw new PupilError(
+          `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
 
       console.log(`Saved run: ${stored.runPath}`);
       console.log(
@@ -188,7 +195,7 @@ async function main(): Promise<void> {
       process.exit(error.exitCode);
     }
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 

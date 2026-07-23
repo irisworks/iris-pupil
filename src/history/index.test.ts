@@ -80,6 +80,17 @@ describe("JsonRunHistoryStore", () => {
     ]);
   });
 
+  it("rejects duplicate run ids without appending stale index entries", async () => {
+    const store = new JsonRunHistoryStore({ dir });
+    await store.writeRun(runResult());
+
+    await expect(store.writeRun(runResult())).rejects.toThrow(
+      "Run history already exists for run id run-1",
+    );
+
+    const index = await readFile(join(dir, "index.jsonl"), "utf-8");
+    expect(index.trim().split("\n")).toHaveLength(1);
+  });
   it("reads runs and lists index entries", async () => {
     const store = new JsonRunHistoryStore({ dir });
     await store.writeRun(runResult());
