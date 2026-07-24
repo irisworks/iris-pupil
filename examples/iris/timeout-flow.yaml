@@ -1,0 +1,28 @@
+id: iris-live-timeout-flow
+name: Live IRIS timeout flow
+description: Intentionally uses an unrealistically small timeout so timeout errors are easy to verify locally.
+tags:
+  - iris
+  - live
+  - timeout
+  - diagnostic
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    baseUrl: http://127.0.0.1:3000
+    originChannel: pupil-live
+    originThreadTs: pupil-live-timeout-flow
+    timeoutMs: 1
+    retries: 0
+turns:
+  - user: Hello. This scenario intentionally expects the harness timeout to fire.
+    expect:
+      - type: jsonpath
+        target: response.raw
+        path: $.text
+        exists: true
+expect:
+  thresholds:
+    - metric: max_turns
+      max: 1
