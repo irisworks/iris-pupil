@@ -1,0 +1,29 @@
+id: iris-live-successful-flow
+name: Live IRIS successful flow
+description: Verifies that Pupil can create a session, send a user message, read an IRIS text reply, and score a passing live run.
+tags:
+  - iris
+  - live
+  - success
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    baseUrl: http://127.0.0.1:3000
+    originChannel: pupil-live
+    originThreadTs: pupil-live-successful-flow
+    timeoutMs: 30000
+    retries: 1
+turns:
+  - user: Hello. Please reply with a short greeting.
+    expect:
+      - type: jsonpath
+        target: response.raw
+        path: $.text
+        exists: true
+expect:
+  thresholds:
+    - metric: max_turns
+      max: 1
+    - metric: max_latency_ms
+      max: 30000

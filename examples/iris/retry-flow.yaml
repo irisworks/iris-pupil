@@ -1,0 +1,28 @@
+id: iris-live-retry-flow
+name: Live IRIS retry flow
+description: Intentionally times out quickly; run with --retries 2 to verify Pupil retries retryable timeout failures.
+tags:
+  - iris
+  - live
+  - retry
+  - diagnostic
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    baseUrl: http://127.0.0.1:3000
+    originChannel: pupil-live
+    originThreadTs: pupil-live-retry-flow
+    timeoutMs: 1
+    retries: 0
+turns:
+  - user: Hello. This scenario intentionally exercises runner retry handling.
+    expect:
+      - type: jsonpath
+        target: response.raw
+        path: $.text
+        exists: true
+expect:
+  thresholds:
+    - metric: max_turns
+      max: 1

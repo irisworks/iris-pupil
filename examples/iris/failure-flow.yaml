@@ -1,0 +1,29 @@
+id: iris-live-failure-flow
+name: Live IRIS assertion failure flow
+description: Intentionally expects a sentinel string that IRIS should not return, producing a clear assertion failure.
+tags:
+  - iris
+  - live
+  - failure
+  - diagnostic
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    baseUrl: http://127.0.0.1:3000
+    originChannel: pupil-live
+    originThreadTs: pupil-live-failure-flow
+    timeoutMs: 30000
+    retries: 1
+turns:
+  - user: Hello. Please reply naturally.
+    expect:
+      - type: contains
+        target: response.text
+        value: __pupil_intentional_failure_token__
+expect:
+  thresholds:
+    - metric: max_turns
+      max: 1
+    - metric: max_latency_ms
+      max: 30000
