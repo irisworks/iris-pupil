@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { PupilError, Verdict } from "../core/types.js";
-import { JsonRunHistoryStore } from "../history/index.js";
+import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
@@ -28,7 +28,13 @@ function parseNonNegativeInteger(value: string, name: string): number {
   }
   return parsed;
 }
-
+function parseNonNegativeNumber(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new InvalidArgumentError(`${name} must be a non-negative number`);
+  }
+  return parsed;
+}
 function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -164,6 +170,39 @@ program
     },
   );
 
+program
+  .command("compare")
+  .description("Compare two stored Pupil runs for regressions.")
+  .argument("<baseRunId>", "Baseline or previous run id")
+  .argument("<currentRunId>", "Current run id")
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option(
+    "--latency-threshold-ms <latencyThresholdMs>",
+    "Allowed latency increase before flagging a regression",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-ms"),
+    0,
+  )
+  .action(
+    async (
+      baseRunId: string,
+      currentRunId: string,
+      options: { historyDir: string; latencyThresholdMs: number },
+    ) => {
+      const store = new JsonRunHistoryStore({ dir: options.historyDir });
+      const [base, current] = await Promise.all([
+        store.readRun(baseRunId),
+        store.readRun(currentRunId),
+      ]);
+      const comparison = compareRuns(base, current, {
+        latencyRegressionThresholdMs: options.latencyThresholdMs,
+      });
+
+      process.stdout.write(formatRunComparison(comparison));
+      if (comparison.hasRegressions) {
+        process.exitCode = 1;
+      }
+    },
+  );
 program
   .command("mock-agent")
   .description("Start an IRIS-compatible mock HTTP agent.")

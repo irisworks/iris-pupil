@@ -15,10 +15,14 @@ const VERDICT_SEVERITY: Record<Verdict, number> = {
   [Verdict.Error]: 3,
 };
 
+export function verdictSeverity(verdict: Verdict): number {
+  return VERDICT_SEVERITY[verdict];
+}
+
 /** Aggregate child verdicts conservatively: error > fail > needs_review > pass. */
 export function aggregateVerdicts(verdicts: readonly Verdict[]): Verdict {
   return verdicts.reduce((current, next) => {
-    return VERDICT_SEVERITY[next] > VERDICT_SEVERITY[current] ? next : current;
+    return verdictSeverity(next) > verdictSeverity(current) ? next : current;
   }, Verdict.Pass);
 }
 
