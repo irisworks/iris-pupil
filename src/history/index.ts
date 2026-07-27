@@ -2,6 +2,8 @@ import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { PupilError, type RunResult, type Verdict } from "../core/types.js";
 
+export * from "./compare.js";
+
 export interface RunIndexEntry {
   runId: string;
   verdict: Verdict;
