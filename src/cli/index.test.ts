@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -254,6 +254,75 @@ describe("pupil CLI", () => {
       expect(output.stderr).toContain("Failed to save run history:");
     } finally {
       await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits nonzero when compare detects regressions", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-compare-"));
+    const historyDir = join(dir, "history");
+    await mkdir(join(historyDir, "runs"), { recursive: true });
+
+    const baseRun = {
+      runId: "base-run",
+      verdict: "pass",
+      results: [
+        {
+          scenarioId: "scenario-1",
+          scenarioName: "Scenario 1",
+          verdict: "pass",
+          scores: [],
+          turns: [],
+          startedAt: "2026-07-27T00:00:00.000Z",
+          completedAt: "2026-07-27T00:00:01.000Z",
+          metrics: { turns: 1, latency_ms: 1000 },
+        },
+      ],
+      startedAt: "2026-07-27T00:00:00.000Z",
+      completedAt: "2026-07-27T00:00:01.000Z",
+      summary: { total: 1, passed: 1, failed: 0, needsReview: 0, errors: 0 },
+      metadata: {},
+    };
+    const currentRun = {
+      ...baseRun,
+      runId: "current-run",
+      verdict: "fail",
+      results: [
+        {
+          ...baseRun.results[0],
+          verdict: "fail",
+          metrics: { turns: 1, latency_ms: 1600 },
+        },
+      ],
+      summary: { total: 1, passed: 0, failed: 1, needsReview: 0, errors: 0 },
+    };
+
+    try {
+      await writeFile(join(historyDir, "runs", "base-run.json"), JSON.stringify(baseRun));
+      await writeFile(join(historyDir, "runs", "current-run.json"), JSON.stringify(currentRun));
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "compare",
+          "base-run",
+          "current-run",
+          "--history-dir",
+          historyDir,
+          "--latency-threshold-ms",
+          "250",
+        ],
+        { encoding: "utf-8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Comparison base-run -> current-run");
+      expect(result.stdout).toContain("Summary: regressed=1");
+      expect(result.stdout).toContain("REGRESSION scenario-1: pass -> fail");
+      expect(result.stdout).toContain("latency_ms increased by 600 beyond threshold 250");
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
