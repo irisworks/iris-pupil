@@ -27,7 +27,7 @@ Four commitments follow:
 
 ### What exists and works
 
-Phase 1 is roughly 80% built. `main` = `281a12c`; 4,600 lines of TypeScript, 103 tests.
+Phase 1 is roughly 80% built. `main` = `281a12c`; 4,600 lines of TypeScript, 102 tests.
 
 | Area                                                                                      | State                                                   |
 | ----------------------------------------------------------------------------------------- | ------------------------------------------------------- |
