@@ -152,7 +152,123 @@ not novelty of concept — and it only holds if we ship trajectory evaluation, b
 final-output-only evaluation reportedly passes 20–40% more cases than trajectory evaluation
 does. Until tool-call assertions exist, our headline claim is not true.
 
-## 4. What to build next
+### What is actually blank space, claim by claim
+
+Graded honestly, because three of these four are the reason to keep building and one is not.
+
+| Capability                                               | Blank?             | Evidence                                                                                                                                                                                                                     |
+| -------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Drive an agent over REST from declarative config in CI   | **No**             | Promptfoo's HTTP provider does this well: server-side session-ID extraction from response headers, client-side session generation via `transformVars`, explicitly for multi-turn evals. We are not first, and we are behind. |
+| Start / health-check / stop the agent under test         | **Yes**            | Promptfoo assumes the endpoint is already running. `scenario` needs a hand-written adapter. Precedent is Playwright `webServer` / Testcontainers, outside the eval space.                                                    |
+| Assert on which tools the agent chose to call, black-box | **Largely**        | Promptfoo's "tool calling" support injects tool _definitions_ into a model request — model-centric, not "which tools did my agent pick." `scenario` judges tool calls but via an LLM judge inside its own platform.          |
+| Read traces from any tracing backend, vendor-neutrally   | **Yes, but early** | Every platform couples to its own backend. See the OTel caveat below.                                                                                                                                                        |
+| Cheap, deterministic per-PR agent runs                   | **Yes**            | Nobody in this band ships record/replay of the agent's model and tool edges. Section 4, layer 3.                                                                                                                             |
+
+**The OTel caveat, which constrains the architecture.** As of 17 July 2026 no GenAI span,
+event, metric, or attribute is marked Stable. In the v1.42.0 release (12 June 2026) all
+`gen_ai.*` attributes moved out of the main semantic-conventions repo into a dedicated GenAI
+repo — a release-cadence change, not a graduation. That dedicated repo has no releases or tags
+yet and its schema-URL section is still a TODO. Agent and framework spans are experimental,
+though reportedly stable in practice through Q1 2026.
+
+Implication: **do not architect on OTel GenAI as a pinned contract yet.** Define Pupil's own
+small internal trace model, shaped after the `gen_ai.*` conventions so convergence is cheap
+later, and read it through a `TraceSource` interface with per-backend implementations —
+Langfuse first, OTLP/Phoenix second. Vendor neutrality is then our property, not something we
+inherit from a standard that isn't finished.
+
+### So are we building something useless?
+
+No, but the current Phase 1 scope on its own would be. Everything landed so far — REST
+driving, text assertions, thresholds, run history — is table stakes that Promptfoo already
+does better, and it is now backed by OpenAI's distribution. Stopping at Phase 1 as originally
+written produces a worse Promptfoo.
+
+The four things that make Pupil worth building are the target lifecycle, black-box trajectory
+assertions, backend-agnostic trace evidence, and replay-based cheap determinism. None of them
+are in Phase 1. The existing code is the necessary substrate for all four, so it is not wasted
+work — but it is substrate, not product, and the roadmap should stop treating Phase 1
+completion as the goal.
+
+## 4. The target problem: who brings the agent up in CI?
+
+Pupil cannot evaluate an agent that isn't running and configured. Everything above assumed a
+live target at `baseUrl` and never said where that comes from. It decomposes into three layers
+that must be owned by three different places, and conflating them is how CI eval projects die.
+
+### Layer 1 — process lifecycle: build, start, wait for ready, tear down
+
+**Owner: Pupil.** This is currently nobody's job, which means it lands in each consuming
+repo's workflow YAML, hand-rolled, with the classic race between "process started" and
+"process ready."
+
+This is a confirmed blank space in the eval tooling market. Promptfoo's HTTP provider
+assumes the endpoint is already running — no lifecycle, no health check, no readiness wait.
+LangWatch `scenario` requires you to hand-write an adapter in Python or TypeScript. The
+precedent worth copying sits outside the eval space entirely: **Playwright's `webServer`
+config** and Testcontainers. `webServer` is a large part of why Playwright feels drop-in for
+e2e, and it is roughly 200 lines of spawn / poll / kill.
+
+Proposed `target:` block in `pupil.config.yaml`:
+
+```yaml
+target:
+  start: docker compose -f docker-compose.ci.yaml up --wait
+  healthcheck: http://127.0.0.1:3000/health
+  readyTimeoutMs: 60000
+  stop: docker compose -f docker-compose.ci.yaml down -v
+  reuseExisting: true # skip start if healthcheck already passes (local dev)
+```
+
+`reuseExisting` matters: the same config then works unchanged for a developer running against
+a local agent and for CI starting one from scratch.
+
+### Layer 2 — dependency configuration: model keys, DB, vector store, auth
+
+**Owner: the agent's repo, not Pupil.** The agent must be startable in a test configuration
+by its own repository — a committed `docker-compose.ci.yaml` plus a `.env.ci` profile. Pupil
+references that; it must never own or duplicate it.
+
+State this as a hard boundary, because it is a testability requirement rather than a feature
+request: **if an agent cannot be brought up in a deterministic test configuration from its own
+repo, that is a defect in the agent repo that Pupil will expose, not a gap for Pupil to fill.**
+Same category as needing dependency injection before you can unit-test a class.
+
+### Layer 3 — determinism and cost at the agent's edges
+
+This is the layer that decides whether CI evals are actually cheap and non-flaky, and it is
+the most valuable open space of the three. A per-PR run that calls the real model and real
+tool backends costs money on every push, flakes on third-party availability, and needs
+production secrets in CI. No amount of runner polish fixes that.
+
+The answer is **record/replay at the agent's outbound edges** — the VCR/Polly pattern applied
+to model and tool traffic. Record cassettes once against live dependencies; replay them in CI
+from disk. Consequences, stated honestly:
+
+- Runs become deterministic, free, and fast — seconds, no secrets, no network.
+- You are no longer testing the model. You are testing the agent's orchestration: routing,
+  tool selection given a fixed model response, argument construction, error handling, state
+  across turns. **For a prompt or code change, that is exactly the right thing to gate on.**
+- Model upgrades and quality drift need real traffic and cannot use replay.
+
+So the product has two tiers, and they are different products in the same binary:
+
+| Tier                     | Mode   | Cadence               | Cost  | Role                            |
+| ------------------------ | ------ | --------------------- | ----- | ------------------------------- |
+| Orchestration regression | replay | every PR              | ~zero | **blocking merge gate**         |
+| Quality and cost drift   | live   | nightly / pre-release | real  | tracked, alerting, not blocking |
+
+This is what "easy and cheap in CI" actually requires, and it compounds with the
+determinism differentiator in section 3 rather than sitting beside it.
+
+### Where scenarios live
+
+**In the agent's repo, next to the agent.** `iris-core/evals/*.yaml`, not
+`iris-pupil/examples/`. A prompt change and the eval change that covers it belong in the same
+pull request, reviewed together. Pupil is the runner and the npm dependency; each agent repo
+owns its suite and its baseline. `examples/` in this repo stays demo-only.
+
+## 5. What to build next
 
 The reprioritization that matters: **Langfuse moves from M7-additive to critical path.**
 IRIS's `POST /sessions/:id/message` returns `{text}` only, so traces are the only route to
@@ -170,30 +286,40 @@ Sequenced, each step shippable:
    (NEEDS_REVIEW fails), `--json`, JUnit XML, and a markdown summary for
    `$GITHUB_STEP_SUMMARY`. Add the repo's own `npm run check` workflow. Publish a composite
    GitHub Action.
-4. **Trajectory model + Langfuse client.** Extend `TurnRecord` with `toolCalls: [{name, args,
+4. **`target:` lifecycle management** (section 4, layer 1). Spawn, poll healthcheck, kill on
+   exit, `reuseExisting` for local dev. Small build, and it is the difference between "drop
+   Pupil into CI" being a claim and being true.
+5. **Trajectory model + trace client.** Extend `TurnRecord` with `toolCalls: [{name, args,
 result, latencyMs, error}]`; add `tool_calls`, `cost_usd`, `tokens` to `metrics`. Add the
-   read-only Langfuse client (raw fetch, Basic auth, poll for async ingestion) to populate
-   them, plus a mock agent that emits tool events so this is testable without live IRIS.
-5. **Tool assertions** — `tool_called`, `tool_not_called`, `tool_call_count`,
+   read-only Langfuse reader (raw fetch, Basic auth, poll for async ingestion) behind a
+   `TraceSource` interface, plus a mock agent that emits tool events so this is testable
+   without live IRIS.
+6. **Tool assertions** — `tool_called`, `tool_not_called`, `tool_call_count`,
    `tool_order`, `tool_args` (jsonpath over args). This is the release that makes the
    "tool-calling agent" claim true.
-6. **LLM judge** for semantic assertions, opt-in per scenario, with the deterministic
+7. **Record/replay cassettes** (section 4, layer 3). `pupil record` against live
+   dependencies, replay from disk in CI. The largest build on this list and the one that makes
+   per-PR evaluation free and deterministic.
+8. **LLM judge** for semantic assertions, opt-in per scenario, with the deterministic
    pass/fail unaffected when the judge is unconfigured.
-7. **`pupil observe`** — mode 3. Point at Langfuse, a session/tag filter, and a time window;
-   apply metric thresholds to real traffic; write the same `RunResult` shape into the same
-   history store so `compare` works unchanged across driven and observed runs.
-8. **Driver registry + second driver.** Registry first, then whichever of RPC or
-   in-process/subprocess wrapping a real internal target needs.
-9. **Manual scoring** (`pupil score`) — completes Phase 1, but nothing else depends on it.
+9. **`pupil observe`** — mode 3. Point at a trace source, a session/tag filter, and a time
+   window; apply metric thresholds to real traffic; write the same `RunResult` shape into the
+   same history store so `compare` works unchanged across driven and observed runs.
+10. **Second `TraceSource`** — OTLP / Phoenix, proving the interface is real. See the
+    OTel caveat in section 3.
+11. **Driver registry + second driver.** Registry first, then whichever of RPC or
+    in-process/subprocess wrapping a real internal target needs.
+12. **Manual scoring** (`pupil score`) — completes Phase 1, but nothing else depends on it.
 
-## 5. Release plan and internal adoption point
+## 6. Release plan and internal adoption point
 
-| Release                     | Contents  | What it unlocks                                                                               |
-| --------------------------- | --------- | --------------------------------------------------------------------------------------------- |
-| **v0.2 — CI-gateable**      | steps 1–3 | Pupil runs in `iris-runtime` CI **advisory / non-blocking**. Real signal, no merge authority. |
-| **v0.3 — Agent-aware**      | steps 4–5 | **Internal adoption point.** Blocking merge gate on the IRIS repo.                            |
-| **v0.4 — Semantic + drift** | steps 6–7 | Production drift alerting on live IRIS; judge for free-form replies.                          |
-| **v0.5 — Multi-target**     | step 8    | Second internal target beyond IRIS; case for open-source launch.                              |
+| Release                            | Contents   | What it unlocks                                                                           |
+| ---------------------------------- | ---------- | ----------------------------------------------------------------------------------------- |
+| **v0.2 — CI-gateable**             | steps 1–4  | Pupil runs in `iris-core` CI **advisory / non-blocking**, and starts its own target.      |
+| **v0.3 — Agent-aware**             | steps 5–6  | **Internal adoption point.** Blocking merge gate.                                         |
+| **v0.4 — Cheap and deterministic** | step 7     | Per-PR runs cost ~nothing and stop flaking. Live mode splits to nightly.                  |
+| **v0.5 — Semantic + drift**        | steps 8–10 | Production drift alerting on live IRIS; judge for free-form replies; second trace source. |
+| **v0.6 — Multi-target**            | step 11    | Second internal target beyond IRIS; case for open-source launch.                          |
 
 **Answering "when do we start using it internally": start at v0.2, trust it at v0.3.**
 
@@ -216,6 +342,66 @@ expensive after:
   git, reviewable, PR-scoped) or CI-cached. Committed is the better fit for the
   "git-diffable, no backend" differentiator and should be the documented default.
 
+## 7. Worked example: evaluating iris-core
+
+Written against the IRIS interface documented in `phase-plan.md` — plain Node HTTP on
+`127.0.0.1:3000`, `GET /health`, `POST /sessions`, `POST /sessions/:id/message` blocking until
+reply and returning `{text}`, `POST /sessions/:id/reset`, Langfuse via LiteLLM, no OTel.
+**The `iris-core` repo was not in this session's scope, so the specific assertions below are a
+shape, not a reviewed suite.** Confirm against the real repo before building.
+
+### Where things sit
+
+```
+iris-core/
+├── docker-compose.ci.yaml     # agent + postgres + redis + tool stubs   (agent repo owns)
+├── .env.ci                    # test-profile config, no prod secrets    (agent repo owns)
+├── evals/
+│   ├── pupil.config.yaml      # target: block + driver + history        (agent repo owns)
+│   ├── routing/*.yaml         # scenarios, colocated with the agent     (agent repo owns)
+│   └── .pupil/baseline        # committed, reviewed in PRs              (agent repo owns)
+└── .github/workflows/pupil.yml
+```
+
+Pupil is a devDependency of `iris-core`. Nothing about `iris-core` lives in this repo.
+
+### The CI workflow, post-v0.2
+
+```yaml
+- run: npm ci
+- run: npx pupil run evals/ --config evals/pupil.config.yaml --baseline --strict --junit results.xml
+```
+
+Two lines, because `target:` handles compose up, the health poll, and teardown. Before v0.2
+this is the same thing written out by hand in the workflow with a `curl --retry` readiness loop.
+
+### What is worth asserting
+
+The generic shape, pending a look at the real repo: routing (did the right skill get picked),
+tool selection (`tool_called: calendar.create` exactly once, `tool_not_called: email.send`),
+clarification behaviour (did it ask a question when it already had enough information),
+`turns <= 2`, `cost_usd <= 0.05`, and no-leak assertions on the reply text.
+
+Only the last two are expressible today.
+
+### The blocker specific to iris-core
+
+`POST /sessions/:id/message` returns `{text}` and nothing else, so **tool calls are invisible
+black-box.** Every trajectory assertion above depends on trace evidence, which is why the
+Langfuse reader is on the critical path rather than in M7. Two ways to get it in CI without a
+network dependency or an account:
+
+1. **Self-hosted Langfuse container** in `docker-compose.ci.yaml`, Pupil reads it over
+   localhost. Works today with the existing API, heaviest option.
+2. **LiteLLM exports OTLP to a local collector or file** that Pupil reads directly. Lighter,
+   no database, and it forces the `TraceSource` abstraction to be real from day one rather than
+   retrofitted. Constrained by the OTel GenAI caveat in section 3 — the conventions are usable
+   but not pinnable.
+
+Option 2 is the better architectural bet; option 1 is the faster path to a first green run.
+Doing 1 first and 2 at step 10 is a defensible sequence, provided `TraceSource` is introduced
+at step 5 so option 1 does not harden into an assumption.
+
 ## Sources
 
 - [OpenAI to acquire Promptfoo](https://openai.com/index/openai-to-acquire-promptfoo/) ·
@@ -233,3 +419,7 @@ expensive after:
   [LLM red teaming guide](https://appsecsanta.com/ai-security-tools/llm-red-teaming)
 - [Detecting agent defects and drift in production](https://vadim.blog/agent-defect-drift-detection-production/) ·
   [Agent-first vs LLM-only platforms](https://latitude.so/blog/agent-first-comparison-guide-vs-braintrust)
+- [Promptfoo HTTP provider docs](https://www.promptfoo.dev/docs/providers/http/) — basis for the
+  "assumes the endpoint is already running" and session-handling claims in sections 3 and 4
+- [State of the OpenTelemetry GenAI semantic conventions, July 2026](https://john-hodge.com/blog/opentelemetry-genai-semantic-conventions/) ·
+  [GenAI convention overview](https://greptime.com/blogs/2026-05-09-opentelemetry-genai-semantic-conventions)
