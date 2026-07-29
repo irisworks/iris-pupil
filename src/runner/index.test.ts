@@ -220,6 +220,48 @@ describe("scenario runner", () => {
       Verdict.Skip,
     );
   });
+  it("marks manual scenarios as needs_review", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [],
+          manual: { required: true, criteria: ["correctness"], rubric: [] },
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.NeedsReview);
+    expect(result.scores.find((score) => score.name === "manual:correctness")?.verdict).toBe(
+      Verdict.NeedsReview,
+    );
+  });
+
+  it("emits skipped judge scores without requiring LLM judge configuration", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [],
+          judge: { enabled: true, prompt: "Judge this response.", rubric: [] },
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores.find((score) => score.name === "judge")).toMatchObject({
+      verdict: Verdict.Skip,
+      reason: "LLM judge not configured",
+    });
+  });
   it("retries transport errors and closes failed conversations", async () => {
     const closes: string[] = [];
     const disposals = { count: 0 };

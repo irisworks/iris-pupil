@@ -4,6 +4,8 @@ import {
   aggregateScores,
   evaluateAssertion,
   evaluateAssertions,
+  evaluateJudge,
+  evaluateManualScoring,
   evaluateThreshold,
   evaluateThresholds,
 } from "./index.js";
@@ -188,5 +190,33 @@ describe("threshold evaluator", () => {
     expect(score.verdict).toBe(Verdict.Skip);
     expect(score.reason).toMatch(/Cost metric is missing/);
     expect(aggregateScores([score])).toBe(Verdict.Pass);
+  });
+});
+
+describe("manual and judge evaluators", () => {
+  it("creates needs_review scores for required manual criteria", () => {
+    const scores = evaluateManualScoring({
+      required: true,
+      criteria: ["correctness", "tone"],
+      rubric: ["Answer is correct"],
+    });
+
+    expect(scores.map((score) => [score.name, score.verdict])).toEqual([
+      ["manual:correctness", Verdict.NeedsReview],
+      ["manual:tone", Verdict.NeedsReview],
+    ]);
+    expect(aggregateScores(scores)).toBe(Verdict.NeedsReview);
+  });
+
+  it("emits a skip score for configured judge blocks without LLM config", () => {
+    const scores = evaluateJudge({ enabled: true, prompt: "Judge this response.", rubric: [] });
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).toMatchObject({
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "LLM judge not configured",
+    });
+    expect(aggregateScores(scores)).toBe(Verdict.Pass);
   });
 });

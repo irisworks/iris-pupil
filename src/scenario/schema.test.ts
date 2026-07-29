@@ -56,6 +56,7 @@ describe("normalizeScenario", () => {
         thresholds: [{ metric: "latency_ms", max: 30000 }],
         manual: {
           required: true,
+          criteria: ["correctness", "safety"],
           prompt: "Check whether the booking is correct.",
           rubric: ["Calendar event created"],
         },
@@ -79,6 +80,7 @@ describe("normalizeScenario", () => {
       { type: "jsonpath", target: "response.raw", path: "$.calendar.eventId", exists: true },
     ]);
     expect(scenario.expect.thresholds).toEqual([{ metric: "latency_ms", max: 30000 }]);
+    expect(scenario.expect.manual?.criteria).toEqual(["correctness", "safety"]);
     expect(scenario.expect.manual?.rubric).toEqual(["Calendar event created"]);
     expect(scenario.expect.judge?.model).toBe("gpt-4.1-mini");
   });
