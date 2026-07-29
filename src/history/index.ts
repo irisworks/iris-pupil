@@ -25,6 +25,19 @@ export interface JsonRunHistoryStoreOptions {
   dir?: string;
 }
 
+function runIndexEntry(run: RunResult): RunIndexEntry {
+  return {
+    runId: run.runId,
+    verdict: run.verdict,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    scenarioCount: run.results.length,
+    summary: run.summary,
+    metadata: run.metadata,
+    path: `runs/${run.runId}.json`,
+  };
+}
+
 export class JsonRunHistoryStore {
   readonly type = "json";
   readonly dir: string;
@@ -75,20 +88,47 @@ export class JsonRunHistoryStore {
       throw error;
     }
 
-    const entry: RunIndexEntry = {
-      runId: run.runId,
-      verdict: run.verdict,
-      startedAt: run.startedAt,
-      completedAt: run.completedAt,
-      scenarioCount: run.results.length,
-      summary: run.summary,
-      metadata: run.metadata,
-      path: `runs/${run.runId}.json`,
-    };
+    const entry = runIndexEntry(run);
+
     await appendFile(this.indexPath, `${JSON.stringify(entry)}\n`, "utf-8");
     return { run, runPath, indexPath: this.indexPath };
   }
 
+  async updateRun(run: RunResult): Promise<StoredRun> {
+    const runPath = this.runPath(run.runId);
+    try {
+      const existing = await stat(runPath);
+      if (!existing.isFile()) {
+        throw new PupilError(`Run history path is not a file: ${runPath}`);
+      }
+    } catch (error) {
+      if (error instanceof PupilError) throw error;
+      throw new PupilError(
+        `Cannot update missing run ${run.runId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    await writeFile(runPath, `${JSON.stringify(run, null, 2)}\n`, "utf-8");
+
+    const entry = runIndexEntry(run);
+    const entries = await this.listRuns();
+    let replaced = false;
+    const updatedEntries = entries.map((current) => {
+      if (current.runId !== run.runId) return current;
+      replaced = true;
+      return entry;
+    });
+    if (!replaced) {
+      updatedEntries.push(entry);
+    }
+
+    await writeFile(
+      this.indexPath,
+      updatedEntries.map((current) => JSON.stringify(current)).join("\n") + "\n",
+      "utf-8",
+    );
+    return { run, runPath, indexPath: this.indexPath };
+  }
   async readRun(runId: string): Promise<RunResult> {
     try {
       const source = await readFile(this.runPath(runId), "utf-8");

@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
-import { PupilError, Verdict } from "../core/types.js";
+import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
 import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
@@ -41,6 +41,11 @@ function parsePositiveInteger(value: string, name: string): number {
     throw new InvalidArgumentError(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+function parseManualVerdict(value: string): Verdict.Pass | Verdict.Fail {
+  if (value === Verdict.Pass || value === Verdict.Fail) return value;
+  throw new InvalidArgumentError("manual score must be pass or fail");
 }
 
 function definedConfig(options: {
@@ -87,6 +92,22 @@ function formatSummary(summary: {
   errors: number;
 }): string {
   return `${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.needsReview} needs_review, ${summary.errors} errors`;
+}
+
+function summarizeResults(results: { verdict: Verdict }[]): {
+  total: number;
+  passed: number;
+  failed: number;
+  needsReview: number;
+  errors: number;
+} {
+  return {
+    total: results.length,
+    passed: results.filter((result) => result.verdict === Verdict.Pass).length,
+    failed: results.filter((result) => result.verdict === Verdict.Fail).length,
+    needsReview: results.filter((result) => result.verdict === Verdict.NeedsReview).length,
+    errors: results.filter((result) => result.verdict === Verdict.Error).length,
+  };
 }
 
 program
@@ -252,6 +273,67 @@ program
     console.log(`Baseline: ${baselineRunId}`);
   });
 
+program
+  .command("score")
+  .description("Apply a manual score to a saved scenario result.")
+  .argument("<runId>", "Run id to update")
+  .argument("<scenario>", "Scenario id to score")
+  .argument("<criterion>", "Manual criterion name")
+  .argument("<verdict>", "Manual verdict: pass or fail", parseManualVerdict)
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--note <note>", "Reviewer note for the manual score")
+  .action(
+    async (
+      runId: string,
+      scenarioId: string,
+      criterion: string,
+      verdict: Verdict.Pass | Verdict.Fail,
+      options: { historyDir: string; note?: string },
+    ) => {
+      const store = new JsonRunHistoryStore({ dir: options.historyDir });
+      const run = await store.readRun(runId);
+      const scenario = run.results.find((result) => result.scenarioId === scenarioId);
+      if (!scenario) {
+        throw new PupilError(`Scenario ${scenarioId} was not found in run ${runId}`);
+      }
+
+      const scoreName = `manual:${criterion}`;
+      const score = scenario.scores.find((candidate) => candidate.name === scoreName);
+      if (!score) {
+        throw new PupilError(
+          `Manual criterion ${criterion} was not found for scenario ${scenarioId}`,
+        );
+      }
+
+      score.verdict = verdict;
+      score.reason = options.note
+        ? `Manual score: ${verdict} - ${options.note}`
+        : `Manual score: ${verdict}`;
+      score.value = verdict;
+      const existingManual =
+        typeof score.metadata.manual === "object" && score.metadata.manual !== null
+          ? score.metadata.manual
+          : {};
+      score.metadata = {
+        ...score.metadata,
+        manual: {
+          ...existingManual,
+          criterion,
+          note: options.note,
+          scoredAt: new Date().toISOString(),
+        },
+      };
+
+      scenario.verdict = aggregateVerdicts(scenario.scores.map((current) => current.verdict));
+      run.verdict = aggregateVerdicts(run.results.map((result) => result.verdict));
+      run.summary = summarizeResults(run.results);
+      await store.updateRun(run);
+
+      console.log(
+        `Updated ${runId}/${scenarioId}/${criterion}: ${verdict}. Scenario verdict: ${scenario.verdict}. Run verdict: ${run.verdict}`,
+      );
+    },
+  );
 program
   .command("compare")
   .description("Compare two stored Pupil runs for regressions.")

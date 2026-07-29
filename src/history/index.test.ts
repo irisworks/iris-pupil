@@ -103,6 +103,37 @@ describe("JsonRunHistoryStore", () => {
     ]);
   });
 
+  it("updates existing run JSON and replaces the index entry", async () => {
+    const store = new JsonRunHistoryStore({ dir });
+    await store.writeRun(runResult());
+
+    const updated = runResult({
+      verdict: Verdict.NeedsReview,
+      summary: { total: 1, passed: 0, failed: 0, needsReview: 1, errors: 0 },
+      results: [
+        {
+          scenarioId: "scenario-1",
+          scenarioName: "Scenario 1",
+          verdict: Verdict.NeedsReview,
+          scores: [],
+          turns: [],
+          startedAt: "2026-07-23T00:00:00.000Z",
+          completedAt: "2026-07-23T00:00:01.000Z",
+          metrics: { turns: 1, latency_ms: 1000 },
+        },
+      ],
+    });
+    await store.updateRun(updated);
+
+    await expect(store.readRun("run-1")).resolves.toMatchObject({ verdict: "needs_review" });
+    const entries = await store.listRuns();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      runId: "run-1",
+      verdict: "needs_review",
+      summary: { needsReview: 1 },
+    });
+  });
   it("resolves the baseline pointer from disk", async () => {
     const store = new JsonRunHistoryStore({ dir });
     await store.writeRun(runResult());
