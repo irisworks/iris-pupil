@@ -79,6 +79,16 @@ function logProgress(event: RunnerProgressEvent): void {
   console.log(`ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`);
 }
 
+function formatSummary(summary: {
+  total: number;
+  passed: number;
+  failed: number;
+  needsReview: number;
+  errors: number;
+}): string {
+  return `${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.needsReview} needs_review, ${summary.errors} errors`;
+}
+
 program
   .name("pupil")
   .description("Continuous quality engineering for AI agents.")
@@ -169,6 +179,74 @@ program
       }
     },
   );
+
+program
+  .command("list")
+  .description("List saved Pupil runs from JSON history.")
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .action(async (options: { historyDir: string }) => {
+    const store = new JsonRunHistoryStore({ dir: options.historyDir });
+    const entries = await store.listRuns();
+    if (entries.length === 0) {
+      console.log("No saved runs found.");
+      return;
+    }
+
+    for (const entry of entries) {
+      console.log(
+        `${entry.runId} ${entry.verdict} ${entry.startedAt} scenarios=${entry.scenarioCount} (${formatSummary(entry.summary)})`,
+      );
+    }
+  });
+
+program
+  .command("report")
+  .description("Print a report for one saved Pupil run.")
+  .argument("<runId>", "Run id to report")
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .action(async (runId: string, options: { historyDir: string }) => {
+    const run = await new JsonRunHistoryStore({ dir: options.historyDir }).readRun(runId);
+    console.log(`Run ${run.runId}: ${run.verdict}`);
+    console.log(`Started: ${run.startedAt}`);
+    console.log(`Completed: ${run.completedAt}`);
+    console.log(`Summary: ${formatSummary(run.summary)}`);
+
+    for (const result of [...run.results].sort((a, b) =>
+      a.scenarioId.localeCompare(b.scenarioId),
+    )) {
+      console.log(
+        `- ${result.scenarioId}: ${result.verdict} (${result.metrics.turns ?? 0} turns, ${result.metrics.latency_ms ?? 0}ms)`,
+      );
+      for (const score of result.scores) {
+        console.log(
+          `  score ${score.name}: ${score.verdict}${score.reason ? ` - ${score.reason}` : ""}`,
+        );
+      }
+    }
+  });
+
+program
+  .command("baseline")
+  .description("Show or set the baseline run id.")
+  .argument("[runId]", "Run id to set as baseline")
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .action(async (runId: string | undefined, options: { historyDir: string }) => {
+    const store = new JsonRunHistoryStore({ dir: options.historyDir });
+    if (runId) {
+      await store.readRun(runId);
+      await store.setBaseline(runId);
+      console.log(`Baseline set to ${runId}`);
+      return;
+    }
+
+    const baselineRunId = await store.getBaselineRunId();
+    if (!baselineRunId) {
+      console.log("No baseline set.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Baseline: ${baselineRunId}`);
+  });
 
 program
   .command("compare")
