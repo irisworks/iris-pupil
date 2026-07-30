@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -134,6 +134,25 @@ describe("JsonRunHistoryStore", () => {
       summary: { needsReview: 1 },
     });
   });
+
+  it("leaves no temp files behind after updating a run", async () => {
+    const store = new JsonRunHistoryStore({ dir });
+    await store.writeRun(runResult());
+    await store.updateRun(runResult({ verdict: Verdict.NeedsReview }));
+
+    await expect(readdir(join(dir, "runs"))).resolves.toEqual(["run-1.json"]);
+    const files = await readdir(dir);
+    expect(files.filter((file) => file.includes(".tmp-"))).toEqual([]);
+  });
+
+  it("reports a missing run when updateRun targets unknown history", async () => {
+    const store = new JsonRunHistoryStore({ dir });
+
+    await expect(store.updateRun(runResult())).rejects.toThrow(
+      /Cannot update missing run run-1: .*run-1\.json does not exist/,
+    );
+  });
+
   it("resolves the baseline pointer from disk", async () => {
     const store = new JsonRunHistoryStore({ dir });
     await store.writeRun(runResult());
