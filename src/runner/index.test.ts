@@ -220,6 +220,79 @@ describe("scenario runner", () => {
       Verdict.Skip,
     );
   });
+  it("scores cost thresholds against Langfuse-enriched metrics", async () => {
+    const calls: string[] = [];
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "maxCostUsd", max: 0.01 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        langfuse: {
+          config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+          waitMs: 0,
+          fetchImpl: (async (url: string) => {
+            calls.push(String(url));
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ traces: [{ id: "trace-1", totalCost: 0.02 }] }),
+            };
+          }) as unknown as typeof fetch,
+        },
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(result.metrics.cost_usd).toBe(0.02);
+    expect(result.verdict).toBe(Verdict.Fail);
+    expect(result.scores.find((score) => score.name === "threshold:maxCostUsd")?.verdict).toBe(
+      Verdict.Fail,
+    );
+  });
+
+  it("enriches errored scenarios with the conversation session id", async () => {
+    const result = await runScenario(scenario(), {
+      driverFactory: () =>
+        new FakeDriver(new RestDriverError(400, { error: "bad request" }), [], { count: 0 }),
+      langfuse: {
+        config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+        waitMs: 0,
+        fetchImpl: (async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            traces: [{ id: "trace-err", url: "http://langfuse.local/t/trace-err" }],
+          }),
+        })) as unknown as typeof fetch,
+      },
+    });
+
+    expect(result.verdict).toBe(Verdict.Error);
+    expect(typeof result.metadata?.sessionId).toBe("string");
+    expect(result.metadata?.langfuse).toMatchObject({
+      status: "enriched",
+      traceId: "trace-err",
+      traceUrl: "http://langfuse.local/t/trace-err",
+    });
+  });
+
+  it("omits metadata and skips enrichment when Langfuse is disabled", async () => {
+    const result = await runScenarios([scenario()], {
+      driverFactory: () =>
+        new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      langfuse: false,
+    });
+
+    expect(result.metadata.langfuse).toBeUndefined();
+    expect(result.results[0]?.metadata?.langfuse).toBeUndefined();
+    expect(result.results[0]?.metrics.cost_usd).toBeUndefined();
+  });
+
   it("retries transport errors and closes failed conversations", async () => {
     const closes: string[] = [];
     const disposals = { count: 0 };
