@@ -169,7 +169,7 @@ describe("RestDriver", () => {
   it("times out hanging requests", async () => {
     mock = createIrisMockAgent({ port: 0 });
     const address = await mock.listen();
-    const driver = irisDriver(`http://${address.host}:${address.port}`, { timeoutMs: 50 });
+    const driver = irisDriver(`http://${address.host}:${address.port}`, { timeoutMs: 250 });
     const conversation = await driver.createConversation({ threadTs: "thread-1" });
 
     await expect(driver.send(conversation, "__hang__")).rejects.toThrow(/timed out/);
