@@ -85,6 +85,16 @@ describe("normalizeScenario", () => {
     expect(scenario.expect.judge?.model).toBe("gpt-4.1-mini");
   });
 
+  it("defaults manual criteria to a single overall criterion", () => {
+    const scenario = normalizeScenario({
+      id: "manual-default",
+      input: "Hello",
+      expect: { manual: { required: true } },
+    });
+
+    expect(scenario.expect.manual?.criteria).toEqual(["overall"]);
+  });
+
   it("rejects invalid jsonpath assertions with file and path context", () => {
     expect(() =>
       normalizeScenario(
