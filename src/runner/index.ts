@@ -19,6 +19,7 @@ import {
   type RestDriverResponse,
 } from "../driver/index.js";
 import { aggregateScores, evaluateAssertions, evaluateThresholds } from "../eval/index.js";
+import { enrichRunWithLangfuse } from "../langfuse/index.js";
 
 export interface RunnerDriver {
   createConversation(
@@ -58,10 +59,16 @@ export interface RunnerDriverContext {
   config: Record<string, unknown>;
 }
 
+interface ScenarioAttemptResult {
+  turns: TurnRecord[];
+  sessionId?: string;
+}
+
 class ScenarioAttemptError extends Error {
   constructor(
     readonly cause: unknown,
     readonly turns: TurnRecord[],
+    readonly sessionId?: string,
   ) {
     super(errorMessage(cause));
     this.name = "ScenarioAttemptError";
@@ -195,7 +202,7 @@ async function executeAttempt(
   driver: RunnerDriver,
   context: RunnerDriverContext,
   timeoutMs: number,
-): Promise<TurnRecord[]> {
+): Promise<ScenarioAttemptResult> {
   const turns: TurnRecord[] = [];
   let conversation: RestConversation | undefined;
   const timeout = setTimeout(() => driver.dispose?.(), timeoutMs);
@@ -234,14 +241,14 @@ async function executeAttempt(
         record.error = errorMessage(error);
         record.completedAt = now();
         record.latencyMs = Date.parse(record.completedAt) - Date.parse(startedAt);
-        throw new ScenarioAttemptError(error, turns);
+        throw new ScenarioAttemptError(error, turns, conversation?.id);
       }
     }
 
-    return turns;
+    return { turns, sessionId: conversation.id };
   } catch (error) {
     if (error instanceof ScenarioAttemptError) throw error;
-    throw new ScenarioAttemptError(error, turns);
+    throw new ScenarioAttemptError(error, turns, conversation?.id);
   } finally {
     clearTimeout(timeout);
     if (conversation) {
@@ -280,7 +287,8 @@ export async function runScenario(
       options.driverFactory?.(scenario, context) ?? createDriverForScenario(scenario, context);
 
     try {
-      const turns = await executeAttempt(scenario, driver, context, timeoutMs);
+      const attemptResult = await executeAttempt(scenario, driver, context, timeoutMs);
+      const turns = attemptResult.turns;
       const completedAt = now();
       const baseResult: ScenarioResult = {
         scenarioId: scenario.id,
@@ -295,6 +303,7 @@ export async function runScenario(
           latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
           retries: attempt - 1,
         },
+        metadata: attemptResult.sessionId ? { sessionId: attemptResult.sessionId } : {},
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
       const lastTurn = turns.at(-1);
@@ -382,7 +391,7 @@ export async function runScenarios(
   );
 
   const completedAt = now();
-  return {
+  const run: RunResult = {
     runId,
     verdict: aggregateVerdicts(results.map((result) => result.verdict)),
     results,
@@ -391,4 +400,6 @@ export async function runScenarios(
     summary: summarize(results),
     metadata: options.metadata ?? {},
   };
+
+  return enrichRunWithLangfuse(run);
 }

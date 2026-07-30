@@ -139,6 +139,7 @@ export interface ScenarioResult {
   startedAt: string;
   completedAt: string;
   metrics: Record<string, number>;
+  metadata?: Record<string, unknown>;
   sourceFile?: string;
 }
 
