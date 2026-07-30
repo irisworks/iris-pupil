@@ -25,7 +25,7 @@ function irisDriver(
 ) {
   return new RestDriver({
     baseUrl,
-    timeoutMs: 500,
+    timeoutMs: 2_000,
     retries: 0,
     createConversation: {
       method: "POST",
@@ -169,10 +169,12 @@ describe("RestDriver", () => {
   it("times out hanging requests", async () => {
     mock = createIrisMockAgent({ port: 0 });
     const address = await mock.listen();
-    const driver = irisDriver(`http://${address.host}:${address.port}`, { timeoutMs: 250 });
-    const conversation = await driver.createConversation({ threadTs: "thread-1" });
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const setupDriver = irisDriver(baseUrl);
+    const timeoutDriver = irisDriver(baseUrl, { timeoutMs: 50 });
+    const conversation = await setupDriver.createConversation({ threadTs: "thread-1" });
 
-    await expect(driver.send(conversation, "__hang__")).rejects.toThrow(/timed out/);
+    await expect(timeoutDriver.send(conversation, "__hang__")).rejects.toThrow(/timed out/);
   });
 
   it("aborts in-flight requests during disposal", async () => {

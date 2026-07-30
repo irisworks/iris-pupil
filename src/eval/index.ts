@@ -2,6 +2,8 @@ import {
   aggregateVerdicts,
   PupilError,
   type AssertionCheck,
+  type JudgeConfig,
+  type ManualScoringConfig,
   type Score,
   type ScenarioResult,
   type ThresholdCheck,
@@ -168,6 +170,40 @@ export function evaluateAssertions(
 
 export function aggregateScores(scores: readonly Score[]): Verdict {
   return aggregateVerdicts(scores.map((score) => score.verdict));
+}
+
+export function manualScoreName(criterion: string): string {
+  return `manual:${criterion}`;
+}
+
+export function evaluateManualScoring(manual: ManualScoringConfig | undefined): Score[] {
+  if (!manual?.required) return [];
+
+  return manual.criteria.map((criterion) => ({
+    name: manualScoreName(criterion),
+    verdict: Verdict.NeedsReview,
+    reason: "Manual score required",
+    metadata: {
+      manual: {
+        criterion,
+        prompt: manual.prompt,
+        rubric: manual.rubric,
+      },
+    },
+  }));
+}
+
+export function evaluateJudge(judge: JudgeConfig | undefined): Score[] {
+  if (!judge?.enabled) return [];
+
+  return [
+    {
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "LLM judge not configured",
+      metadata: { judge },
+    },
+  ];
 }
 
 export interface ThresholdEvaluationContext {

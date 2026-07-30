@@ -18,7 +18,13 @@ import {
   type RestDriverConfigOverrides,
   type RestDriverResponse,
 } from "../driver/index.js";
-import { aggregateScores, evaluateAssertions, evaluateThresholds } from "../eval/index.js";
+import {
+  aggregateScores,
+  evaluateAssertions,
+  evaluateJudge,
+  evaluateManualScoring,
+  evaluateThresholds,
+} from "../eval/index.js";
 import {
   enrichScenarioWithLangfuse,
   summarizeLangfuseRun,
@@ -330,8 +336,16 @@ export async function runScenario(
       const thresholdScores = evaluateThresholds(scenario.expect.thresholds, {
         metrics: baseResult.metrics,
       });
+      const manualScores = evaluateManualScoring(scenario.expect.manual);
+      const judgeScores = evaluateJudge(scenario.expect.judge);
       const turnScores = turns.flatMap((turn) => turn.assertions);
-      const scores = [...turnScores, ...scenarioScores, ...thresholdScores];
+      const scores = [
+        ...turnScores,
+        ...scenarioScores,
+        ...thresholdScores,
+        ...manualScores,
+        ...judgeScores,
+      ];
       const verdict = aggregateScores(scores);
       const result: ScenarioResult = { ...baseResult, verdict, scores };
       options.progress?.({

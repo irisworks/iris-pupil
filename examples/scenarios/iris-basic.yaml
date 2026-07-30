@@ -19,4 +19,6 @@ expect:
       max: 30000
   manual:
     required: true
+    criteria:
+      - overall
     prompt: Confirm the reply is useful and on-task.
