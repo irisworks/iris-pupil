@@ -3,9 +3,47 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { Verdict, type RunResult } from "../core/types.js";
+import { JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 
 const cliPath = join(process.cwd(), "dist", "cli", "index.js");
+
+function runResult(runId: string, verdict: Verdict = Verdict.Pass): RunResult {
+  return {
+    runId,
+    verdict,
+    results: [
+      {
+        scenarioId: "scenario-1",
+        scenarioName: "Scenario 1",
+        verdict,
+        scores: [
+          {
+            name: "assertion:contains:response.text",
+            verdict,
+            reason: "Expected response.text to contain ok",
+            metadata: {},
+          },
+        ],
+        turns: [],
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:00:01.000Z",
+        metrics: { turns: 1, latency_ms: 1000 },
+      },
+    ],
+    startedAt: "2026-07-27T00:00:00.000Z",
+    completedAt: "2026-07-27T00:00:01.000Z",
+    summary: {
+      total: 1,
+      passed: verdict === Verdict.Pass ? 1 : 0,
+      failed: verdict === Verdict.Fail ? 1 : 0,
+      needsReview: verdict === Verdict.NeedsReview ? 1 : 0,
+      errors: verdict === Verdict.Error ? 1 : 0,
+    },
+    metadata: {},
+  };
+}
 
 async function waitForCli(child: ReturnType<typeof spawn>): Promise<{
   code: number | null;
@@ -61,6 +99,10 @@ describe("pupil CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Usage: pupil");
+    expect(result.stdout).toContain("list");
+    expect(result.stdout).toContain("report");
+    expect(result.stdout).toContain("baseline");
+    expect(result.stdout).toContain("compare");
     expect(result.stderr.trim()).toBe("");
   });
 
@@ -254,6 +296,78 @@ describe("pupil CLI", () => {
       expect(output.stderr).toContain("Failed to save run history:");
     } finally {
       await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lists, reports, and manages baseline from saved history", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-history-cli-"));
+    const historyDir = join(dir, "history");
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+
+    try {
+      await store.writeRun(runResult("run-pass"));
+      await store.writeRun(runResult("run-fail", Verdict.Fail));
+
+      const list = spawnSync(process.execPath, [cliPath, "list", "--history-dir", historyDir], {
+        encoding: "utf-8",
+      });
+      expect(list.status).toBe(0);
+      expect(list.stderr).toBe("");
+      expect(list.stdout).toContain("run-pass pass 2026-07-27T00:00:00.000Z scenarios=1");
+      expect(list.stdout).toContain("run-fail fail 2026-07-27T00:00:00.000Z scenarios=1");
+
+      const report = spawnSync(
+        process.execPath,
+        [cliPath, "report", "run-fail", "--history-dir", historyDir],
+        {
+          encoding: "utf-8",
+        },
+      );
+      expect(report.status).toBe(0);
+      expect(report.stderr).toBe("");
+      expect(report.stdout).toContain("Run run-fail: fail");
+      expect(report.stdout).toContain("Summary: 0/1 passed, 1 failed, 0 needs_review, 0 errors");
+      expect(report.stdout).toContain("score assertion:contains:response.text: fail");
+
+      const passingReport = spawnSync(
+        process.execPath,
+        [cliPath, "report", "run-pass", "--history-dir", historyDir],
+        {
+          encoding: "utf-8",
+        },
+      );
+      expect(passingReport.status).toBe(0);
+      expect(passingReport.stdout).toContain("Run run-pass: pass");
+
+      const missingBaseline = spawnSync(
+        process.execPath,
+        [cliPath, "baseline", "--history-dir", historyDir],
+        {
+          encoding: "utf-8",
+        },
+      );
+      expect(missingBaseline.status).toBe(1);
+      expect(missingBaseline.stdout).toContain("No baseline set.");
+
+      const setBaseline = spawnSync(
+        process.execPath,
+        [cliPath, "baseline", "run-pass", "--history-dir", historyDir],
+        { encoding: "utf-8" },
+      );
+      expect(setBaseline.status).toBe(0);
+      expect(setBaseline.stdout).toContain("Baseline set to run-pass");
+
+      const showBaseline = spawnSync(
+        process.execPath,
+        [cliPath, "baseline", "--history-dir", historyDir],
+        {
+          encoding: "utf-8",
+        },
+      );
+      expect(showBaseline.status).toBe(0);
+      expect(showBaseline.stdout).toContain("Baseline: run-pass");
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
