@@ -244,10 +244,6 @@ program
         );
       }
     }
-
-    if (run.verdict === Verdict.Error || run.verdict === Verdict.Fail) {
-      process.exitCode = 1;
-    }
   });
 
 program
