@@ -58,6 +58,7 @@ const thresholdSchema = z
 const manualSchema = z
   .object({
     required: z.boolean().default(true),
+    criteria: z.array(z.string().min(1)).default(["overall"]),
     prompt: z.string().optional(),
     rubric: z.array(z.string()).default([]),
   })

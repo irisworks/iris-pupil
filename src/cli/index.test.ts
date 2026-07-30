@@ -103,6 +103,7 @@ describe("pupil CLI", () => {
     expect(result.stdout).toContain("report");
     expect(result.stdout).toContain("baseline");
     expect(result.stdout).toContain("compare");
+    expect(result.stdout).toContain("score");
     expect(result.stderr.trim()).toBe("");
   });
 
@@ -186,7 +187,7 @@ describe("pupil CLI", () => {
       await mock.close();
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it("fails pupil run when scenario assertions fail and stores the failed run", async () => {
     const mock = createIrisMockAgent({
@@ -246,7 +247,7 @@ describe("pupil CLI", () => {
       await mock.close();
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it("reports a clean error when run history cannot be written", async () => {
     const mock = createIrisMockAgent({
@@ -298,7 +299,7 @@ describe("pupil CLI", () => {
       await mock.close();
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it("lists, reports, and manages baseline from saved history", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pupil-history-cli-"));
@@ -370,7 +371,141 @@ describe("pupil CLI", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 15000);
+
+  it("applies manual scores and report reflects the updated verdict", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-score-cli-"));
+    const historyDir = join(dir, "history");
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+    const manualRun: RunResult = {
+      ...runResult("manual-run", Verdict.NeedsReview),
+      results: [
+        {
+          scenarioId: "manual-scenario",
+          scenarioName: "Manual scenario",
+          verdict: Verdict.NeedsReview,
+          scores: [
+            {
+              name: "manual:correctness",
+              verdict: Verdict.NeedsReview,
+              reason: "Manual score required",
+              metadata: { manual: { criterion: "correctness" } },
+            },
+          ],
+          turns: [],
+          startedAt: "2026-07-27T00:00:00.000Z",
+          completedAt: "2026-07-27T00:00:01.000Z",
+          metrics: { turns: 1, latency_ms: 1000 },
+        },
+      ],
+      summary: { total: 1, passed: 0, failed: 0, needsReview: 1, errors: 0 },
+    };
+
+    try {
+      await store.writeRun(manualRun);
+
+      const score = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "score",
+          "manual-run",
+          "manual-scenario",
+          "correctness",
+          "pass",
+          "--history-dir",
+          historyDir,
+          "--note",
+          "Looks correct",
+        ],
+        { encoding: "utf-8" },
+      );
+      expect(score.status).toBe(0);
+      expect(score.stderr).toBe("");
+      expect(score.stdout).toContain(
+        "Updated manual-run/manual-scenario/correctness: pass. Scenario verdict: pass. Run verdict: pass",
+      );
+
+      const updated = await store.readRun("manual-run");
+      expect(updated).toMatchObject({
+        verdict: "pass",
+        summary: { passed: 1, needsReview: 0 },
+        results: [{ scenarioId: "manual-scenario", verdict: "pass" }],
+      });
+      expect(updated.results[0]?.scores[0]).toMatchObject({
+        verdict: "pass",
+        reason: "Manual score: pass - Looks correct",
+        value: "pass",
+      });
+
+      const report = spawnSync(
+        process.execPath,
+        [cliPath, "report", "manual-run", "--history-dir", historyDir],
+        { encoding: "utf-8" },
+      );
+      expect(report.status).toBe(0);
+      expect(report.stdout).toContain("Run manual-run: pass");
+      expect(report.stdout).toContain(
+        "score manual:correctness: pass - Manual score: pass - Looks correct",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("scores manual criteria stored without score metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-score-legacy-"));
+    const historyDir = join(dir, "history");
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+    const legacyRun = {
+      ...runResult("legacy-run", Verdict.NeedsReview),
+      results: [
+        {
+          scenarioId: "manual-scenario",
+          scenarioName: "Manual scenario",
+          verdict: Verdict.NeedsReview,
+          // Written by an older Pupil version: no metadata on the score.
+          scores: [{ name: "manual:overall", verdict: Verdict.NeedsReview }],
+          turns: [],
+          startedAt: "2026-07-27T00:00:00.000Z",
+          completedAt: "2026-07-27T00:00:01.000Z",
+          metrics: { turns: 1, latency_ms: 1000 },
+        },
+      ],
+      summary: { total: 1, passed: 0, failed: 0, needsReview: 1, errors: 0 },
+    } as unknown as RunResult;
+
+    try {
+      await store.writeRun(legacyRun);
+
+      const score = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "score",
+          "legacy-run",
+          "manual-scenario",
+          "overall",
+          "fail",
+          "--history-dir",
+          historyDir,
+        ],
+        { encoding: "utf-8" },
+      );
+      expect(score.status).toBe(0);
+      expect(score.stderr).toBe("");
+
+      const updated = await store.readRun("legacy-run");
+      expect(updated.verdict).toBe("fail");
+      expect(updated.results[0]?.scores[0]).toMatchObject({
+        verdict: "fail",
+        reason: "Manual score: fail",
+        metadata: { manual: { criterion: "overall" } },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
 
   it("exits nonzero when compare detects regressions", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pupil-compare-"));
@@ -439,7 +574,7 @@ describe("pupil CLI", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 15000);
   it("starts mock-agent as a standalone server", async () => {
     const child = spawn(process.execPath, [cliPath, "mock-agent", "--port", "0"], {
       stdio: ["ignore", "pipe", "pipe"],

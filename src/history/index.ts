@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { PupilError, type RunResult, type Verdict } from "../core/types.js";
 
@@ -23,6 +23,38 @@ export interface StoredRun {
 
 export interface JsonRunHistoryStoreOptions {
   dir?: string;
+}
+
+let atomicWriteSequence = 0;
+
+/**
+ * Replace a file in one step so an interrupted write cannot leave the run JSON
+ * or the run index truncated. Full-file rewrites are the only way updateRun can
+ * touch history, and index.jsonl is the sole listing source.
+ */
+async function writeFileAtomic(path: string, contents: string): Promise<void> {
+  atomicWriteSequence += 1;
+  const tempPath = `${path}.tmp-${process.pid}-${atomicWriteSequence}`;
+  try {
+    await writeFile(tempPath, contents, "utf-8");
+    await rename(tempPath, path);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+function runIndexEntry(run: RunResult): RunIndexEntry {
+  return {
+    runId: run.runId,
+    verdict: run.verdict,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    scenarioCount: run.results.length,
+    summary: run.summary,
+    metadata: run.metadata,
+    path: `runs/${run.runId}.json`,
+  };
 }
 
 export class JsonRunHistoryStore {
@@ -75,17 +107,47 @@ export class JsonRunHistoryStore {
       throw error;
     }
 
-    const entry: RunIndexEntry = {
-      runId: run.runId,
-      verdict: run.verdict,
-      startedAt: run.startedAt,
-      completedAt: run.completedAt,
-      scenarioCount: run.results.length,
-      summary: run.summary,
-      metadata: run.metadata,
-      path: `runs/${run.runId}.json`,
-    };
+    const entry = runIndexEntry(run);
+
     await appendFile(this.indexPath, `${JSON.stringify(entry)}\n`, "utf-8");
+    return { run, runPath, indexPath: this.indexPath };
+  }
+
+  async updateRun(run: RunResult): Promise<StoredRun> {
+    const runPath = this.runPath(run.runId);
+    try {
+      const existing = await stat(runPath);
+      if (!existing.isFile()) {
+        throw new PupilError(`Run history path is not a file: ${runPath}`);
+      }
+    } catch (error) {
+      if (error instanceof PupilError) throw error;
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        throw new PupilError(`Cannot update missing run ${run.runId}: ${runPath} does not exist`);
+      }
+      throw new PupilError(
+        `Failed to inspect run ${run.runId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    await writeFileAtomic(runPath, `${JSON.stringify(run, null, 2)}\n`);
+
+    const entry = runIndexEntry(run);
+    const entries = await this.listRuns();
+    let replaced = false;
+    const updatedEntries = entries.map((current) => {
+      if (current.runId !== run.runId) return current;
+      replaced = true;
+      return entry;
+    });
+    if (!replaced) {
+      updatedEntries.push(entry);
+    }
+
+    await writeFileAtomic(
+      this.indexPath,
+      `${updatedEntries.map((current) => JSON.stringify(current)).join("\n")}\n`,
+    );
     return { run, runPath, indexPath: this.indexPath };
   }
 
