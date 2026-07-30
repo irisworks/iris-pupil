@@ -441,6 +441,61 @@ describe("pupil CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 15000);
+
+  it("scores manual criteria stored without score metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-score-legacy-"));
+    const historyDir = join(dir, "history");
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+    const legacyRun = {
+      ...runResult("legacy-run", Verdict.NeedsReview),
+      results: [
+        {
+          scenarioId: "manual-scenario",
+          scenarioName: "Manual scenario",
+          verdict: Verdict.NeedsReview,
+          // Written by an older Pupil version: no metadata on the score.
+          scores: [{ name: "manual:overall", verdict: Verdict.NeedsReview }],
+          turns: [],
+          startedAt: "2026-07-27T00:00:00.000Z",
+          completedAt: "2026-07-27T00:00:01.000Z",
+          metrics: { turns: 1, latency_ms: 1000 },
+        },
+      ],
+      summary: { total: 1, passed: 0, failed: 0, needsReview: 1, errors: 0 },
+    } as unknown as RunResult;
+
+    try {
+      await store.writeRun(legacyRun);
+
+      const score = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "score",
+          "legacy-run",
+          "manual-scenario",
+          "overall",
+          "fail",
+          "--history-dir",
+          historyDir,
+        ],
+        { encoding: "utf-8" },
+      );
+      expect(score.status).toBe(0);
+      expect(score.stderr).toBe("");
+
+      const updated = await store.readRun("legacy-run");
+      expect(updated.verdict).toBe("fail");
+      expect(updated.results[0]?.scores[0]).toMatchObject({
+        verdict: "fail",
+        reason: "Manual score: fail",
+        metadata: { manual: { criterion: "overall" } },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("exits nonzero when compare detects regressions", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pupil-compare-"));
     const historyDir = join(dir, "history");
