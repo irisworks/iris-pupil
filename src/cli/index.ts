@@ -310,12 +310,15 @@ program
         ? `Manual score: ${verdict} - ${options.note}`
         : `Manual score: ${verdict}`;
       score.value = verdict;
+      // Scores are parsed from stored JSON, so metadata may be absent in older
+      // or hand-edited run files even though the type marks it as required.
+      const existingMetadata = score.metadata ?? {};
       const existingManual =
-        typeof score.metadata.manual === "object" && score.metadata.manual !== null
-          ? score.metadata.manual
+        typeof existingMetadata.manual === "object" && existingMetadata.manual !== null
+          ? existingMetadata.manual
           : {};
       score.metadata = {
-        ...score.metadata,
+        ...existingMetadata,
         manual: {
           ...existingManual,
           criterion,
