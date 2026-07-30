@@ -73,6 +73,7 @@ export interface ThresholdCheck {
 
 export interface ManualScoringConfig {
   required: boolean;
+  criteria: string[];
   prompt?: string;
   rubric?: string[];
 }
