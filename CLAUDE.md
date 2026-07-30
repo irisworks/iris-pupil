@@ -19,7 +19,13 @@ node dist/cli/index.js discover examples/scenarios
 node dist/cli/index.js mock-agent --port 5050
 ```
 
-During local development, run the CLI through `node dist/cli/index.js` after `npm run build`. Default project settings live in `pupil.config.yaml`; `src/core/config.ts` resolves `${ENV_VAR}` and `${ENV_VAR:-default}` references before validation, matching bash semantics: plain `${ENV_VAR}` substitutes a set-but-empty value as an empty string and only errors if the variable is genuinely unset, while `${ENV_VAR:-default}` falls back to `default` whenever the variable is unset *or* empty.
+During local development, run the CLI through `node dist/cli/index.js` after `npm run build`. Default project settings live in `pupil.config.yaml`; `src/core/config.ts` resolves `${ENV_VAR}` and `${ENV_VAR:-default}` references before validation, matching bash semantics: plain `${ENV_VAR}` substitutes a set-but-empty value as an empty string and only errors if the variable is genuinely unset, while `${ENV_VAR:-default}` falls back to `default` whenever the variable is unset _or_ empty.
+
+## Langfuse Enrichment
+
+`pupil run` enriches each scenario result with Langfuse trace evidence (trace id/url, cost, tokens, tool calls) as soon as the scenario finishes, so cost and token thresholds are scored against the enriched metrics. It is best-effort: lookup failures are recorded in `metadata.langfuse` and never change a run's verdict.
+
+Configuration comes from `pupil.config.yaml`'s `langfuse` block first, then the environment (`LANGFUSE_HOST` — `LANGFUSE_BASE_URL` is also accepted — plus `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`). `enabled: false` or `pupil run --no-langfuse` disables it. Because Langfuse ingestion is asynchronous, lookups poll for up to `langfuse.waitMs` (default 10s) before recording a skip.
 
 ## What Pupil Is
 

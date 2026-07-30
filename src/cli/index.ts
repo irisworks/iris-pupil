@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
+import { loadPupilConfig } from "../core/config.js";
 import { PupilError, Verdict } from "../core/types.js";
 import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
@@ -128,6 +129,7 @@ program
     1,
   )
   .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
   .action(
     async (
       path: string,
@@ -139,15 +141,18 @@ program
         retries: number;
         concurrency: number;
         historyDir: string;
+        langfuse: boolean;
       },
     ) => {
       const scenarios = await loadScenarios(path);
+      const config = await loadPupilConfig();
       const result = await runScenarios(scenarios, {
         timeoutMs: options.timeoutMs,
         retries: options.retries,
         concurrency: options.concurrency,
         driverConfig: definedConfig(options),
         progress: logProgress,
+        langfuse: options.langfuse === false ? false : { settings: config.langfuse },
       });
 
       let stored;
