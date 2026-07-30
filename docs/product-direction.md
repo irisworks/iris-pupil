@@ -60,11 +60,11 @@ Phase 1 is roughly 80% built. `main` = `281a12c`; 4,600 lines of TypeScript, 102
    auto-compare, no `--strict`.
 
    Concretely: **`npm run check` is currently red on `main`.** `prettier --check` fails on
-   `CLAUDE.md` and `src/history/compare.ts`. Verified by stashing all local changes at
-   `281a12c` — pre-existing, and it reached `main` because no workflow enforces the gate.
+   `CLAUDE.md`. Verified against a clean tree at `281a12c` — pre-existing, and it reached
+   `main` because no workflow enforces the gate.
 
 5. **`pupil.config.yaml` is dead config.** `loadPupilConfig()` is implemented, tested, and
-   exported — and called by no CLI command. Every scenario file hardcodes
+   exported — and called by no CLI command. The `examples/iris/*.yaml` scenarios hardcode
    `baseUrl: http://127.0.0.1:3000`.
 6. **`RunResult.metadata` is an unpopulated free-form bag.** Section 4 needs target identity
    (environment, deployed version, mode, fixture set) in there for baselines to mean anything.

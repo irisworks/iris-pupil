@@ -141,8 +141,8 @@ Not built, despite appearing in the type model:
 
 ## 5. Gotchas — read before you lose an afternoon
 
-**`npm run check` is red on `main`.** `prettier --check` fails on `CLAUDE.md` and
-`src/history/compare.ts`. Pre-existing, unrelated to your change. Fix with
+**`npm run check` is red on `main`.** `prettier --check` fails on `CLAUDE.md`.
+Pre-existing, unrelated to your change. Fix with
 `npm run format`, or ignore it and check only your own files:
 `npx prettier --check <your-files>`. It reached `main` because no workflow enforces the gate.
 
@@ -161,8 +161,8 @@ default to a percentage band is a good first contribution.
 
 **`pupil.config.yaml` is not loaded by anything.** `loadPupilConfig()` in `src/core/config.ts`
 is implemented, tested, and exported — and called by no CLI command. `run` takes flags only,
-which is why every scenario file hardcodes `baseUrl: http://127.0.0.1:3000`. Don't assume config
-works because the file exists.
+which is why the `examples/iris/*.yaml` scenarios hardcode `baseUrl: http://127.0.0.1:3000`.
+Don't assume config works because the file exists.
 
 **`RunResult.metadata` is an unpopulated free-form bag.** Nothing writes to it yet. It needs to
 carry target identity (environment, deployed version, mode, fixture set) before baselines across
