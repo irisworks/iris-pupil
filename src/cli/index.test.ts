@@ -324,11 +324,21 @@ describe("pupil CLI", () => {
           encoding: "utf-8",
         },
       );
-      expect(report.status).toBe(1);
+      expect(report.status).toBe(0);
       expect(report.stderr).toBe("");
       expect(report.stdout).toContain("Run run-fail: fail");
       expect(report.stdout).toContain("Summary: 0/1 passed, 1 failed, 0 needs_review, 0 errors");
       expect(report.stdout).toContain("score assertion:contains:response.text: fail");
+
+      const passingReport = spawnSync(
+        process.execPath,
+        [cliPath, "report", "run-pass", "--history-dir", historyDir],
+        {
+          encoding: "utf-8",
+        },
+      );
+      expect(passingReport.status).toBe(0);
+      expect(passingReport.stdout).toContain("Run run-pass: pass");
 
       const missingBaseline = spawnSync(
         process.execPath,
@@ -361,6 +371,7 @@ describe("pupil CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
   it("exits nonzero when compare detects regressions", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pupil-compare-"));
     const historyDir = join(dir, "history");
