@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig } from "../core/config.js";
-import { PupilError, Verdict } from "../core/types.js";
+import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
 import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
@@ -44,6 +44,11 @@ function parsePositiveInteger(value: string, name: string): number {
   return parsed;
 }
 
+function parseManualVerdict(value: string): Verdict.Pass | Verdict.Fail {
+  if (value === Verdict.Pass || value === Verdict.Fail) return value;
+  throw new InvalidArgumentError("manual score must be pass or fail");
+}
+
 function definedConfig(options: {
   baseUrl?: string;
   bearerToken?: string;
@@ -78,6 +83,32 @@ function logProgress(event: RunnerProgressEvent): void {
     return;
   }
   console.log(`ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`);
+}
+
+function formatSummary(summary: {
+  total: number;
+  passed: number;
+  failed: number;
+  needsReview: number;
+  errors: number;
+}): string {
+  return `${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.needsReview} needs_review, ${summary.errors} errors`;
+}
+
+function summarizeResults(results: { verdict: Verdict }[]): {
+  total: number;
+  passed: number;
+  failed: number;
+  needsReview: number;
+  errors: number;
+} {
+  return {
+    total: results.length,
+    passed: results.filter((result) => result.verdict === Verdict.Pass).length,
+    failed: results.filter((result) => result.verdict === Verdict.Fail).length,
+    needsReview: results.filter((result) => result.verdict === Verdict.NeedsReview).length,
+    errors: results.filter((result) => result.verdict === Verdict.Error).length,
+  };
 }
 
 program
@@ -175,6 +206,138 @@ program
     },
   );
 
+program
+  .command("list")
+  .description("List saved Pupil runs from JSON history.")
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .action(async (options: { historyDir: string }) => {
+    const store = new JsonRunHistoryStore({ dir: options.historyDir });
+    const entries = await store.listRuns();
+    if (entries.length === 0) {
+      console.log("No saved runs found.");
+      return;
+    }
+
+    for (const entry of entries) {
+      console.log(
+        `${entry.runId} ${entry.verdict} ${entry.startedAt} scenarios=${entry.scenarioCount} (${formatSummary(entry.summary)})`,
+      );
+    }
+  });
+
+program
+  .command("report")
+  .description("Print a report for one saved Pupil run.")
+  .argument("<runId>", "Run id to report")
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .action(async (runId: string, options: { historyDir: string }) => {
+    const run = await new JsonRunHistoryStore({ dir: options.historyDir }).readRun(runId);
+    console.log(`Run ${run.runId}: ${run.verdict}`);
+    console.log(`Started: ${run.startedAt}`);
+    console.log(`Completed: ${run.completedAt}`);
+    console.log(`Summary: ${formatSummary(run.summary)}`);
+
+    for (const result of [...run.results].sort((a, b) =>
+      a.scenarioId.localeCompare(b.scenarioId),
+    )) {
+      console.log(
+        `- ${result.scenarioId}: ${result.verdict} (${result.metrics.turns ?? 0} turns, ${result.metrics.latency_ms ?? 0}ms)`,
+      );
+      for (const score of result.scores) {
+        console.log(
+          `  score ${score.name}: ${score.verdict}${score.reason ? ` - ${score.reason}` : ""}`,
+        );
+      }
+    }
+  });
+
+program
+  .command("baseline")
+  .description("Show or set the baseline run id.")
+  .argument("[runId]", "Run id to set as baseline")
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .action(async (runId: string | undefined, options: { historyDir: string }) => {
+    const store = new JsonRunHistoryStore({ dir: options.historyDir });
+    if (runId) {
+      await store.readRun(runId);
+      await store.setBaseline(runId);
+      console.log(`Baseline set to ${runId}`);
+      return;
+    }
+
+    const baselineRunId = await store.getBaselineRunId();
+    if (!baselineRunId) {
+      console.log("No baseline set.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Baseline: ${baselineRunId}`);
+  });
+
+program
+  .command("score")
+  .description("Apply a manual score to a saved scenario result.")
+  .argument("<runId>", "Run id to update")
+  .argument("<scenario>", "Scenario id to score")
+  .argument("<criterion>", "Manual criterion name")
+  .argument("<verdict>", "Manual verdict: pass or fail", parseManualVerdict)
+  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--note <note>", "Reviewer note for the manual score")
+  .action(
+    async (
+      runId: string,
+      scenarioId: string,
+      criterion: string,
+      verdict: Verdict.Pass | Verdict.Fail,
+      options: { historyDir: string; note?: string },
+    ) => {
+      const store = new JsonRunHistoryStore({ dir: options.historyDir });
+      const run = await store.readRun(runId);
+      const scenario = run.results.find((result) => result.scenarioId === scenarioId);
+      if (!scenario) {
+        throw new PupilError(`Scenario ${scenarioId} was not found in run ${runId}`);
+      }
+
+      const scoreName = `manual:${criterion}`;
+      const score = scenario.scores.find((candidate) => candidate.name === scoreName);
+      if (!score) {
+        throw new PupilError(
+          `Manual criterion ${criterion} was not found for scenario ${scenarioId}`,
+        );
+      }
+
+      score.verdict = verdict;
+      score.reason = options.note
+        ? `Manual score: ${verdict} - ${options.note}`
+        : `Manual score: ${verdict}`;
+      score.value = verdict;
+      // Scores are parsed from stored JSON, so metadata may be absent in older
+      // or hand-edited run files even though the type marks it as required.
+      const existingMetadata = score.metadata ?? {};
+      const existingManual =
+        typeof existingMetadata.manual === "object" && existingMetadata.manual !== null
+          ? existingMetadata.manual
+          : {};
+      score.metadata = {
+        ...existingMetadata,
+        manual: {
+          ...existingManual,
+          criterion,
+          note: options.note,
+          scoredAt: new Date().toISOString(),
+        },
+      };
+
+      scenario.verdict = aggregateVerdicts(scenario.scores.map((current) => current.verdict));
+      run.verdict = aggregateVerdicts(run.results.map((result) => result.verdict));
+      run.summary = summarizeResults(run.results);
+      await store.updateRun(run);
+
+      console.log(
+        `Updated ${runId}/${scenarioId}/${criterion}: ${verdict}. Scenario verdict: ${scenario.verdict}. Run verdict: ${run.verdict}`,
+      );
+    },
+  );
 program
   .command("compare")
   .description("Compare two stored Pupil runs for regressions.")
