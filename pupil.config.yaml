@@ -12,8 +12,12 @@ driver:
 history:
   dir: .pupil
 
+# Best-effort trace enrichment. `auto` enables it only when a host and both keys
+# resolve; `false` disables it (so does `pupil run --no-langfuse`).
 langfuse:
   enabled: auto
   host: ${LANGFUSE_HOST:-}
   publicKey: ${LANGFUSE_PUBLIC_KEY:-}
   secretKey: ${LANGFUSE_SECRET_KEY:-}
+  # Langfuse ingests traces asynchronously; how long to poll for one before skipping.
+  waitMs: 10000

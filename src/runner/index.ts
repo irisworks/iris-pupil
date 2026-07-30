@@ -19,7 +19,11 @@ import {
   type RestDriverResponse,
 } from "../driver/index.js";
 import { aggregateScores, evaluateAssertions, evaluateThresholds } from "../eval/index.js";
-import { enrichRunWithLangfuse } from "../langfuse/index.js";
+import {
+  enrichScenarioWithLangfuse,
+  summarizeLangfuseRun,
+  type LangfuseEnrichmentOptions,
+} from "../langfuse/index.js";
 
 export interface RunnerDriver {
   createConversation(
@@ -45,6 +49,8 @@ export interface RunScenarioOptions {
   driverConfig?: Record<string, unknown>;
   driverFactory?: (scenario: Scenario, context: RunnerDriverContext) => RunnerDriver;
   progress?: (event: RunnerProgressEvent) => void;
+  /** Langfuse enrichment options, or `false` to skip enrichment entirely. */
+  langfuse?: LangfuseEnrichmentOptions | false;
 }
 
 export interface RunScenariosOptions extends RunScenarioOptions {
@@ -171,6 +177,7 @@ function createErrorResult(
   turns: TurnRecord[],
   error: unknown,
   retries: number,
+  sessionId?: string,
 ): ScenarioResult {
   const completedAt = now();
   return {
@@ -193,6 +200,7 @@ function createErrorResult(
       latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
       retries,
     },
+    ...(sessionId !== undefined && { metadata: { sessionId } }),
     ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
   };
 }
@@ -275,6 +283,7 @@ export async function runScenario(
     DEFAULT_SCENARIO_TIMEOUT_MS;
   let lastError: unknown;
   let lastTurns: TurnRecord[] = [];
+  let lastSessionId: string | undefined;
   let attemptsUsed = 0;
 
   options.progress?.({ type: "scenario:start", scenarioId: scenario.id, attempt: 1, maxAttempts });
@@ -303,9 +312,15 @@ export async function runScenario(
           latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
           retries: attempt - 1,
         },
-        metadata: attemptResult.sessionId ? { sessionId: attemptResult.sessionId } : {},
+        ...(attemptResult.sessionId !== undefined && {
+          metadata: { sessionId: attemptResult.sessionId },
+        }),
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
+      // Enrich before scoring so cost/token thresholds see the Langfuse metrics.
+      if (options.langfuse !== false) {
+        await enrichScenarioWithLangfuse(baseResult, options.langfuse ?? {});
+      }
       const lastTurn = turns.at(-1);
       const scenarioScores = evaluateAssertions(scenario.expect.assertions, {
         response: lastTurn?.response,
@@ -329,6 +344,7 @@ export async function runScenario(
     } catch (error) {
       lastError = error instanceof ScenarioAttemptError ? error.cause : error;
       lastTurns = error instanceof ScenarioAttemptError ? error.turns : [];
+      lastSessionId = error instanceof ScenarioAttemptError ? error.sessionId : undefined;
       if (attempt < maxAttempts && isRetryableRunnerError(error)) {
         options.progress?.({
           type: "scenario:retry",
@@ -343,7 +359,18 @@ export async function runScenario(
     }
   }
 
-  const result = createErrorResult(scenario, startedAt, lastTurns, lastError, attemptsUsed - 1);
+  const result = createErrorResult(
+    scenario,
+    startedAt,
+    lastTurns,
+    lastError,
+    attemptsUsed - 1,
+    lastSessionId,
+  );
+  // Failed scenarios are exactly where a trace URL is most useful.
+  if (options.langfuse !== false) {
+    await enrichScenarioWithLangfuse(result, options.langfuse ?? {});
+  }
   options.progress?.({
     type: "scenario:error",
     scenarioId: scenario.id,
@@ -401,5 +428,6 @@ export async function runScenarios(
     metadata: options.metadata ?? {},
   };
 
-  return enrichRunWithLangfuse(run);
+  // Scenarios are enriched as they finish; this only rolls the statuses up.
+  return summarizeLangfuseRun(run);
 }
