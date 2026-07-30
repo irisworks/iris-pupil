@@ -1,37 +1,70 @@
-import { createServer, type RequestListener, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { Verdict, type RunResult } from "../core/types.js";
-import { enrichRunWithLangfuse, langfuseConfigFromEnv } from "./index.js";
+import { Verdict, type RunResult, type ScenarioResult } from "../core/types.js";
+import {
+  enrichRunWithLangfuse,
+  enrichScenarioWithLangfuse,
+  extractLangfuseEnrichment,
+  langfuseConfigFromEnv,
+  resolveLangfuseConfig,
+} from "./index.js";
 
 let server: Server | undefined;
 
-function runResult(): RunResult {
+function scenarioResult(overrides: Partial<ScenarioResult> = {}): ScenarioResult {
+  return {
+    scenarioId: "scenario-1",
+    scenarioName: "Scenario 1",
+    verdict: Verdict.Pass,
+    scores: [],
+    turns: [],
+    startedAt: "2026-07-30T00:00:00.000Z",
+    completedAt: "2026-07-30T00:00:01.000Z",
+    metrics: { turns: 1, latency_ms: 1000 },
+    metadata: { sessionId: "session-1" },
+    ...overrides,
+  };
+}
+
+function runResult(results: ScenarioResult[] = [scenarioResult()]): RunResult {
   return {
     runId: "run-1",
     verdict: Verdict.Pass,
     startedAt: "2026-07-30T00:00:00.000Z",
     completedAt: "2026-07-30T00:00:01.000Z",
-    results: [
-      {
-        scenarioId: "scenario-1",
-        scenarioName: "Scenario 1",
-        verdict: Verdict.Pass,
-        scores: [],
-        turns: [],
-        startedAt: "2026-07-30T00:00:00.000Z",
-        completedAt: "2026-07-30T00:00:01.000Z",
-        metrics: { turns: 1, latency_ms: 1000 },
-        metadata: { sessionId: "session-1" },
-      },
-    ],
-    summary: { total: 1, passed: 1, failed: 0, needsReview: 0, errors: 0 },
+    results,
+    summary: {
+      total: results.length,
+      passed: results.length,
+      failed: 0,
+      needsReview: 0,
+      errors: 0,
+    },
     metadata: {},
   };
 }
 
-async function listen(handler: RequestListener): Promise<string> {
-  server = createServer(handler);
-  return new Promise((resolve, reject) => {
+interface StubbedServer {
+  baseUrl: string;
+  requests: { url?: string; authorization?: string }[];
+}
+
+/** Serves `payloads` in order, repeating the last one for any further request. */
+async function stubSession(...payloads: unknown[]): Promise<StubbedServer> {
+  const requests: StubbedServer["requests"] = [];
+
+  server = createServer((req, res) => {
+    requests.push({ url: req.url, authorization: req.headers.authorization });
+    const payload = payloads[Math.min(requests.length - 1, payloads.length - 1)];
+    const status =
+      typeof payload === "object" && payload !== null && "status" in payload
+        ? (payload as { status: number }).status
+        : 200;
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(status === 200 ? payload : { error: "offline" }));
+  });
+
+  const baseUrl = await new Promise<string>((resolve, reject) => {
     server?.once("error", reject);
     server?.listen(0, "127.0.0.1", () => {
       server?.off("error", reject);
@@ -43,6 +76,12 @@ async function listen(handler: RequestListener): Promise<string> {
       resolve(`http://127.0.0.1:${address.port}`);
     });
   });
+
+  return { baseUrl, requests };
+}
+
+function config(baseUrl: string) {
+  return { baseUrl, publicKey: "pk-test", secretKey: "sk-test" };
 }
 
 afterEach(async () => {
@@ -53,66 +92,220 @@ afterEach(async () => {
   server = undefined;
 });
 
-describe("Langfuse enrichment", () => {
-  it("loads config only when all Langfuse env vars are present", () => {
+describe("Langfuse config resolution", () => {
+  it("requires a host and both keys", () => {
     expect(langfuseConfigFromEnv({})).toBeUndefined();
     expect(
+      langfuseConfigFromEnv({ LANGFUSE_HOST: "http://langfuse.local", LANGFUSE_PUBLIC_KEY: "pk" }),
+    ).toBeUndefined();
+  });
+
+  it("accepts LANGFUSE_HOST and trims a trailing slash", () => {
+    expect(
       langfuseConfigFromEnv({
-        LANGFUSE_BASE_URL: "http://langfuse.local/",
+        LANGFUSE_HOST: "http://langfuse.local/",
         LANGFUSE_PUBLIC_KEY: "pk",
         LANGFUSE_SECRET_KEY: "sk",
       }),
     ).toEqual({ baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" });
   });
 
-  it("skips cleanly when Langfuse env vars are missing", async () => {
+  it("falls back to LANGFUSE_BASE_URL", () => {
+    expect(
+      langfuseConfigFromEnv({
+        LANGFUSE_BASE_URL: "http://langfuse.local",
+        LANGFUSE_PUBLIC_KEY: "pk",
+        LANGFUSE_SECRET_KEY: "sk",
+      })?.baseUrl,
+    ).toBe("http://langfuse.local");
+  });
+
+  it("prefers pupil.config.yaml settings over the environment", () => {
+    expect(
+      resolveLangfuseConfig({
+        settings: { host: "http://configured.local", publicKey: "pk-cfg", waitMs: 0 },
+        env: {
+          LANGFUSE_HOST: "http://env.local",
+          LANGFUSE_PUBLIC_KEY: "pk-env",
+          LANGFUSE_SECRET_KEY: "sk-env",
+        },
+      }),
+    ).toEqual({
+      baseUrl: "http://configured.local",
+      publicKey: "pk-cfg",
+      secretKey: "sk-env",
+      waitMs: 0,
+    });
+  });
+
+  it("honors enabled: false even when the environment is fully configured", () => {
+    expect(
+      resolveLangfuseConfig({
+        settings: { enabled: false },
+        env: {
+          LANGFUSE_HOST: "http://langfuse.local",
+          LANGFUSE_PUBLIC_KEY: "pk",
+          LANGFUSE_SECRET_KEY: "sk",
+        },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("Langfuse payload extraction", () => {
+  it("uses trace totals without adding their observations again", () => {
+    const enrichment = extractLangfuseEnrichment({
+      traces: [
+        {
+          id: "trace-1",
+          totalCost: 0.012,
+          usage: { input: 10, output: 5, total: 15 },
+          observations: [
+            { id: "obs-1", type: "generation", totalCost: 0.009, usage: { input: 8, output: 4 } },
+            { id: "obs-2", type: "generation", totalCost: 0.003, usage: { input: 2, output: 1 } },
+          ],
+        },
+      ],
+    });
+
+    expect(enrichment).toMatchObject({
+      costUsd: 0.012,
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      traceCount: 1,
+    });
+  });
+
+  it("prefers the first populated alias instead of summing duplicates", () => {
+    const enrichment = extractLangfuseEnrichment({
+      traces: [
+        {
+          id: "trace-1",
+          usage: { input: 10, promptTokens: 10, output: 4, completionTokens: 4 },
+          usageDetails: { input: 10, output: 4 },
+        },
+      ],
+    });
+
+    expect(enrichment).toMatchObject({ inputTokens: 10, outputTokens: 4, totalTokens: 14 });
+  });
+
+  it("falls back to observation sums when the trace omits totals", () => {
+    const enrichment = extractLangfuseEnrichment({
+      traces: [
+        {
+          id: "trace-1",
+          observations: [
+            { id: "obs-1", type: "generation", cost: 0.004, usage: { input: 6, output: 2 } },
+            { id: "obs-2", type: "generation", cost: 0.002, usage: { input: 3, output: 1 } },
+          ],
+        },
+      ],
+    });
+
+    expect(enrichment).toMatchObject({
+      costUsd: 0.006,
+      inputTokens: 9,
+      outputTokens: 3,
+      totalTokens: 12,
+    });
+  });
+
+  it("aggregates every trace of a multi-turn session", () => {
+    const enrichment = extractLangfuseEnrichment({
+      traces: [
+        {
+          id: "trace-1",
+          url: "http://langfuse.local/project/traces/trace-1",
+          totalCost: 0.01,
+          usage: { input: 10, output: 5 },
+          observations: [{ id: "obs-1", type: "tool", name: "calendar.create" }],
+        },
+        {
+          id: "trace-2",
+          totalCost: 0.02,
+          usage: { input: 20, output: 6 },
+          observations: [{ id: "obs-2", type: "TOOL", name: "calendar.read" }],
+        },
+      ],
+    });
+
+    expect(enrichment).toMatchObject({
+      traceId: "trace-1",
+      traceUrl: "http://langfuse.local/project/traces/trace-1",
+      traceCount: 2,
+      costUsd: 0.03,
+      inputTokens: 30,
+      outputTokens: 11,
+      totalTokens: 41,
+      toolCalls: ["calendar.create", "calendar.read"],
+    });
+  });
+
+  it("collects tool names from toolCalls arrays", () => {
+    expect(
+      extractLangfuseEnrichment({
+        traces: [
+          {
+            id: "trace-1",
+            observations: [
+              {
+                id: "obs-1",
+                type: "generation",
+                tool_calls: [{ function: { name: "search" } }, { name: "search" }],
+                toolCalls: [{ toolName: "notify" }],
+              },
+            ],
+          },
+        ],
+      })?.toolCalls,
+    ).toEqual(["notify", "search"]);
+  });
+
+  it("returns undefined when the session has no traces", () => {
+    expect(extractLangfuseEnrichment({ id: "session-1", traces: [] })).toBeUndefined();
+    expect(extractLangfuseEnrichment(undefined)).toBeUndefined();
+  });
+});
+
+describe("Langfuse enrichment", () => {
+  it("skips cleanly when Langfuse is not configured", async () => {
     const run = runResult();
 
     await expect(enrichRunWithLangfuse(run, { env: {} })).resolves.toBe(run);
     expect(run.results[0]?.metrics).toEqual({ turns: 1, latency_ms: 1000 });
+    expect(run.results[0]?.metadata).toEqual({ sessionId: "session-1" });
     expect(run.metadata).toEqual({});
   });
 
   it("enriches run results from a stubbed Langfuse session endpoint", async () => {
-    const baseUrl = await listen((req, res) => {
-      expect(req.url).toBe("/api/public/sessions/session-1");
-      expect(req.headers.authorization).toBe(
-        `Basic ${Buffer.from("pk-test:sk-test").toString("base64")}`,
-      );
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          id: "session-1",
-          traces: [
-            {
-              id: "trace-1",
-              url: "http://langfuse.local/project/traces/trace-1",
-              totalCost: 0.012,
-              usage: { input: 10, output: 5, total: 15 },
-              observations: [
-                { id: "obs-1", type: "tool", name: "calendar.create" },
-                {
-                  id: "obs-2",
-                  type: "generation",
-                  totalCost: 0.003,
-                  usage: { input: 2, output: 1 },
-                },
-              ],
-            },
-          ],
-        }),
-      );
+    const stub = await stubSession({
+      id: "session-1",
+      traces: [
+        {
+          id: "trace-1",
+          url: "http://langfuse.local/project/traces/trace-1",
+          totalCost: 0.012,
+          usage: { input: 10, output: 5, total: 15 },
+          observations: [{ id: "obs-1", type: "tool", name: "calendar.create" }],
+        },
+      ],
     });
     const run = runResult();
 
-    await enrichRunWithLangfuse(run, {
-      config: { baseUrl, publicKey: "pk-test", secretKey: "sk-test" },
-    });
+    await enrichRunWithLangfuse(run, { config: config(stub.baseUrl), waitMs: 0 });
 
+    expect(stub.requests).toEqual([
+      {
+        url: "/api/public/sessions/session-1",
+        authorization: `Basic ${Buffer.from("pk-test:sk-test").toString("base64")}`,
+      },
+    ]);
     expect(run.results[0]?.metrics).toMatchObject({
-      cost_usd: 0.015,
-      input_tokens: 12,
-      output_tokens: 6,
+      cost_usd: 0.012,
+      input_tokens: 10,
+      output_tokens: 5,
       total_tokens: 15,
       tool_calls: 1,
     });
@@ -131,17 +324,81 @@ describe("Langfuse enrichment", () => {
     });
   });
 
-  it("records lookup errors without failing the run", async () => {
-    const baseUrl = await listen((_req, res) => {
-      res.writeHead(503, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "offline" }));
+  it("polls until an asynchronously ingested trace appears", async () => {
+    const stub = await stubSession(
+      { id: "session-1", traces: [] },
+      { id: "session-1", traces: [{ id: "trace-1", totalCost: 0.004 }] },
+    );
+    const result = scenarioResult();
+
+    await expect(
+      enrichScenarioWithLangfuse(result, {
+        config: config(stub.baseUrl),
+        waitMs: 2000,
+        pollIntervalMs: 1,
+      }),
+    ).resolves.toBe("enriched");
+
+    expect(stub.requests.length).toBeGreaterThanOrEqual(2);
+    expect(result.metrics.cost_usd).toBe(0.004);
+  });
+
+  it("records a skip when no trace is ingested within waitMs", async () => {
+    const stub = await stubSession({ id: "session-1", traces: [] });
+    const result = scenarioResult();
+
+    await expect(
+      enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 }),
+    ).resolves.toBe("skipped");
+
+    expect(result.metadata?.langfuse).toEqual({
+      status: "skipped",
+      sessionId: "session-1",
+      reason: "No trace found for session",
     });
+    expect(result.metrics).toEqual({ turns: 1, latency_ms: 1000 });
+  });
+
+  it("skips scenarios without a session id", async () => {
+    const result = scenarioResult({ metadata: undefined });
+
+    await expect(
+      enrichScenarioWithLangfuse(result, { config: config("http://127.0.0.1:1"), waitMs: 0 }),
+    ).resolves.toBe("skipped");
+
+    expect(result.metadata?.langfuse).toEqual({
+      status: "skipped",
+      reason: "No session id available",
+    });
+  });
+
+  it("falls back to the session id carried on a turn response", async () => {
+    const stub = await stubSession({ traces: [{ id: "trace-9" }] });
+    const result = scenarioResult({
+      metadata: undefined,
+      turns: [
+        {
+          index: 0,
+          user: "hi",
+          startedAt: "2026-07-30T00:00:00.000Z",
+          assertions: [],
+          response: { text: "ok", raw: { session_id: "session-from-turn" } },
+        },
+      ],
+    });
+
+    await enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 });
+
+    expect(stub.requests[0]?.url).toBe("/api/public/sessions/session-from-turn");
+    expect(result.metadata?.langfuse).toMatchObject({ sessionId: "session-from-turn" });
+  });
+
+  it("records lookup errors without failing the run", async () => {
+    const stub = await stubSession({ status: 503 });
     const run = runResult();
 
     await expect(
-      enrichRunWithLangfuse(run, {
-        config: { baseUrl, publicKey: "pk-test", secretKey: "sk-test" },
-      }),
+      enrichRunWithLangfuse(run, { config: config(stub.baseUrl), waitMs: 0 }),
     ).resolves.toBe(run);
 
     expect(run.verdict).toBe(Verdict.Pass);
@@ -151,5 +408,23 @@ describe("Langfuse enrichment", () => {
       reason: "Langfuse lookup failed with status 503",
     });
     expect(run.metadata.langfuse).toMatchObject({ status: "partial", failed: 1 });
+  });
+
+  it("records an aborted lookup as an error without throwing", async () => {
+    const result = scenarioResult();
+
+    await expect(
+      enrichScenarioWithLangfuse(result, {
+        config: config("http://127.0.0.1:9"),
+        timeoutMs: 10,
+        waitMs: 0,
+        fetchImpl: ((_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          })) as unknown as typeof fetch,
+      }),
+    ).resolves.toBe("error");
+
+    expect(result.metadata?.langfuse).toMatchObject({ status: "error", reason: "aborted" });
   });
 });

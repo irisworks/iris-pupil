@@ -4,6 +4,7 @@ import type { RunResult, ScenarioResult } from "../core/types.js";
 export interface LangfuseEnrichment {
   readonly traceId?: string;
   readonly traceUrl?: string;
+  readonly traceCount: number;
   readonly costUsd?: number;
   readonly inputTokens?: number;
   readonly outputTokens?: number;
@@ -15,22 +16,67 @@ export interface LangfuseConfig {
   baseUrl: string;
   publicKey: string;
   secretKey: string;
+  waitMs?: number;
+}
+
+/**
+ * Subset of `PupilConfig["langfuse"]` that enrichment needs. Kept structural so the
+ * langfuse module does not depend on config loading.
+ */
+export interface LangfuseSettings {
+  enabled?: boolean | "auto";
+  host?: string;
+  publicKey?: string;
+  secretKey?: string;
+  waitMs?: number;
 }
 
 export interface LangfuseEnrichmentOptions {
   config?: LangfuseConfig;
+  settings?: LangfuseSettings;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** How long to keep polling for a trace; Langfuse ingestion is asynchronous. */
+  waitMs?: number;
+  pollIntervalMs?: number;
 }
 
-interface LangfuseLookupResult extends LangfuseEnrichment {
-  raw: unknown;
-}
+export type LangfuseStatus = "enriched" | "skipped" | "error";
 
 type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_LANGFUSE_TIMEOUT_MS = 3000;
+const DEFAULT_LANGFUSE_WAIT_MS = 10_000;
+const DEFAULT_LANGFUSE_POLL_INTERVAL_MS = 500;
+
+const COST_KEYS = ["totalCost", "cost", "costUsd", "calculatedTotalCost", "total_cost"];
+const COST_PATHS = [
+  ["usage", "totalCost"],
+  ["usageDetails", "totalCost"],
+];
+const INPUT_TOKEN_KEYS = ["inputTokens", "promptTokens", "input_tokens", "prompt_tokens"];
+const INPUT_TOKEN_PATHS = [
+  ["usage", "input"],
+  ["usage", "promptTokens"],
+  ["usageDetails", "input"],
+];
+const OUTPUT_TOKEN_KEYS = [
+  "outputTokens",
+  "completionTokens",
+  "output_tokens",
+  "completion_tokens",
+];
+const OUTPUT_TOKEN_PATHS = [
+  ["usage", "output"],
+  ["usage", "completionTokens"],
+  ["usageDetails", "output"],
+];
+const TOTAL_TOKEN_KEYS = ["totalTokens", "total_tokens"];
+const TOTAL_TOKEN_PATHS = [
+  ["usage", "total"],
+  ["usage", "totalTokens"],
+];
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -52,27 +98,64 @@ function firstString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function sumNumbers(values: unknown[]): number | undefined {
-  const numbers = values.map(asNumber).filter((value): value is number => value !== undefined);
-  if (numbers.length === 0) return undefined;
-  return numbers.reduce((total, value) => total + value, 0);
-}
-
-function valuesFromPath(source: unknown, keys: string[]): unknown[] {
-  if (!isRecord(source)) return [];
-  const values: unknown[] = [];
-  let current: unknown = source;
+function valueAtPath(record: JsonRecord, keys: string[]): unknown {
+  let current: unknown = record;
   for (const key of keys) {
-    if (!isRecord(current)) return values;
+    if (!isRecord(current)) return undefined;
     current = current[key];
   }
-  values.push(current);
-  return values;
+  return current;
 }
 
-function numericCandidates(record: unknown, keys: string[]): unknown[] {
-  if (!isRecord(record)) return [];
-  return keys.map((key) => record[key]);
+/**
+ * Langfuse exposes the same figure under several aliases (`usage.input`,
+ * `usage.promptTokens`, `usageDetails.input`, ...). The first populated alias wins;
+ * summing them would multiply the real value.
+ */
+function firstNumber(record: JsonRecord, keys: string[], paths: string[][]): number | undefined {
+  for (const key of keys) {
+    const value = asNumber(record[key]);
+    if (value !== undefined) return value;
+  }
+  for (const path of paths) {
+    const value = asNumber(valueAtPath(record, path));
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function recordCost(record: JsonRecord): number | undefined {
+  return firstNumber(record, COST_KEYS, COST_PATHS);
+}
+
+function recordInputTokens(record: JsonRecord): number | undefined {
+  return firstNumber(record, INPUT_TOKEN_KEYS, INPUT_TOKEN_PATHS);
+}
+
+function recordOutputTokens(record: JsonRecord): number | undefined {
+  return firstNumber(record, OUTPUT_TOKEN_KEYS, OUTPUT_TOKEN_PATHS);
+}
+
+function recordTotalTokens(record: JsonRecord): number | undefined {
+  return firstNumber(record, TOTAL_TOKEN_KEYS, TOTAL_TOKEN_PATHS);
+}
+
+function sumRecords(
+  records: JsonRecord[],
+  pick: (record: JsonRecord) => number | undefined,
+): number | undefined {
+  let total: number | undefined;
+  for (const record of records) {
+    const value = pick(record);
+    if (value !== undefined) total = (total ?? 0) + value;
+  }
+  return total;
+}
+
+/** Cost sums accumulate binary float noise; six decimals is well below one cent. */
+function roundCost(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  return Math.round(value * 1e6) / 1e6;
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -82,11 +165,33 @@ function normalizeBaseUrl(baseUrl: string): string {
 export function langfuseConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): LangfuseConfig | undefined {
-  const baseUrl = env.LANGFUSE_BASE_URL;
-  const publicKey = env.LANGFUSE_PUBLIC_KEY;
-  const secretKey = env.LANGFUSE_SECRET_KEY;
+  return resolveLangfuseConfig({ env });
+}
+
+/**
+ * Resolves the lookup client from `pupil.config.yaml` settings first, then the
+ * environment. `enabled: false` disables enrichment outright; `auto` (the default)
+ * enables it only when a host and both keys are available.
+ */
+export function resolveLangfuseConfig(
+  options: { settings?: LangfuseSettings; env?: NodeJS.ProcessEnv } = {},
+): LangfuseConfig | undefined {
+  const settings = options.settings ?? {};
+  if (settings.enabled === false) return undefined;
+
+  const env = options.env ?? process.env;
+  const baseUrl = firstString(settings.host, env.LANGFUSE_HOST, env.LANGFUSE_BASE_URL);
+  const publicKey = firstString(settings.publicKey, env.LANGFUSE_PUBLIC_KEY);
+  const secretKey = firstString(settings.secretKey, env.LANGFUSE_SECRET_KEY);
   if (!baseUrl || !publicKey || !secretKey) return undefined;
-  return { baseUrl: normalizeBaseUrl(baseUrl), publicKey, secretKey };
+
+  const waitMs = settings.waitMs ?? asNumber(env.LANGFUSE_WAIT_MS);
+  return {
+    baseUrl: normalizeBaseUrl(baseUrl),
+    publicKey,
+    secretKey,
+    ...(waitMs !== undefined && { waitMs }),
+  };
 }
 
 function sessionIdForScenario(result: ScenarioResult): string | undefined {
@@ -123,65 +228,20 @@ function observationsFromTrace(trace: JsonRecord, payload: unknown): JsonRecord[
   );
 }
 
-function extractTokens(records: JsonRecord[]): {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-} {
-  const inputTokens = sumNumbers(
-    records.flatMap((record) => [
-      ...numericCandidates(record, [
-        "inputTokens",
-        "promptTokens",
-        "input_tokens",
-        "prompt_tokens",
-      ]),
-      ...valuesFromPath(record, ["usage", "input"]),
-      ...valuesFromPath(record, ["usage", "promptTokens"]),
-      ...valuesFromPath(record, ["usageDetails", "input"]),
-    ]),
-  );
-  const outputTokens = sumNumbers(
-    records.flatMap((record) => [
-      ...numericCandidates(record, [
-        "outputTokens",
-        "completionTokens",
-        "output_tokens",
-        "completion_tokens",
-      ]),
-      ...valuesFromPath(record, ["usage", "output"]),
-      ...valuesFromPath(record, ["usage", "completionTokens"]),
-      ...valuesFromPath(record, ["usageDetails", "output"]),
-    ]),
-  );
-  const totalTokens =
-    sumNumbers(
-      records.flatMap((record) => [
-        ...numericCandidates(record, ["totalTokens", "total_tokens"]),
-        ...valuesFromPath(record, ["usage", "total"]),
-        ...valuesFromPath(record, ["usage", "totalTokens"]),
-      ]),
-    ) ??
-    (inputTokens !== undefined || outputTokens !== undefined
-      ? (inputTokens ?? 0) + (outputTokens ?? 0)
-      : undefined);
-  return { inputTokens, outputTokens, totalTokens };
-}
-
-function extractCost(records: JsonRecord[]): number | undefined {
-  return sumNumbers(
-    records.flatMap((record) => [
-      ...numericCandidates(record, [
-        "totalCost",
-        "cost",
-        "costUsd",
-        "calculatedTotalCost",
-        "total_cost",
-      ]),
-      ...valuesFromPath(record, ["usage", "totalCost"]),
-      ...valuesFromPath(record, ["usageDetails", "totalCost"]),
-    ]),
-  );
+/**
+ * Trace-level figures already aggregate their observations in Langfuse, so a trace
+ * value is used as-is and observations are only summed when the trace omits it.
+ */
+function aggregate(
+  traces: { trace: JsonRecord; observations: JsonRecord[] }[],
+  pick: (record: JsonRecord) => number | undefined,
+): number | undefined {
+  let total: number | undefined;
+  for (const { trace, observations } of traces) {
+    const value = pick(trace) ?? sumRecords(observations, pick);
+    if (value !== undefined) total = (total ?? 0) + value;
+  }
+  return total;
 }
 
 function extractToolCalls(records: JsonRecord[]): string[] {
@@ -209,22 +269,39 @@ function extractToolCalls(records: JsonRecord[]): string[] {
   return [...names].sort();
 }
 
-function extractTrace(payload: unknown): LangfuseLookupResult | undefined {
-  const trace = tracesFromSession(payload)[0];
-  if (!trace) return undefined;
-  const observations = observationsFromTrace(trace, payload);
-  const records = [trace, ...observations];
-  const tokens = extractTokens(records);
-  const costUsd = extractCost(records);
-  const toolCalls = extractToolCalls(records);
+export function extractLangfuseEnrichment(payload: unknown): LangfuseEnrichment | undefined {
+  const traces = tracesFromSession(payload);
+  if (traces.length === 0) return undefined;
+
+  // Top-level observations belong to a single-trace payload; attributing them to every
+  // trace of a multi-trace session would count them repeatedly.
+  const grouped = traces.map((trace) => ({
+    trace,
+    observations: observationsFromTrace(trace, traces.length === 1 ? payload : undefined),
+  }));
+
+  const inputTokens = aggregate(grouped, recordInputTokens);
+  const outputTokens = aggregate(grouped, recordOutputTokens);
+  const totalTokens =
+    aggregate(grouped, recordTotalTokens) ??
+    (inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined);
+  const costUsd = roundCost(aggregate(grouped, recordCost));
+  const toolCalls = extractToolCalls(
+    grouped.flatMap(({ trace, observations }) => [trace, ...observations]),
+  );
+  const first = grouped[0]?.trace ?? {};
 
   return {
-    traceId: firstString(trace.id, trace.traceId, trace.trace_id),
-    traceUrl: firstString(trace.url, trace.traceUrl, trace.trace_url, trace.htmlUrl),
+    traceId: firstString(first.id, first.traceId, first.trace_id),
+    traceUrl: firstString(first.url, first.traceUrl, first.trace_url, first.htmlUrl),
+    traceCount: traces.length,
     costUsd,
-    ...tokens,
+    inputTokens,
+    outputTokens,
+    totalTokens,
     toolCalls,
-    raw: payload,
   };
 }
 
@@ -233,7 +310,7 @@ async function fetchSession(
   sessionId: string,
   fetchImpl: typeof fetch,
   timeoutMs: number,
-): Promise<LangfuseLookupResult | undefined> {
+): Promise<LangfuseEnrichment | undefined> {
   const auth = Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -245,24 +322,51 @@ async function fetchSession(
     if (!response.ok) {
       throw new Error(`Langfuse lookup failed with status ${response.status}`);
     }
-    return extractTrace(await response.json());
+    return extractLangfuseEnrichment(await response.json());
   } finally {
     clearTimeout(timeout);
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Polls until a trace shows up, because Langfuse ingests traces asynchronously. */
+async function lookupSession(
+  config: LangfuseConfig,
+  sessionId: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+  waitMs: number,
+  pollIntervalMs: number,
+): Promise<LangfuseEnrichment | undefined> {
+  const deadline = Date.now() + Math.max(waitMs, 0);
+  for (;;) {
+    const enrichment = await fetchSession(config, sessionId, fetchImpl, timeoutMs);
+    if (enrichment) return enrichment;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return undefined;
+    await sleep(Math.min(pollIntervalMs, remaining));
+  }
+}
+
+function withLangfuseMetadata(result: ScenarioResult, langfuse: Record<string, unknown>): void {
+  result.metadata = { ...(result.metadata ?? {}), langfuse };
+}
+
 function applyEnrichment(
   result: ScenarioResult,
   sessionId: string,
-  enrichment: LangfuseLookupResult | undefined,
-): void {
-  const metadata = { ...(result.metadata ?? {}) };
+  enrichment: LangfuseEnrichment | undefined,
+): LangfuseStatus {
   if (!enrichment) {
-    result.metadata = {
-      ...metadata,
-      langfuse: { status: "skipped", sessionId, reason: "No trace found for session" },
-    };
-    return;
+    withLangfuseMetadata(result, {
+      status: "skipped",
+      sessionId,
+      reason: "No trace found for session",
+    });
+    return "skipped";
   }
 
   if (enrichment.costUsd !== undefined) result.metrics.cost_usd = enrichment.costUsd;
@@ -271,59 +375,73 @@ function applyEnrichment(
   if (enrichment.totalTokens !== undefined) result.metrics.total_tokens = enrichment.totalTokens;
   result.metrics.tool_calls = enrichment.toolCalls.length;
 
-  result.metadata = {
-    ...metadata,
-    langfuse: {
-      status: "enriched",
-      sessionId,
-      traceId: enrichment.traceId,
-      traceUrl: enrichment.traceUrl,
-      toolCalls: enrichment.toolCalls,
-    },
-  };
+  withLangfuseMetadata(result, {
+    status: "enriched",
+    sessionId,
+    traceId: enrichment.traceId,
+    traceUrl: enrichment.traceUrl,
+    ...(enrichment.traceCount > 1 && { traceCount: enrichment.traceCount }),
+    toolCalls: enrichment.toolCalls,
+  });
+  return "enriched";
 }
 
-export async function enrichRunWithLangfuse(
-  run: RunResult,
+/**
+ * Best-effort enrichment of a single scenario result. Mutates `metrics` and `metadata`
+ * in place so callers can score thresholds against the enriched metrics. Returns
+ * `undefined` when Langfuse is not configured, leaving the result untouched.
+ */
+export async function enrichScenarioWithLangfuse(
+  result: ScenarioResult,
   options: LangfuseEnrichmentOptions = {},
-): Promise<RunResult> {
-  const config = options.config ?? langfuseConfigFromEnv(options.env);
-  if (!config) return run;
+): Promise<LangfuseStatus | undefined> {
+  const config = options.config ?? resolveLangfuseConfig(options);
+  if (!config) return undefined;
 
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS;
+  const sessionId = sessionIdForScenario(result);
+  if (!sessionId) {
+    withLangfuseMetadata(result, { status: "skipped", reason: "No session id available" });
+    return "skipped";
+  }
+
+  try {
+    const enrichment = await lookupSession(
+      config,
+      sessionId,
+      options.fetchImpl ?? fetch,
+      options.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
+      options.waitMs ?? config.waitMs ?? DEFAULT_LANGFUSE_WAIT_MS,
+      options.pollIntervalMs ?? DEFAULT_LANGFUSE_POLL_INTERVAL_MS,
+    );
+    return applyEnrichment(result, sessionId, enrichment);
+  } catch (error) {
+    withLangfuseMetadata(result, {
+      status: "error",
+      sessionId,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return "error";
+  }
+}
+
+/**
+ * Rolls the per-scenario Langfuse statuses already present on `run.results` into a
+ * run-level summary. Leaves `run.metadata` untouched when nothing was enriched.
+ */
+export function summarizeLangfuseRun(run: RunResult): RunResult {
   let enriched = 0;
   let skipped = 0;
   let failed = 0;
 
   for (const result of run.results) {
-    const sessionId = sessionIdForScenario(result);
-    if (!sessionId) {
-      skipped += 1;
-      result.metadata = {
-        ...(result.metadata ?? {}),
-        langfuse: { status: "skipped", reason: "No session id available" },
-      };
-      continue;
-    }
-
-    try {
-      const trace = await fetchSession(config, sessionId, fetchImpl, timeoutMs);
-      applyEnrichment(result, sessionId, trace);
-      if (trace) enriched += 1;
-      else skipped += 1;
-    } catch (error) {
-      failed += 1;
-      result.metadata = {
-        ...(result.metadata ?? {}),
-        langfuse: {
-          status: "error",
-          sessionId,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      };
-    }
+    const langfuse = isRecord(result.metadata) ? result.metadata.langfuse : undefined;
+    const status = isRecord(langfuse) ? langfuse.status : undefined;
+    if (status === "enriched") enriched += 1;
+    else if (status === "skipped") skipped += 1;
+    else if (status === "error") failed += 1;
   }
+
+  if (enriched === 0 && skipped === 0 && failed === 0) return run;
 
   run.metadata = {
     ...run.metadata,
@@ -335,4 +453,22 @@ export async function enrichRunWithLangfuse(
     },
   };
   return run;
+}
+
+/**
+ * Enriches every scenario result of a completed run. The runner enriches scenarios as
+ * they finish (so cost thresholds can be scored); this entry point covers callers that
+ * hold a finished `RunResult`.
+ */
+export async function enrichRunWithLangfuse(
+  run: RunResult,
+  options: LangfuseEnrichmentOptions = {},
+): Promise<RunResult> {
+  const config = options.config ?? resolveLangfuseConfig(options);
+  if (!config) return run;
+
+  for (const result of run.results) {
+    await enrichScenarioWithLangfuse(result, { ...options, config });
+  }
+  return summarizeLangfuseRun(run);
 }
