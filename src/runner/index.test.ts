@@ -7,7 +7,7 @@ import {
   type RestDriverResponse,
 } from "../driver/index.js";
 import { createIrisMockAgent, type IrisMockAgent } from "../mock/irisMockAgent.js";
-import { runScenario, runScenarios, type RunnerDriver } from "./index.js";
+import { createDrivenTrajectory, runScenario, runScenarios, type RunnerDriver } from "./index.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -74,6 +74,40 @@ class FakeDriver implements RunnerDriver {
   }
 }
 
+describe("driven trajectory producer", () => {
+  it("converts turn records into evaluator trajectory steps", () => {
+    const trajectory = createDrivenTrajectory({
+      turns: [
+        {
+          index: 0,
+          user: "please schedule",
+          response: { text: "Scheduled.", raw: { status: "ok" } },
+          startedAt: "2026-07-31T00:00:00.000Z",
+          completedAt: "2026-07-31T00:00:00.250Z",
+          latencyMs: 250,
+          assertions: [],
+        },
+      ],
+      metrics: { turns: 1, latency_ms: 250 },
+      metadata: { sessionId: "session-1" },
+    });
+
+    expect(trajectory).toMatchObject({
+      source: "driven",
+      finalResponse: { text: "Scheduled.", raw: { status: "ok" } },
+      metrics: { turns: 1, latency_ms: 250 },
+      metadata: { sessionId: "session-1" },
+      steps: [
+        {
+          index: 0,
+          input: { role: "user", content: "please schedule" },
+          output: { role: "assistant", content: "Scheduled.", raw: { status: "ok" } },
+          latencyMs: 250,
+        },
+      ],
+    });
+  });
+});
 describe("scenario runner", () => {
   it("executes a scenario end to end against the IRIS-compatible mock agent", async () => {
     const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { Verdict, type AssertionCheck, type TextAssertionCheck } from "../core/types.js";
+import {
+  Verdict,
+  type AssertionCheck,
+  type TextAssertionCheck,
+  type Trajectory,
+} from "../core/types.js";
 import {
   aggregateScores,
   evaluateAssertion,
@@ -10,15 +15,41 @@ import {
   evaluateThresholds,
 } from "./index.js";
 
-const context = {
-  response: {
+const context: Trajectory = {
+  source: "driven",
+  steps: [
+    {
+      index: 0,
+      input: { role: "user", content: "Book a meeting" },
+      output: {
+        role: "assistant",
+        content: "I booked the meeting for Tuesday.",
+        raw: {
+          status: "ok",
+          calendar: { eventId: "evt_123", attendees: ["john@example.com"] },
+        },
+      },
+      startedAt: "2026-07-31T00:00:00.000Z",
+      completedAt: "2026-07-31T00:00:01.000Z",
+      latencyMs: 1000,
+      metadata: {},
+    },
+  ],
+  finalResponse: {
     text: "I booked the meeting for Tuesday.",
     raw: {
       status: "ok",
       calendar: { eventId: "evt_123", attendees: ["john@example.com"] },
     },
   },
+  metrics: { turns: 1, latency_ms: 1000 },
+  metadata: {},
+  snapshot: { metrics: { turns: 1 }, scenarioId: "scenario-1" },
 };
+
+function trajectory(metrics: Record<string, number>): Trajectory {
+  return { ...context, metrics };
+}
 
 function textAssertion(overrides: Partial<TextAssertionCheck>): AssertionCheck {
   return {
@@ -110,6 +141,25 @@ describe("assertion evaluator", () => {
     ).toBe(Verdict.Pass);
   });
 
+  it("resolves existing turn and result assertion targets through trajectory", () => {
+    expect(
+      evaluateAssertion(
+        {
+          type: "jsonpath",
+          target: "turn",
+          path: "$.response.text",
+          equals: "I booked the meeting for Tuesday.",
+        },
+        context,
+      ).verdict,
+    ).toBe(Verdict.Pass);
+    expect(
+      evaluateAssertion(
+        { type: "jsonpath", target: "result", path: "$.metrics.turns", equals: 1 },
+        context,
+      ).verdict,
+    ).toBe(Verdict.Pass);
+  });
   it("aggregates assertion scores conservatively", () => {
     const scores = evaluateAssertions(
       [textAssertion({ value: "booked" }), textAssertion({ value: "cancelled" })],
@@ -128,7 +178,7 @@ describe("threshold evaluator", () => {
         { metric: "maxTurns", max: 2 },
         { metric: "maxLatencyMs", max: 1500 },
       ],
-      { metrics: { turns: 2, latency_ms: 1500 } },
+      trajectory({ turns: 2, latency_ms: 1500 }),
     );
 
     expect(scores.map((score) => score.verdict)).toEqual([Verdict.Pass, Verdict.Pass]);
@@ -141,7 +191,7 @@ describe("threshold evaluator", () => {
         { metric: "maxTurns", max: 2 },
         { metric: "maxLatencyMs", max: 1500 },
       ],
-      { metrics: { turns: 3, latency_ms: 1501 } },
+      trajectory({ turns: 3, latency_ms: 1501 }),
     );
 
     expect(scores.map((score) => score.verdict)).toEqual([Verdict.Fail, Verdict.Fail]);
@@ -155,7 +205,7 @@ describe("threshold evaluator", () => {
         { metric: "max-latency-ms", max: 1500 },
         { metric: "max_cost_usd", max: 0.25 },
       ],
-      { metrics: { turns: 2, latency_ms: 1500, cost_usd: 0.25 } },
+      trajectory({ turns: 2, latency_ms: 1500, cost_usd: 0.25 }),
     );
 
     expect(scores.map((score) => score.verdict)).toEqual([
@@ -166,26 +216,26 @@ describe("threshold evaluator", () => {
   });
 
   it("evaluates min threshold boundaries", () => {
-    expect(evaluateThreshold({ metric: "turns", min: 2 }, { metrics: { turns: 2 } }).verdict).toBe(
+    expect(evaluateThreshold({ metric: "turns", min: 2 }, trajectory({ turns: 2 })).verdict).toBe(
       Verdict.Pass,
     );
-    expect(evaluateThreshold({ metric: "turns", min: 2 }, { metrics: { turns: 1 } }).verdict).toBe(
+    expect(evaluateThreshold({ metric: "turns", min: 2 }, trajectory({ turns: 1 })).verdict).toBe(
       Verdict.Fail,
     );
   });
   it("evaluates maxCostUsd when cost data exists", () => {
     expect(
-      evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, { metrics: { cost_usd: 0.25 } })
+      evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, trajectory({ cost_usd: 0.25 }))
         .verdict,
     ).toBe(Verdict.Pass);
     expect(
-      evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, { metrics: { cost_usd: 0.26 } })
+      evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, trajectory({ cost_usd: 0.26 }))
         .verdict,
     ).toBe(Verdict.Fail);
   });
 
   it("skips maxCostUsd cleanly when cost data is missing", () => {
-    const score = evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, { metrics: {} });
+    const score = evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, trajectory({}));
 
     expect(score.verdict).toBe(Verdict.Skip);
     expect(score.reason).toMatch(/Cost metric is missing/);

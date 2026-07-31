@@ -123,6 +123,56 @@ export interface TurnRecord {
   error?: string;
 }
 
+/**
+ * One observed step in an agent trajectory.
+ *
+ * This is intentionally shaped near OpenTelemetry GenAI concepts (input,
+ * output, timing, usage, and provider-specific raw payloads) without binding
+ * Pupil to any experimental semantic-convention field names.
+ */
+export interface TrajectoryStep {
+  index: number;
+  input?: {
+    role: "user" | "system" | "assistant" | "tool";
+    content?: string;
+    raw?: unknown;
+  };
+  output?: {
+    role: "assistant" | "tool";
+    content?: string;
+    raw?: unknown;
+  };
+  startedAt?: string;
+  completedAt?: string;
+  latencyMs?: number;
+  error?: string;
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * Evaluator input shared by driven runs and future trace-derived producers.
+ *
+ * Driven runs build this from TurnRecord data. A trace reader can build the
+ * same shape from Langfuse/OTel spans without changing assertion or threshold
+ * evaluators. `currentStepIndex` scopes turn-level expectations; scenario-level
+ * expectations use the final response by default.
+ */
+export interface Trajectory {
+  source: "driven" | "trace";
+  steps: TrajectoryStep[];
+  currentStepIndex?: number;
+  finalResponse?: {
+    text?: string;
+    raw?: unknown;
+  };
+  metrics: Record<string, number>;
+  metadata: Record<string, unknown>;
+  /**
+   * Backward-compatible producer snapshot for existing `result.*` assertions.
+   * New evaluators should prefer explicit trajectory fields.
+   */
+  snapshot?: unknown;
+}
 export interface Score {
   name: string;
   verdict: Verdict;
