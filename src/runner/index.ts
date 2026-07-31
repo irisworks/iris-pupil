@@ -5,6 +5,7 @@ import {
   type RunResult,
   type Scenario,
   type ScenarioResult,
+  type Trajectory,
   type TurnRecord,
   Verdict,
 } from "../core/types.js";
@@ -177,6 +178,41 @@ function isRetryableRunnerError(error: unknown): boolean {
   return actual instanceof TypeError;
 }
 
+export function createDrivenTrajectory({
+  turns,
+  metrics,
+  metadata = {},
+  currentStepIndex,
+  snapshot,
+}: {
+  turns: readonly TurnRecord[];
+  metrics: Record<string, number>;
+  metadata?: Record<string, unknown>;
+  currentStepIndex?: number;
+  snapshot?: unknown;
+}): Trajectory {
+  const finalResponse = turns.at(-1)?.response;
+  return {
+    source: "driven",
+    steps: turns.map((turn) => ({
+      index: turn.index,
+      input: { role: "user", content: turn.user },
+      ...(turn.response !== undefined && {
+        output: { role: "assistant" as const, content: turn.response.text, raw: turn.response.raw },
+      }),
+      startedAt: turn.startedAt,
+      completedAt: turn.completedAt,
+      latencyMs: turn.latencyMs,
+      error: turn.error,
+      metadata: {},
+    })),
+    ...(currentStepIndex !== undefined && { currentStepIndex }),
+    ...(finalResponse !== undefined && { finalResponse }),
+    metrics,
+    metadata,
+    ...(snapshot !== undefined && { snapshot }),
+  };
+}
 function createErrorResult(
   scenario: Scenario,
   startedAt: string,
@@ -247,10 +283,14 @@ async function executeAttempt(
         record.completedAt = completedAt;
         record.latencyMs = Date.parse(completedAt) - Date.parse(startedAt);
         record.response = { text: response.text, raw: response.raw };
-        record.assertions = evaluateAssertions(turn.expect, {
-          response: record.response,
-          turn: record,
-        });
+        record.assertions = evaluateAssertions(
+          turn.expect,
+          createDrivenTrajectory({
+            turns,
+            metrics: { turns: turns.length },
+            currentStepIndex: index,
+          }),
+        );
       } catch (error) {
         record.error = errorMessage(error);
         record.completedAt = now();
@@ -327,15 +367,14 @@ export async function runScenario(
       if (options.langfuse !== false) {
         await enrichScenarioWithLangfuse(baseResult, options.langfuse ?? {});
       }
-      const lastTurn = turns.at(-1);
-      const scenarioScores = evaluateAssertions(scenario.expect.assertions, {
-        response: lastTurn?.response,
-        turn: lastTurn,
-        result: baseResult,
-      });
-      const thresholdScores = evaluateThresholds(scenario.expect.thresholds, {
+      const trajectory = createDrivenTrajectory({
+        turns,
         metrics: baseResult.metrics,
+        metadata: baseResult.metadata ?? {},
+        snapshot: baseResult,
       });
+      const scenarioScores = evaluateAssertions(scenario.expect.assertions, trajectory);
+      const thresholdScores = evaluateThresholds(scenario.expect.thresholds, trajectory);
       const manualScores = evaluateManualScoring(scenario.expect.manual);
       const judgeScores = evaluateJudge(scenario.expect.judge);
       const turnScores = turns.flatMap((turn) => turn.assertions);
