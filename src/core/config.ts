@@ -38,6 +38,7 @@ const langfuseConfigSchema = z
     publicKey: z.string().optional(),
     secretKey: z.string().optional(),
     waitMs: z.number().int().nonnegative().optional(),
+    timeoutMs: z.number().int().positive().optional(),
   })
   .strict()
   .default({ enabled: "auto" });

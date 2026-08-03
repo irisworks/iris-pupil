@@ -32,6 +32,25 @@ describe("loadPupilConfig", () => {
       /Pupil config file does not exist: .*missing\.yaml/,
     );
   });
+  it("accepts the full langfuse block, including waitMs and timeoutMs", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "driver:\n  config:\n    baseUrl: http://localhost:5050\nlangfuse:\n  host: http://langfuse.local\n  publicKey: pk\n  secretKey: sk\n  waitMs: 30000\n  timeoutMs: 15000\n",
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.langfuse).toEqual({
+      enabled: "auto",
+      host: "http://langfuse.local",
+      publicKey: "pk",
+      secretKey: "sk",
+      waitMs: 30000,
+      timeoutMs: 15000,
+    });
+  });
+
   it("loads config and resolves environment references", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
