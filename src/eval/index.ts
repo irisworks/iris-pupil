@@ -5,21 +5,15 @@ import {
   type JudgeConfig,
   type ManualScoringConfig,
   type Score,
-  type ScenarioResult,
   type ThresholdCheck,
-  type TurnRecord,
+  type Trajectory,
+  type TrajectoryStep,
   Verdict,
 } from "../core/types.js";
 import { extractJsonPath } from "../driver/index.js";
 
-export interface AssertionEvaluationContext {
-  response?: {
-    text?: string;
-    raw?: unknown;
-  };
-  turn?: TurnRecord;
-  result?: ScenarioResult;
-}
+export type AssertionEvaluationContext = Trajectory;
+export type ThresholdEvaluationContext = Trajectory;
 
 function assertionName(assertion: AssertionCheck): string {
   if (assertion.type === "jsonpath") {
@@ -39,15 +33,66 @@ function normalizeText(value: unknown, caseSensitive: boolean): string {
   return caseSensitive ? text : text.toLowerCase();
 }
 
+function currentStep(context: AssertionEvaluationContext): TrajectoryStep | undefined {
+  if (context.currentStepIndex !== undefined) return context.steps[context.currentStepIndex];
+  return context.steps.at(-1);
+}
+
+function stepResponse(step: TrajectoryStep): { text?: string; raw?: unknown } | undefined {
+  return step.output ? { text: step.output.content, raw: step.output.raw } : undefined;
+}
+
+function currentResponse(
+  context: AssertionEvaluationContext,
+): { text?: string; raw?: unknown } | undefined {
+  // A scoped step must never resolve to another step's answer: an output-less
+  // step means "no evidence", which should fail an assertion, not silently
+  // borrow the final response.
+  if (context.currentStepIndex !== undefined) {
+    const step = context.steps[context.currentStepIndex];
+    return step ? stepResponse(step) : undefined;
+  }
+  const step = currentStep(context);
+  return (step && stepResponse(step)) ?? context.finalResponse;
+}
+
+function legacyTurnView(step: TrajectoryStep | undefined): unknown {
+  if (!step) return undefined;
+  const { assertions = [], ...metadata } = step.metadata as {
+    assertions?: unknown;
+    [key: string]: unknown;
+  };
+  return {
+    index: step.index,
+    user: step.input?.content ?? "",
+    response: stepResponse(step),
+    startedAt: step.startedAt,
+    completedAt: step.completedAt,
+    latencyMs: step.latencyMs,
+    error: step.error,
+    assertions,
+    metadata,
+  };
+}
+
 function resolveTarget(target: string, context: AssertionEvaluationContext): unknown {
-  if (target === "response.text") return context.response?.text;
-  if (target === "response.raw") return context.response?.raw;
-  if (target === "turn") return context.turn;
-  if (target === "result") return context.result;
-  if (target.startsWith("turn.")) return extractJsonPath(context.turn, `$.${target.slice(5)}`);
-  if (target.startsWith("result.")) return extractJsonPath(context.result, `$.${target.slice(7)}`);
+  const response = currentResponse(context);
+  const step = currentStep(context);
+  const turn = legacyTurnView(step);
+
+  if (target === "response.text") return response?.text;
+  if (target === "response.raw") return response?.raw;
+  if (target === "turn") return turn;
+  if (target === "result") return context.snapshot;
+  if (target === "trajectory") return context;
+  if (target.startsWith("turn.")) return extractJsonPath(turn, `$.${target.slice(5)}`);
+  if (target.startsWith("result."))
+    return extractJsonPath(context.snapshot, `$.${target.slice(7)}`);
+  if (target.startsWith("trajectory.")) {
+    return extractJsonPath(context, `$.${target.slice("trajectory.".length)}`);
+  }
   if (target.startsWith("response.raw.")) {
-    return extractJsonPath(context.response?.raw, `$.${target.slice("response.raw.".length)}`);
+    return extractJsonPath(response?.raw, `$.${target.slice("response.raw.".length)}`);
   }
   throw new PupilError(`Unsupported assertion target: ${target}`);
 }
@@ -204,10 +249,6 @@ export function evaluateJudge(judge: JudgeConfig | undefined): Score[] {
       metadata: { judge },
     },
   ];
-}
-
-export interface ThresholdEvaluationContext {
-  metrics: Record<string, number>;
 }
 
 function thresholdName(threshold: ThresholdCheck): string {
