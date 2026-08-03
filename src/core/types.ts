@@ -123,6 +123,66 @@ export interface TurnRecord {
   error?: string;
 }
 
+/**
+ * One observed step in an agent trajectory.
+ *
+ * This is intentionally shaped near OpenTelemetry GenAI concepts (input,
+ * output, timing, usage, and provider-specific raw payloads) without binding
+ * Pupil to any experimental semantic-convention field names.
+ */
+export interface TrajectoryStep {
+  index: number;
+  input?: {
+    role: "user" | "system" | "assistant" | "tool";
+    content?: string;
+    raw?: unknown;
+  };
+  output?: {
+    role: "assistant" | "tool";
+    content?: string;
+    raw?: unknown;
+  };
+  startedAt?: string;
+  completedAt?: string;
+  latencyMs?: number;
+  error?: string;
+  /**
+   * Producer-specific extras. The driven producer stores the turn's own
+   * assertion scores here under `assertions` so `turn.assertions` targets keep
+   * resolving; trace producers may store span attributes instead.
+   */
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * Evaluator input shared by driven runs and future trace-derived producers.
+ *
+ * Driven runs build this from TurnRecord data. A trace reader can build the
+ * same shape from Langfuse/OTel spans without changing assertion or threshold
+ * evaluators. `currentStepIndex` scopes turn-level expectations; scenario-level
+ * expectations use the final response by default.
+ *
+ * When `currentStepIndex` is set, response targets resolve strictly against
+ * that step: a step without an output yields no response rather than falling
+ * back to another step's answer.
+ */
+export interface Trajectory {
+  source: "driven" | "trace";
+  steps: TrajectoryStep[];
+  currentStepIndex?: number;
+  finalResponse?: {
+    text?: string;
+    raw?: unknown;
+  };
+  metrics: Record<string, number>;
+  metadata: Record<string, unknown>;
+  /**
+   * Backward-compatible producer snapshot for existing `result.*` assertions.
+   * New evaluators should prefer explicit trajectory fields.
+   */
+  snapshot?: ScenarioResult;
+}
+
 export interface Score {
   name: string;
   verdict: Verdict;
