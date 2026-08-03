@@ -110,6 +110,24 @@ describe("Langfuse config resolution", () => {
     ).toEqual({ baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" });
   });
 
+  it("accepts wait and timeout settings from the environment", () => {
+    expect(
+      langfuseConfigFromEnv({
+        LANGFUSE_HOST: "http://langfuse.local",
+        LANGFUSE_PUBLIC_KEY: "pk",
+        LANGFUSE_SECRET_KEY: "sk",
+        LANGFUSE_WAIT_MS: "60000",
+        LANGFUSE_TIMEOUT_MS: "15000",
+      }),
+    ).toEqual({
+      baseUrl: "http://langfuse.local",
+      publicKey: "pk",
+      secretKey: "sk",
+      waitMs: 60000,
+      timeoutMs: 15000,
+    });
+  });
+
   it("falls back to LANGFUSE_BASE_URL", () => {
     expect(
       langfuseConfigFromEnv({
@@ -123,7 +141,12 @@ describe("Langfuse config resolution", () => {
   it("prefers pupil.config.yaml settings over the environment", () => {
     expect(
       resolveLangfuseConfig({
-        settings: { host: "http://configured.local", publicKey: "pk-cfg", waitMs: 0 },
+        settings: {
+          host: "http://configured.local",
+          publicKey: "pk-cfg",
+          waitMs: 0,
+          timeoutMs: 2000,
+        },
         env: {
           LANGFUSE_HOST: "http://env.local",
           LANGFUSE_PUBLIC_KEY: "pk-env",
@@ -135,6 +158,7 @@ describe("Langfuse config resolution", () => {
       publicKey: "pk-cfg",
       secretKey: "sk-env",
       waitMs: 0,
+      timeoutMs: 2000,
     });
   });
 
@@ -243,6 +267,51 @@ describe("Langfuse payload extraction", () => {
     });
   });
 
+  it("extracts enrichment from Langfuse v4 observation rows", () => {
+    const enrichment = extractLangfuseEnrichment(
+      {
+        data: [
+          {
+            id: "obs-1",
+            traceId: "trace-1",
+            type: "GENERATION",
+            name: "llm-call",
+            inputUsage: 12,
+            outputUsage: 4,
+            totalUsage: 16,
+            totalCost: 0.007,
+          },
+          {
+            id: "obs-2",
+            traceId: "trace-1",
+            type: "SPAN",
+            name: "iris-turn",
+          },
+          {
+            id: "obs-3",
+            traceId: "trace-2",
+            type: "TOOL",
+            name: "calendar.create",
+            inputUsage: 3,
+            outputUsage: 1,
+            totalCost: 0.002,
+          },
+        ],
+      },
+      { baseUrl: "https://cloud.langfuse.com" },
+    );
+
+    expect(enrichment).toMatchObject({
+      traceId: "trace-1",
+      traceUrl: "https://cloud.langfuse.com/trace/trace-1",
+      traceCount: 2,
+      costUsd: 0.009,
+      inputTokens: 15,
+      outputTokens: 5,
+      totalTokens: 16,
+      toolCalls: ["calendar.create"],
+    });
+  });
   it("collects tool names from toolCalls arrays", () => {
     expect(
       extractLangfuseEnrichment({
@@ -296,12 +365,12 @@ describe("Langfuse enrichment", () => {
 
     await enrichRunWithLangfuse(run, { config: config(stub.baseUrl), waitMs: 0 });
 
-    expect(stub.requests).toEqual([
-      {
-        url: "/api/public/sessions/session-1",
-        authorization: `Basic ${Buffer.from("pk-test:sk-test").toString("base64")}`,
-      },
-    ]);
+    expect(stub.requests).toHaveLength(1);
+    expect(stub.requests[0]?.url).toContain("/api/public/v2/observations");
+    expect(stub.requests[0]?.url).toContain("session-1");
+    expect(stub.requests[0]?.authorization).toBe(
+      `Basic ${Buffer.from("pk-test:sk-test").toString("base64")}`,
+    );
     expect(run.results[0]?.metrics).toMatchObject({
       cost_usd: 0.012,
       input_tokens: 10,
@@ -344,13 +413,15 @@ describe("Langfuse enrichment", () => {
   });
 
   it("records a skip when no trace is ingested within waitMs", async () => {
-    const stub = await stubSession({ id: "session-1", traces: [] });
+    const stub = await stubSession({ data: [] });
     const result = scenarioResult();
 
     await expect(
       enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 }),
     ).resolves.toBe("skipped");
 
+    expect(stub.requests).toHaveLength(1);
+    expect(stub.requests[0]?.url).toContain("/api/public/v2/observations");
     expect(result.metadata?.langfuse).toEqual({
       status: "skipped",
       sessionId: "session-1",
@@ -389,7 +460,8 @@ describe("Langfuse enrichment", () => {
 
     await enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 });
 
-    expect(stub.requests[0]?.url).toBe("/api/public/sessions/session-from-turn");
+    expect(stub.requests[0]?.url).toContain("/api/public/v2/observations");
+    expect(stub.requests[0]?.url).toContain("session-from-turn");
     expect(result.metadata?.langfuse).toMatchObject({ sessionId: "session-from-turn" });
   });
 
