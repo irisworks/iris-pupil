@@ -146,6 +146,11 @@ export interface TrajectoryStep {
   completedAt?: string;
   latencyMs?: number;
   error?: string;
+  /**
+   * Producer-specific extras. The driven producer stores the turn's own
+   * assertion scores here under `assertions` so `turn.assertions` targets keep
+   * resolving; trace producers may store span attributes instead.
+   */
   metadata: Record<string, unknown>;
 }
 
@@ -156,6 +161,10 @@ export interface TrajectoryStep {
  * same shape from Langfuse/OTel spans without changing assertion or threshold
  * evaluators. `currentStepIndex` scopes turn-level expectations; scenario-level
  * expectations use the final response by default.
+ *
+ * When `currentStepIndex` is set, response targets resolve strictly against
+ * that step: a step without an output yields no response rather than falling
+ * back to another step's answer.
  */
 export interface Trajectory {
   source: "driven" | "trace";
@@ -171,8 +180,9 @@ export interface Trajectory {
    * Backward-compatible producer snapshot for existing `result.*` assertions.
    * New evaluators should prefer explicit trajectory fields.
    */
-  snapshot?: unknown;
+  snapshot?: ScenarioResult;
 }
+
 export interface Score {
   name: string;
   verdict: Verdict;

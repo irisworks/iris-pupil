@@ -38,24 +38,40 @@ function currentStep(context: AssertionEvaluationContext): TrajectoryStep | unde
   return context.steps.at(-1);
 }
 
+function stepResponse(step: TrajectoryStep): { text?: string; raw?: unknown } | undefined {
+  return step.output ? { text: step.output.content, raw: step.output.raw } : undefined;
+}
+
 function currentResponse(
   context: AssertionEvaluationContext,
 ): { text?: string; raw?: unknown } | undefined {
+  // A scoped step must never resolve to another step's answer: an output-less
+  // step means "no evidence", which should fail an assertion, not silently
+  // borrow the final response.
+  if (context.currentStepIndex !== undefined) {
+    const step = context.steps[context.currentStepIndex];
+    return step ? stepResponse(step) : undefined;
+  }
   const step = currentStep(context);
-  return step?.output ? { text: step.output.content, raw: step.output.raw } : context.finalResponse;
+  return (step && stepResponse(step)) ?? context.finalResponse;
 }
 
 function legacyTurnView(step: TrajectoryStep | undefined): unknown {
   if (!step) return undefined;
+  const { assertions = [], ...metadata } = step.metadata as {
+    assertions?: unknown;
+    [key: string]: unknown;
+  };
   return {
     index: step.index,
     user: step.input?.content ?? "",
-    response: step.output ? { text: step.output.content, raw: step.output.raw } : undefined,
+    response: stepResponse(step),
     startedAt: step.startedAt,
     completedAt: step.completedAt,
     latencyMs: step.latencyMs,
     error: step.error,
-    metadata: step.metadata,
+    assertions,
+    metadata,
   };
 }
 
