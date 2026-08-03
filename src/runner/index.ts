@@ -180,16 +180,16 @@ function isRetryableRunnerError(error: unknown): boolean {
 
 export function createDrivenTrajectory({
   turns,
-  metrics,
+  metrics = {},
   metadata = {},
   currentStepIndex,
   snapshot,
 }: {
   turns: readonly TurnRecord[];
-  metrics: Record<string, number>;
+  metrics?: Record<string, number>;
   metadata?: Record<string, unknown>;
   currentStepIndex?: number;
-  snapshot?: unknown;
+  snapshot?: ScenarioResult;
 }): Trajectory {
   const finalResponse = turns.at(-1)?.response;
   return {
@@ -204,7 +204,9 @@ export function createDrivenTrajectory({
       completedAt: turn.completedAt,
       latencyMs: turn.latencyMs,
       error: turn.error,
-      metadata: {},
+      // Live reference: per-turn scores are assigned after this trajectory is
+      // built, and `turn.assertions` targets read them through here.
+      metadata: { assertions: turn.assertions },
     })),
     ...(currentStepIndex !== undefined && { currentStepIndex }),
     ...(finalResponse !== undefined && { finalResponse }),
@@ -213,6 +215,7 @@ export function createDrivenTrajectory({
     ...(snapshot !== undefined && { snapshot }),
   };
 }
+
 function createErrorResult(
   scenario: Scenario,
   startedAt: string,
@@ -285,11 +288,9 @@ async function executeAttempt(
         record.response = { text: response.text, raw: response.raw };
         record.assertions = evaluateAssertions(
           turn.expect,
-          createDrivenTrajectory({
-            turns,
-            metrics: { turns: turns.length },
-            currentStepIndex: index,
-          }),
+          // No metrics here: they are only complete once every turn has run, and
+          // a partial `turns` count would read as the scenario total.
+          createDrivenTrajectory({ turns, currentStepIndex: index }),
         );
       } catch (error) {
         record.error = errorMessage(error);

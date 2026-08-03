@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { PupilError, type Scenario, Verdict } from "../core/types.js";
+import { PupilError, type Scenario, type TurnRecord, Verdict } from "../core/types.js";
 import {
   RestDriverError,
   type RestConversation,
@@ -107,8 +107,78 @@ describe("driven trajectory producer", () => {
       ],
     });
   });
+
+  it("omits metrics by default and exposes turn scores for turn.assertions targets", () => {
+    const turn: TurnRecord = {
+      index: 0,
+      user: "please schedule",
+      response: { text: "Scheduled." },
+      startedAt: "2026-07-31T00:00:00.000Z",
+      assertions: [],
+    };
+    const trajectory = createDrivenTrajectory({ turns: [turn], currentStepIndex: 0 });
+
+    expect(trajectory.metrics).toEqual({});
+    // Scores are assigned after the trajectory is built; the step must see them.
+    turn.assertions.push({
+      name: "assertion:contains:response.text",
+      verdict: Verdict.Pass,
+      metadata: {},
+    });
+    expect(trajectory.steps[0]?.metadata).toEqual({ assertions: turn.assertions });
+  });
 });
+
 describe("scenario runner", () => {
+  it("binds each turn's assertions to that turn's own response", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [
+        { match: "schedule", reply: "Scheduled." },
+        { match: "cancel", reply: "Cancelled." },
+      ],
+    });
+
+    const result = await runScenario(
+      scenario({
+        turns: [
+          {
+            user: "please schedule",
+            expect: [
+              { type: "equals", target: "response.text", value: "Scheduled.", caseSensitive: true },
+              {
+                type: "not_contains",
+                target: "response.text",
+                value: "Cancelled",
+                caseSensitive: true,
+              },
+            ],
+          },
+          {
+            user: "please cancel",
+            expect: [
+              { type: "equals", target: "response.text", value: "Cancelled.", caseSensitive: true },
+              {
+                type: "not_contains",
+                target: "response.text",
+                value: "Scheduled",
+                caseSensitive: true,
+              },
+            ],
+          },
+        ],
+      }),
+      { driverConfig: { baseUrl, originThreadTs: "thread-scoped" } },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.turns.flatMap((turn) => turn.assertions).map((score) => score.verdict)).toEqual([
+      Verdict.Pass,
+      Verdict.Pass,
+      Verdict.Pass,
+      Verdict.Pass,
+    ]);
+  });
+
   it("executes a scenario end to end against the IRIS-compatible mock agent", async () => {
     const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
 
