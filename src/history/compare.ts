@@ -35,6 +35,7 @@ export interface RunComparison {
 
 export interface CompareRunsOptions {
   latencyRegressionThresholdMs?: number;
+  latencyRegressionThresholdPct?: number;
   metricRegressionThresholds?: Record<string, number>;
 }
 
@@ -67,7 +68,9 @@ function metricThreshold(
     if (options.latencyRegressionThresholdMs !== undefined) {
       return options.latencyRegressionThresholdMs;
     }
-    return beforeValue !== undefined ? beforeValue * DEFAULT_LATENCY_REGRESSION_PERCENT : undefined;
+    return beforeValue !== undefined
+      ? beforeValue * (options.latencyRegressionThresholdPct ?? DEFAULT_LATENCY_REGRESSION_PERCENT)
+      : undefined;
   }
   return undefined;
 }

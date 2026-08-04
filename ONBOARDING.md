@@ -149,7 +149,8 @@ Pre-existing, unrelated to your change. Fix with
 **`compare` uses a default latency noise band.** The default latency regression threshold is now
 20% of the baseline `latency_ms`. A tiny runtime fluctuation no longer fails the comparison gate,
 but a larger increase still produces `metric_regressions=1` and exit code 1. Use
-`--latency-threshold-ms` when you need an absolute millisecond threshold instead.
+`--latency-threshold-pct` to tune the percentage band, or `--latency-threshold-ms` when you need
+an absolute millisecond threshold instead.
 
 **`pupil.config.yaml` is not loaded by anything.** `loadPupilConfig()` in `src/core/config.ts`
 is implemented, tested, and exported — and called by no CLI command. `run` takes flags only,

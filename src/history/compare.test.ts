@@ -128,6 +128,26 @@ describe("run comparison", () => {
     expect(comparison.summary.metricRegressions).toBe(1);
   });
 
+  it("allows callers to override the latency percentage band", () => {
+    const base = run("base", [
+      scenario({ scenarioId: "latency", metrics: { latency_ms: 1000, turns: 1 } }),
+    ]);
+    const current = run("current", [
+      scenario({ scenarioId: "latency", metrics: { latency_ms: 1151, turns: 1 } }),
+    ]);
+
+    const defaultComparison = compareRuns(base, current);
+    const customComparison = compareRuns(base, current, { latencyRegressionThresholdPct: 0.15 });
+
+    expect(defaultComparison.hasRegressions).toBe(false);
+    expect(customComparison.hasRegressions).toBe(true);
+    expect(customComparison.scenarios[0]?.metrics[0]).toMatchObject({
+      delta: 151,
+      regression: true,
+      threshold: 150,
+    });
+  });
+
   it("flags latency increases beyond threshold and records metric deltas", () => {
     const base = run("base", [
       scenario({ scenarioId: "slow", metrics: { latency_ms: 1000, turns: 1 } }),
