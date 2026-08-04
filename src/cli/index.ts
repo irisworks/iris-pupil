@@ -348,13 +348,12 @@ program
     "--latency-threshold-ms <latencyThresholdMs>",
     "Allowed latency increase before flagging a regression",
     (value) => parseNonNegativeNumber(value, "latency-threshold-ms"),
-    0,
   )
   .action(
     async (
       baseRunId: string,
       currentRunId: string,
-      options: { historyDir: string; latencyThresholdMs: number },
+      options: { historyDir: string; latencyThresholdMs?: number },
     ) => {
       const store = new JsonRunHistoryStore({ dir: options.historyDir });
       const [base, current] = await Promise.all([
