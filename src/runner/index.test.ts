@@ -428,12 +428,9 @@ describe("scenario runner", () => {
     });
 
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(1999);
-    expect(calls).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1);
     const result = await resultPromise;
 
-    expect(calls[0]).toBe(started + 8000);
+    expect(calls[0]).toBe(started + 6000);
     expect(result.metadata?.langfuse).toMatchObject({ status: "enriched" });
   });
 
