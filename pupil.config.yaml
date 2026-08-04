@@ -19,5 +19,8 @@ langfuse:
   host: ${LANGFUSE_HOST:-}
   publicKey: ${LANGFUSE_PUBLIC_KEY:-}
   secretKey: ${LANGFUSE_SECRET_KEY:-}
-  # Langfuse ingests traces asynchronously; how long to poll for one before skipping.
-  waitMs: 10000
+  # Langfuse ingests traces asynchronously; the runner counts scenario runtime
+  # toward this initial delay before it starts polling.
+  initialDelayMs: 8000
+  # Total trace lookup window, measured from scenario start when available.
+  waitMs: 25000
