@@ -97,12 +97,12 @@ describe("run comparison", () => {
 
   it("uses a 20 percent latency band by default", () => {
     const base = run("base", [
-      scenario({ scenarioId: "small-noise", metrics: { latency_ms: 1000, turns: 1 } }),
-      scenario({ scenarioId: "large-regression", metrics: { latency_ms: 1000, turns: 1 } }),
+      scenario({ scenarioId: "small-noise", metrics: { latency_ms: 1001, turns: 1 } }),
+      scenario({ scenarioId: "large-regression", metrics: { latency_ms: 1001, turns: 1 } }),
     ]);
     const current = run("current", [
-      scenario({ scenarioId: "small-noise", metrics: { latency_ms: 1001, turns: 1 } }),
-      scenario({ scenarioId: "large-regression", metrics: { latency_ms: 1201, turns: 1 } }),
+      scenario({ scenarioId: "small-noise", metrics: { latency_ms: 1002, turns: 1 } }),
+      scenario({ scenarioId: "large-regression", metrics: { latency_ms: 1202, turns: 1 } }),
     ]);
 
     const comparison = compareRuns(base, current);
@@ -115,14 +115,14 @@ describe("run comparison", () => {
     expect(smallNoise?.metrics.find((metric) => metric.metric === "latency_ms")).toMatchObject({
       delta: 1,
       regression: false,
-      threshold: 200,
+      threshold: 200.2,
     });
     expect(largeRegression?.regression).toBe(true);
     expect(largeRegression?.metrics.find((metric) => metric.metric === "latency_ms")).toMatchObject(
       {
         delta: 201,
         regression: true,
-        threshold: 200,
+        threshold: 200.2,
       },
     );
     expect(comparison.summary.metricRegressions).toBe(1);
