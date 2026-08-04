@@ -194,8 +194,8 @@ export function resolveLangfuseConfig(
   const secretKey = firstString(settings.secretKey, env.LANGFUSE_SECRET_KEY);
   if (!baseUrl || !publicKey || !secretKey) return undefined;
 
-  const waitMs = settings.waitMs ?? asNumber(env.LANGFUSE_WAIT_MS);
-  const timeoutMs = settings.timeoutMs ?? asNumber(env.LANGFUSE_TIMEOUT_MS);
+  const waitMs = asNumber(env.LANGFUSE_WAIT_MS) ?? settings.waitMs;
+  const timeoutMs = asNumber(env.LANGFUSE_TIMEOUT_MS) ?? settings.timeoutMs;
   return {
     baseUrl: normalizeBaseUrl(baseUrl),
     publicKey,
@@ -247,6 +247,14 @@ function tracesFromV2Observations(payload: unknown, baseUrl?: string): JsonRecor
   }));
 }
 
+function traceIdsFromPayload(payload: unknown): string[] {
+  const ids = new Set<string>();
+  for (const trace of tracesFromSession(payload)) {
+    const traceId = firstString(trace.id, trace.traceId, trace.trace_id);
+    if (traceId) ids.add(traceId);
+  }
+  return [...ids];
+}
 function observationsFromTrace(trace: JsonRecord, payload: unknown): JsonRecord[] {
   const candidates = [
     trace.observations,
@@ -340,6 +348,18 @@ export function extractLangfuseEnrichment(
   };
 }
 
+function traceDetailUrl(config: LangfuseConfig, traceId: string): URL {
+  return new URL(
+    `${normalizeBaseUrl(config.baseUrl)}/api/public/traces/${encodeURIComponent(traceId)}`,
+  );
+}
+
+function tracesUrlForSession(config: LangfuseConfig, sessionId: string): URL {
+  const url = new URL(`${normalizeBaseUrl(config.baseUrl)}/api/public/traces`);
+  url.searchParams.set("sessionId", sessionId);
+  url.searchParams.set("limit", "100");
+  return url;
+}
 async function fetchSession(
   config: LangfuseConfig,
   sessionId: string,
@@ -350,42 +370,36 @@ async function fetchSession(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const observationsUrl = new URL(
-      `${normalizeBaseUrl(config.baseUrl)}/api/public/v2/observations`,
-    );
-    observationsUrl.searchParams.set(
-      "filter",
-      JSON.stringify([{ type: "string", column: "sessionId", operator: "=", value: sessionId }]),
-    );
-    observationsUrl.searchParams.set("fields", "core,basic,io,usage,metadata,trace_context");
-    observationsUrl.searchParams.set(
-      "fromStartTime",
-      new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-    );
-    observationsUrl.searchParams.set("toStartTime", new Date(Date.now() + 60 * 1000).toISOString());
-    observationsUrl.searchParams.set("limit", "100");
-
-    const observationsResponse = await fetchImpl(observationsUrl, {
+    const tracesResponse = await fetchImpl(tracesUrlForSession(config, sessionId), {
       headers: { authorization: `Basic ${auth}` },
       signal: controller.signal,
     });
-    if (observationsResponse.ok) {
-      return extractLangfuseEnrichment(await observationsResponse.json(), {
-        baseUrl: config.baseUrl,
-      });
+    if (tracesResponse.ok) {
+      const tracesPayload = await tracesResponse.json();
+      const traceIds = traceIdsFromPayload(tracesPayload);
+      if (traceIds.length > 0) {
+        const traces: JsonRecord[] = [];
+        for (const traceId of traceIds) {
+          const traceResponse = await fetchImpl(traceDetailUrl(config, traceId), {
+            headers: { authorization: `Basic ${auth}` },
+            signal: controller.signal,
+          });
+          if (!traceResponse.ok) {
+            throw new Error(`Langfuse lookup failed with status ${traceResponse.status}`);
+          }
+          const trace = await traceResponse.json();
+          if (isRecord(trace)) {
+            traces.push({ url: `${normalizeBaseUrl(config.baseUrl)}/trace/${traceId}`, ...trace });
+          }
+        }
+        return (
+          extractLangfuseEnrichment({ traces }, { baseUrl: config.baseUrl }) ??
+          extractLangfuseEnrichment(tracesPayload, { baseUrl: config.baseUrl })
+        );
+      }
+    } else if (tracesResponse.status !== 404) {
+      throw new Error(`Langfuse lookup failed with status ${tracesResponse.status}`);
     }
-    if (observationsResponse.status !== 404) {
-      throw new Error(`Langfuse lookup failed with status ${observationsResponse.status}`);
-    }
-
-    const response = await fetchImpl(
-      `${normalizeBaseUrl(config.baseUrl)}/api/public/sessions/${encodeURIComponent(sessionId)}`,
-      { headers: { authorization: `Basic ${auth}` }, signal: controller.signal },
-    );
-    if (!response.ok) {
-      throw new Error(`Langfuse lookup failed with status ${response.status}`);
-    }
-    return extractLangfuseEnrichment(await response.json(), { baseUrl: config.baseUrl });
   } finally {
     clearTimeout(timeout);
   }

@@ -345,14 +345,17 @@ describe("scenario runner", () => {
             return {
               ok: true,
               status: 200,
-              json: async () => ({ traces: [{ id: "trace-1", totalCost: 0.02 }] }),
+              json: async () =>
+                calls.length === 1
+                  ? { data: [{ id: "trace-1" }] }
+                  : { id: "trace-1", totalCost: 0.02 },
             };
           }) as unknown as typeof fetch,
         },
       },
     );
 
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(result.metrics.cost_usd).toBe(0.02);
     expect(result.verdict).toBe(Verdict.Fail);
     expect(result.scores.find((score) => score.name === "threshold:maxCostUsd")?.verdict).toBe(
@@ -367,12 +370,13 @@ describe("scenario runner", () => {
       langfuse: {
         config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
         waitMs: 0,
-        fetchImpl: (async () => ({
+        fetchImpl: (async (url: string) => ({
           ok: true,
           status: 200,
-          json: async () => ({
-            traces: [{ id: "trace-err", url: "http://langfuse.local/t/trace-err" }],
-          }),
+          json: async () =>
+            String(url).includes("/api/public/traces/trace-err")
+              ? { id: "trace-err", url: "http://langfuse.local/t/trace-err" }
+              : { data: [{ id: "trace-err" }] },
         })) as unknown as typeof fetch,
       },
     });
