@@ -333,11 +333,14 @@ export async function runScenario(
   let lastTurns: TurnRecord[] = [];
   let lastSessionId: string | undefined;
   let attemptsUsed = 0;
+  let lastAttemptStartedAtMs = startedAtMs;
 
   options.progress?.({ type: "scenario:start", scenarioId: scenario.id, attempt: 1, maxAttempts });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attemptsUsed = attempt;
+    const attemptStartedAtMs = Date.now();
+    lastAttemptStartedAtMs = attemptStartedAtMs;
     const config = mergedDriverConfig(scenario, options.driverConfig);
     const context = { runId, scenarioId: scenario.id, attempt, config };
     const driver =
@@ -369,7 +372,7 @@ export async function runScenario(
       if (options.langfuse !== false) {
         await enrichScenarioWithLangfuse(baseResult, {
           ...(options.langfuse ?? {}),
-          startedAt: startedAtMs,
+          startedAt: attemptStartedAtMs,
         });
       }
       const trajectory = createDrivenTrajectory({
@@ -429,7 +432,7 @@ export async function runScenario(
   if (options.langfuse !== false) {
     await enrichScenarioWithLangfuse(result, {
       ...(options.langfuse ?? {}),
-      startedAt: startedAtMs,
+      startedAt: lastAttemptStartedAtMs,
     });
   }
   options.progress?.({

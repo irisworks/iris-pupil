@@ -43,9 +43,9 @@ export interface LangfuseEnrichmentOptions {
   timeoutMs?: number;
   /** How long to keep polling for a trace; Langfuse ingestion is asynchronous. */
   waitMs?: number;
-  /** Earliest point, measured from scenario start, when polling is expected to be useful. */
+  /** Earliest point, measured from scenario start, when a second poll is expected to be useful. */
   initialDelayMs?: number;
-  /** Scenario start timestamp in epoch milliseconds. Runtime before enrichment counts as wait time. */
+  /** Scenario start timestamp in epoch milliseconds. Only used to discount `initialDelayMs`. */
   startedAt?: number;
   /** Initial backoff delay between trace lookup attempts. Primarily useful for tests. */
   pollIntervalMs?: number;
@@ -203,9 +203,9 @@ export function resolveLangfuseConfig(
   const secretKey = firstString(settings.secretKey, env.LANGFUSE_SECRET_KEY);
   if (!baseUrl || !publicKey || !secretKey) return undefined;
 
-  const waitMs = asNumber(env.LANGFUSE_WAIT_MS) ?? settings.waitMs;
-  const timeoutMs = asNumber(env.LANGFUSE_TIMEOUT_MS) ?? settings.timeoutMs;
-  const initialDelayMs = asNumber(env.LANGFUSE_INITIAL_DELAY_MS) ?? settings.initialDelayMs;
+  const waitMs = settings.waitMs ?? asNumber(env.LANGFUSE_WAIT_MS);
+  const timeoutMs = settings.timeoutMs ?? asNumber(env.LANGFUSE_TIMEOUT_MS);
+  const initialDelayMs = settings.initialDelayMs ?? asNumber(env.LANGFUSE_INITIAL_DELAY_MS);
   return {
     baseUrl: normalizeBaseUrl(baseUrl),
     publicKey,
@@ -266,6 +266,7 @@ function traceIdsFromPayload(payload: unknown): string[] {
   }
   return [...ids];
 }
+
 function observationsFromTrace(trace: JsonRecord, payload: unknown): JsonRecord[] {
   const candidates = [
     trace.observations,
@@ -371,6 +372,25 @@ function tracesUrlForSession(config: LangfuseConfig, sessionId: string): URL {
   url.searchParams.set("limit", "100");
   return url;
 }
+
+async function fetchLangfuse(
+  url: URL,
+  auth: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, {
+      headers: { authorization: `Basic ${auth}` },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchSession(
   config: LangfuseConfig,
   sessionId: string,
@@ -378,43 +398,41 @@ async function fetchSession(
   timeoutMs: number,
 ): Promise<LangfuseEnrichment | undefined> {
   const auth = Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const tracesResponse = await fetchImpl(tracesUrlForSession(config, sessionId), {
-      headers: { authorization: `Basic ${auth}` },
-      signal: controller.signal,
-    });
-    if (tracesResponse.ok) {
-      const tracesPayload = await tracesResponse.json();
-      const traceIds = traceIdsFromPayload(tracesPayload);
-      if (traceIds.length > 0) {
-        const traces: JsonRecord[] = [];
-        for (const traceId of traceIds) {
-          const traceResponse = await fetchImpl(traceDetailUrl(config, traceId), {
-            headers: { authorization: `Basic ${auth}` },
-            signal: controller.signal,
-          });
-          if (!traceResponse.ok) {
-            throw new Error(`Langfuse lookup failed with status ${traceResponse.status}`);
-          }
-          const trace = await traceResponse.json();
-          if (isRecord(trace)) {
-            traces.push({ url: `${normalizeBaseUrl(config.baseUrl)}/trace/${traceId}`, ...trace });
-          }
-        }
-        return (
-          extractLangfuseEnrichment({ traces }, { baseUrl: config.baseUrl }) ??
-          extractLangfuseEnrichment(tracesPayload, { baseUrl: config.baseUrl })
+  const tracesResponse = await fetchLangfuse(
+    tracesUrlForSession(config, sessionId),
+    auth,
+    fetchImpl,
+    timeoutMs,
+  );
+  if (tracesResponse.ok) {
+    const tracesPayload = await tracesResponse.json();
+    const traceIds = traceIdsFromPayload(tracesPayload);
+    if (traceIds.length > 0) {
+      const traces: JsonRecord[] = [];
+      for (const traceId of traceIds) {
+        const traceResponse = await fetchLangfuse(
+          traceDetailUrl(config, traceId),
+          auth,
+          fetchImpl,
+          timeoutMs,
         );
+        if (!traceResponse.ok) return undefined;
+        const trace = await traceResponse.json();
+        if (isRecord(trace)) {
+          traces.push({ url: `${normalizeBaseUrl(config.baseUrl)}/trace/${traceId}`, ...trace });
+        }
       }
-    } else if (tracesResponse.status !== 404) {
-      throw new Error(`Langfuse lookup failed with status ${tracesResponse.status}`);
+      return (
+        extractLangfuseEnrichment({ traces }, { baseUrl: config.baseUrl }) ??
+        extractLangfuseEnrichment(tracesPayload, { baseUrl: config.baseUrl })
+      );
     }
-  } finally {
-    clearTimeout(timeout);
+  } else if (tracesResponse.status !== 404) {
+    throw new Error(`Langfuse lookup failed with status ${tracesResponse.status}`);
   }
+  return undefined;
 }
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -430,25 +448,24 @@ async function lookupSession(
   initialBackoffMs: number,
   startedAt?: number,
 ): Promise<LangfuseEnrichment | undefined> {
-  const baseline = startedAt ?? Date.now();
-  const deadline = baseline + Math.max(waitMs, 0);
-  if (startedAt !== undefined) {
-    const initialPollAt = baseline + Math.max(initialDelayMs, 0);
-    const initialSleepMs = Math.min(
-      Math.max(initialPollAt - Date.now(), 0),
-      Math.max(deadline - Date.now(), 0),
-    );
-    if (initialSleepMs > 0) await sleep(initialSleepMs);
-  }
-
+  const deadline = Date.now() + Math.max(waitMs, 0);
   let backoffMs = Math.max(initialBackoffMs, 0);
+  let attempts = 0;
+
   for (;;) {
+    attempts += 1;
     const enrichment = await fetchSession(config, sessionId, fetchImpl, timeoutMs);
     if (enrichment) return enrichment;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return undefined;
-    await sleep(Math.min(backoffMs, remaining));
-    backoffMs = Math.min(backoffMs * 2, DEFAULT_LANGFUSE_MAX_BACKOFF_MS);
+
+    let sleepMs = backoffMs;
+    if (attempts === 1 && startedAt !== undefined) {
+      sleepMs = Math.max(startedAt + Math.max(initialDelayMs, 0) - Date.now(), 0);
+    } else {
+      backoffMs = Math.min(backoffMs * 2, DEFAULT_LANGFUSE_MAX_BACKOFF_MS);
+    }
+    await sleep(Math.min(sleepMs, remaining));
   }
 }
 

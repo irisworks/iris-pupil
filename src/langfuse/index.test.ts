@@ -141,7 +141,7 @@ describe("Langfuse config resolution", () => {
     ).toBe("http://langfuse.local");
   });
 
-  it("lets env override runtime polling while config supplies endpoint settings", () => {
+  it("lets config override env for runtime polling while env supplies missing settings", () => {
     expect(
       resolveLangfuseConfig({
         settings: {
@@ -163,8 +163,8 @@ describe("Langfuse config resolution", () => {
       baseUrl: "http://configured.local",
       publicKey: "pk-cfg",
       secretKey: "sk-env",
-      waitMs: 90000,
-      timeoutMs: 10000,
+      waitMs: 0,
+      timeoutMs: 2000,
       initialDelayMs: 12000,
     });
   });
@@ -465,7 +465,7 @@ describe("Langfuse enrichment", () => {
     expect(result.metrics.cost_usd).toBe(0.004);
   });
 
-  it("defers the first lookup until the remaining initial delay has elapsed", async () => {
+  it("tries once immediately before waiting for the remaining initial delay", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-30T00:00:10.000Z"));
     const calls: number[] = [];
@@ -483,20 +483,23 @@ describe("Langfuse enrichment", () => {
         return {
           ok: true,
           status: 200,
-          json: async () =>
-            String(url).includes("/api/public/traces/trace-1")
-              ? { id: "trace-1", totalCost: 0.004 }
-              : { data: [{ id: "trace-1" }] },
+          json: async () => {
+            if (String(url).includes("/api/public/traces/trace-1")) {
+              return { id: "trace-1", totalCost: 0.004 };
+            }
+            return calls.length === 1 ? { data: [] } : { data: [{ id: "trace-1" }] };
+          },
         };
       }) as unknown as typeof fetch,
     });
 
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual([Date.parse("2026-07-30T00:00:10.000Z")]);
     await vi.advanceTimersByTimeAsync(2999);
-    expect(calls).toHaveLength(0);
+    expect(calls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     await expect(promise).resolves.toBe("enriched");
-    expect(calls[0]).toBe(startedAt + 8000);
-    vi.useRealTimers();
+    expect(calls[1]).toBe(startedAt + 8000);
   });
 
   it("does not add initial delay when scenario runtime already consumed it", async () => {
@@ -567,6 +570,94 @@ describe("Langfuse enrichment", () => {
       Date.parse("2026-07-30T00:00:07.000Z"),
     ]);
     vi.useRealTimers();
+  });
+
+  it("keeps polling after a slow scenario already exceeded waitMs from scenario start", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-30T00:01:00.000Z"));
+    const listCalls: number[] = [];
+    const result = scenarioResult();
+
+    const promise = enrichScenarioWithLangfuse(result, {
+      config: config("http://langfuse.local"),
+      startedAt: Date.now() - 30000,
+      waitMs: 1000,
+      initialDelayMs: 8000,
+      pollIntervalMs: 100,
+      fetchImpl: (async (url: string) => {
+        if (String(url).includes("/api/public/traces/trace-1")) {
+          return { ok: true, status: 200, json: async () => ({ id: "trace-1", totalCost: 0.004 }) };
+        }
+        listCalls.push(Date.now());
+        return {
+          ok: true,
+          status: 200,
+          json: async () => (listCalls.length === 1 ? { data: [] } : { data: [{ id: "trace-1" }] }),
+        };
+      }) as unknown as typeof fetch,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(promise).resolves.toBe("enriched");
+    expect(result.metrics.cost_usd).toBe(0.004);
+  });
+
+  it("uses a fresh timeout signal for each trace lookup request", async () => {
+    const signals = new Set<AbortSignal | null | undefined>();
+    const result = scenarioResult();
+
+    await expect(
+      enrichScenarioWithLangfuse(result, {
+        config: config("http://langfuse.local"),
+        waitMs: 0,
+        fetchImpl: (async (url: string, init?: RequestInit) => {
+          signals.add(init?.signal);
+          if (String(url).includes("/api/public/traces/trace-1")) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ id: "trace-1", totalCost: 0.002 }),
+            };
+          }
+          if (String(url).includes("/api/public/traces/trace-2")) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ id: "trace-2", totalCost: 0.003 }),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ data: [{ id: "trace-1" }, { id: "trace-2" }] }),
+          };
+        }) as unknown as typeof fetch,
+      }),
+    ).resolves.toBe("enriched");
+
+    expect(signals.size).toBe(3);
+    expect(result.metrics.cost_usd).toBe(0.005);
+  });
+
+  it("keeps polling when a trace detail is listed before it is readable", async () => {
+    const stub = await stubSession(
+      { data: [{ id: "trace-1" }] },
+      { status: 404 },
+      { data: [{ id: "trace-1" }] },
+      { id: "trace-1", totalCost: 0.004 },
+    );
+    const result = scenarioResult();
+
+    await expect(
+      enrichScenarioWithLangfuse(result, {
+        config: config(stub.baseUrl),
+        waitMs: 2000,
+        pollIntervalMs: 1,
+      }),
+    ).resolves.toBe("enriched");
+
+    expect(result.metrics.cost_usd).toBe(0.004);
   });
 
   it("records a skip when no trace is ingested within waitMs", async () => {
