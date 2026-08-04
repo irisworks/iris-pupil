@@ -596,7 +596,7 @@ describe("pupil CLI", () => {
     const historyDir = join(dir, "history");
 
     try {
-      await writeCompareRuns(historyDir, { latencyMs: 1151 });
+      await writeCompareRuns(historyDir, { latencyMs: 1011 });
 
       const result = spawnSync(
         process.execPath,
@@ -608,7 +608,7 @@ describe("pupil CLI", () => {
           "--history-dir",
           historyDir,
           "--latency-threshold-pct",
-          "15",
+          "1",
         ],
         { encoding: "utf-8" },
       );
@@ -616,7 +616,7 @@ describe("pupil CLI", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toBe("");
       expect(result.stdout).toContain("metric_regressions=1");
-      expect(result.stdout).toContain("latency_ms increased by 151 beyond threshold 150");
+      expect(result.stdout).toContain("latency_ms increased by 11 beyond threshold 10");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

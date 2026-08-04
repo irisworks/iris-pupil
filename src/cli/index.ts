@@ -38,8 +38,7 @@ function parseNonNegativeNumber(value: string, name: string): number {
 }
 
 function parseNonNegativePercent(value: string, name: string): number {
-  const parsed = parseNonNegativeNumber(value, name);
-  return parsed > 1 ? parsed / 100 : parsed;
+  return parseNonNegativeNumber(value, name) / 100;
 }
 function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
@@ -356,7 +355,7 @@ program
   )
   .option(
     "--latency-threshold-pct <latencyThresholdPct>",
-    "Allowed latency increase as a fraction or percent before flagging a regression (default: 20%)",
+    "Allowed latency increase as a percent before flagging a regression (default: 20%)",
     (value) => parseNonNegativePercent(value, "latency-threshold-pct"),
   )
   .action(

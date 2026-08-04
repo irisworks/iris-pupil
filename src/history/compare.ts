@@ -57,6 +57,10 @@ function scenarioStatus(
 
 const DEFAULT_LATENCY_REGRESSION_PERCENT = 0.2;
 
+function roundThreshold(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
 function metricThreshold(
   metric: string,
   beforeValue: number | undefined,
@@ -69,7 +73,10 @@ function metricThreshold(
       return options.latencyRegressionThresholdMs;
     }
     return beforeValue !== undefined
-      ? beforeValue * (options.latencyRegressionThresholdPct ?? DEFAULT_LATENCY_REGRESSION_PERCENT)
+      ? roundThreshold(
+          beforeValue *
+            (options.latencyRegressionThresholdPct ?? DEFAULT_LATENCY_REGRESSION_PERCENT),
+        )
       : undefined;
   }
   return undefined;
