@@ -94,6 +94,40 @@ describe("run comparison", () => {
     expect(comparison.hasRegressions).toBe(false);
     expect(comparison.summary).toMatchObject({ unchanged: 2, regressed: 0, fixed: 0 });
   });
+
+  it("uses a 20 percent latency band by default", () => {
+    const base = run("base", [
+      scenario({ scenarioId: "small-noise", metrics: { latency_ms: 1000, turns: 1 } }),
+      scenario({ scenarioId: "large-regression", metrics: { latency_ms: 1000, turns: 1 } }),
+    ]);
+    const current = run("current", [
+      scenario({ scenarioId: "small-noise", metrics: { latency_ms: 1001, turns: 1 } }),
+      scenario({ scenarioId: "large-regression", metrics: { latency_ms: 1201, turns: 1 } }),
+    ]);
+
+    const comparison = compareRuns(base, current);
+    const smallNoise = comparison.scenarios.find((item) => item.scenarioId === "small-noise");
+    const largeRegression = comparison.scenarios.find(
+      (item) => item.scenarioId === "large-regression",
+    );
+
+    expect(smallNoise?.regression).toBe(false);
+    expect(smallNoise?.metrics.find((metric) => metric.metric === "latency_ms")).toMatchObject({
+      delta: 1,
+      regression: false,
+      threshold: 200,
+    });
+    expect(largeRegression?.regression).toBe(true);
+    expect(largeRegression?.metrics.find((metric) => metric.metric === "latency_ms")).toMatchObject(
+      {
+        delta: 201,
+        regression: true,
+        threshold: 200,
+      },
+    );
+    expect(comparison.summary.metricRegressions).toBe(1);
+  });
+
   it("flags latency increases beyond threshold and records metric deltas", () => {
     const base = run("base", [
       scenario({ scenarioId: "slow", metrics: { latency_ms: 1000, turns: 1 } }),
@@ -140,12 +174,11 @@ describe("run comparison", () => {
     expect(formatRunComparison(comparison)).toContain(
       [
         "Comparison base -> current",
-        "Summary: regressed=0 fixed=0 still_failing=0 new=0 removed=0 unchanged=2 metric_regressions=1",
+        "Summary: regressed=0 fixed=0 still_failing=0 new=0 removed=0 unchanged=2 metric_regressions=0",
         "UNCHANGED a: pass -> pass",
         "  metric latency_ms: 1000 -> 1000 (delta 0)",
         "  metric turns: 1 -> 1 (delta 0)",
-        "REGRESSION b: pass -> pass",
-        "  reason: latency_ms increased by 1 beyond threshold 0",
+        "UNCHANGED b: pass -> pass",
       ].join("\n"),
     );
   });
