@@ -36,6 +36,11 @@ function parseNonNegativeNumber(value: string, name: string): number {
   }
   return parsed;
 }
+
+function parseNonNegativePercent(value: string, name: string): number {
+  const parsed = parseNonNegativeNumber(value, name);
+  return parsed > 1 ? parsed / 100 : parsed;
+}
 function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -346,14 +351,19 @@ program
   .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
   .option(
     "--latency-threshold-ms <latencyThresholdMs>",
-    "Allowed latency increase before flagging a regression",
+    "Allowed latency increase in milliseconds before flagging a regression",
     (value) => parseNonNegativeNumber(value, "latency-threshold-ms"),
+  )
+  .option(
+    "--latency-threshold-pct <latencyThresholdPct>",
+    "Allowed latency increase as a fraction or percent before flagging a regression (default: 20%)",
+    (value) => parseNonNegativePercent(value, "latency-threshold-pct"),
   )
   .action(
     async (
       baseRunId: string,
       currentRunId: string,
-      options: { historyDir: string; latencyThresholdMs?: number },
+      options: { historyDir: string; latencyThresholdMs?: number; latencyThresholdPct?: number },
     ) => {
       const store = new JsonRunHistoryStore({ dir: options.historyDir });
       const [base, current] = await Promise.all([
@@ -362,6 +372,7 @@ program
       ]);
       const comparison = compareRuns(base, current, {
         latencyRegressionThresholdMs: options.latencyThresholdMs,
+        latencyRegressionThresholdPct: options.latencyThresholdPct,
       });
 
       process.stdout.write(formatRunComparison(comparison));
