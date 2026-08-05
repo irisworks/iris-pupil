@@ -199,3 +199,33 @@ describe("IRIS mock agent", () => {
     await hangingRequest;
   });
 });
+
+describe("span store — session initialization", () => {
+  it("initialises span store with empty array when a session is created", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent({ port: 0 }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const session = await createSession(baseUrl);
+
+    expect(spanStore.has(session.sessionId)).toBe(true);
+    expect(spanStore.get(session.sessionId)).toEqual([]);
+  });
+
+  it("does not initialise span store when session creation fails", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent({ port: 0 }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}), // missing required fields
+    });
+
+    expect(response.status).toBe(400);
+    expect(spanStore.size).toBe(0);
+  });
+});
