@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { MockTraceSource } from "./mockTraceSource.js";
+import type { TraceSource } from "../trace/index.js";
 
 export interface IrisMockRule {
   match: string | RegExp;
@@ -287,5 +289,18 @@ export function createIrisMockAgent(
         server.close((error) => (error ? reject(error) : resolve()));
       });
     },
+  };
+}
+
+export interface MockAgentBundle {
+  agent: IrisMockAgent;
+  traceSource: TraceSource;
+}
+
+export function createMockAgentBundle(options?: IrisMockOptions): MockAgentBundle {
+  const spanStore = new Map<string, string[]>();
+  return {
+    agent: createIrisMockAgent(options, spanStore),
+    traceSource: new MockTraceSource(spanStore),
   };
 }

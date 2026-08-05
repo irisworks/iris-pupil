@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { applyTraceEnrichment } from "../trace/index.js";
+import type { ScenarioResult } from "../core/types.js";
+import { createMockAgentBundle, type IrisMockAgent } from "./irisMockAgent.js";
 import { MockTraceSource } from "./mockTraceSource.js";
 
 describe("MockTraceSource", () => {
@@ -56,5 +59,69 @@ describe("MockTraceSource", () => {
   it("metadataKey is 'mock'", () => {
     const source = new MockTraceSource(new Map());
     expect(source.metadataKey).toBe("mock");
+  });
+});
+
+describe("integration — createMockAgentBundle + applyTraceEnrichment", () => {
+  let agent: IrisMockAgent | undefined;
+
+  afterEach(async () => {
+    if (agent) {
+      await agent.close();
+      agent = undefined;
+    }
+  });
+
+  it("enriches ScenarioResult with tool calls from mock spans — no network, no API keys", async () => {
+    const bundle = createMockAgentBundle({
+      port: 0,
+      traceRules: [{ match: "book", toolCalls: ["calendar_create", "notify_user"] }],
+    });
+    agent = bundle.agent;
+    const address = await agent.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    // Create session and send a message that triggers the trace rule
+    const sessionResponse = await fetch(`${baseUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ originChannel: "test", originThreadTs: "ts-1" }),
+    });
+    const { sessionId } = (await sessionResponse.json()) as { sessionId: string };
+
+    await fetch(`${baseUrl}/sessions/${sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "book a meeting" }),
+    });
+
+    // Resolve trace evidence directly from the MockTraceSource
+    const record = await bundle.traceSource.resolve(sessionId);
+    expect(record).toBeDefined();
+    expect(record!.toolCalls).toEqual(["calendar_create", "notify_user"]);
+
+    // Apply enrichment just like the runner does
+    const result: ScenarioResult = {
+      scenarioId: "s1",
+      scenarioName: "book meeting",
+      verdict: "pass",
+      scores: [],
+      turns: [],
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      metrics: {},
+    };
+
+    const lookup = record
+      ? ({ status: "found", record } as const)
+      : ({ status: "missing" } as const);
+
+    applyTraceEnrichment(result, sessionId, lookup, bundle.traceSource.metadataKey);
+
+    expect(result.metrics.tool_calls).toBe(2);
+    expect((result.metadata?.mock as { toolCalls: string[] }).toolCalls).toEqual([
+      "calendar_create",
+      "notify_user",
+    ]);
   });
 });
