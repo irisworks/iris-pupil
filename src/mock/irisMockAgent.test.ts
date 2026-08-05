@@ -233,10 +233,7 @@ describe("span store — session initialization", () => {
 describe("span store — trace pass on message", () => {
   it("appends defaultToolCalls when no trace rule matches", async () => {
     const spanStore = new Map<string, string[]>();
-    mock = createIrisMockAgent(
-      { port: 0, defaultToolCalls: ["search", "send"] },
-      spanStore,
-    );
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["search", "send"] }, spanStore);
     const address = await mock.listen();
     const baseUrl = `http://${address.host}:${address.port}`;
     const session = await createSession(baseUrl);
@@ -445,10 +442,7 @@ describe("span store — trace pass on message", () => {
     ["__504__", 504],
   ])("trace pass fires even when HTTP status is %s", async (text, expectedStatus) => {
     const spanStore = new Map<string, string[]>();
-    mock = createIrisMockAgent(
-      { port: 0, defaultToolCalls: ["attempted_tool"] },
-      spanStore,
-    );
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["attempted_tool"] }, spanStore);
     const address = await mock.listen();
     const baseUrl = `http://${address.host}:${address.port}`;
     const session = await createSession(baseUrl);

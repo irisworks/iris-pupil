@@ -216,9 +216,8 @@ export function createIrisMockAgent(
         // Uses !== null so an explicit toolCalls: [] trace rule produces an empty append
         // (which is the correct configuration for a tool_called violation in IRIS-161).
         const traceRule = findTraceRule(text, traceRules);
-        const spansToAppend = traceRule !== undefined
-          ? traceRule.toolCalls
-          : (defaultToolCalls ?? null);
+        const spansToAppend =
+          traceRule !== undefined ? traceRule.toolCalls : (defaultToolCalls ?? null);
         if (spansToAppend !== null) {
           const sessionIdDecoded = decodeURIComponent(messageMatch[1]);
           const existing = spanStore.get(sessionIdDecoded) ?? [];

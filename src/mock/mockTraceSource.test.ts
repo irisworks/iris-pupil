@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { applyTraceEnrichment } from "../trace/index.js";
-import type { ScenarioResult } from "../core/types.js";
+import { Verdict, type ScenarioResult } from "../core/types.js";
 import { createMockAgentBundle, type IrisMockAgent } from "./irisMockAgent.js";
 import { MockTraceSource } from "./mockTraceSource.js";
 
@@ -104,7 +104,7 @@ describe("integration — createMockAgentBundle + applyTraceEnrichment", () => {
     const result: ScenarioResult = {
       scenarioId: "s1",
       scenarioName: "book meeting",
-      verdict: "pass",
+      verdict: Verdict.Pass,
       scores: [],
       turns: [],
       startedAt: new Date().toISOString(),
