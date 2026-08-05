@@ -4,3 +4,4 @@ coverage/
 .pupil/
 .tmp/
 docs/superpowers/
+.env
