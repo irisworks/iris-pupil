@@ -88,7 +88,10 @@ function findRule(text: string, rules: IrisMockRule[]): IrisMockRule | undefined
   });
 }
 
-export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgent {
+export function createIrisMockAgent(
+  options: IrisMockOptions = {},
+  spanStore: Map<string, string[]> = new Map(),
+): IrisMockAgent {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 5050;
   const defaultDelayMs = options.defaultDelayMs ?? 0;
@@ -169,6 +172,7 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
           history: [],
         };
         sessions.set(sessionId, session);
+        spanStore.set(sessionId, []);
         json(res, 201, session);
         return;
       }
