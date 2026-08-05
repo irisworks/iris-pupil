@@ -69,7 +69,11 @@ export function applyTraceEnrichment(
   if (lookup.status === "missing") {
     result.metadata = {
       ...(result.metadata ?? {}),
-      [metadataKey]: { status: "skipped", sessionId: correlationKey, reason: "No trace found for session" },
+      [metadataKey]: {
+        status: "skipped",
+        sessionId: correlationKey,
+        reason: "No trace found for session",
+      },
     };
     return "skipped";
   }
