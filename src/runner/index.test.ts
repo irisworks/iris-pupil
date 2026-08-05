@@ -1,5 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LangfuseTraceSource } from "../langfuse/index.js";
+import type { TraceRecord, TraceSource } from "../trace/index.js";
 import { PupilError, type Scenario, type TurnRecord, Verdict } from "../core/types.js";
 import {
   RestDriverError,
@@ -338,10 +340,9 @@ describe("scenario runner", () => {
       {
         driverFactory: () =>
           new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
-        langfuse: {
-          config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
-          waitMs: 0,
-          fetchImpl: (async (url: string) => {
+        traceSource: new LangfuseTraceSource(
+          { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+          (async (url: string) => {
             calls.push(String(url));
             return {
               ok: true,
@@ -352,7 +353,8 @@ describe("scenario runner", () => {
                   : { id: "trace-1", totalCost: 0.02 },
             };
           }) as unknown as typeof fetch,
-        },
+          { waitMs: 0 },
+        ),
       },
     );
 
@@ -368,10 +370,9 @@ describe("scenario runner", () => {
     const result = await runScenario(scenario(), {
       driverFactory: () =>
         new FakeDriver(new RestDriverError(400, { error: "bad request" }), [], { count: 0 }),
-      langfuse: {
-        config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
-        waitMs: 0,
-        fetchImpl: (async (url: string) => ({
+      traceSource: new LangfuseTraceSource(
+        { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+        (async (url: string) => ({
           ok: true,
           status: 200,
           json: async () =>
@@ -379,7 +380,8 @@ describe("scenario runner", () => {
               ? { id: "trace-err", url: "http://langfuse.local/t/trace-err" }
               : { data: [{ id: "trace-err" }] },
         })) as unknown as typeof fetch,
-      },
+        { waitMs: 0 },
+      ),
     });
 
     expect(result.verdict).toBe(Verdict.Error);
@@ -438,7 +440,7 @@ describe("scenario runner", () => {
     const result = await runScenarios([scenario()], {
       driverFactory: () =>
         new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
-      langfuse: false,
+      traceSource: false,
     });
 
     expect(result.metadata.langfuse).toBeUndefined();
@@ -577,5 +579,94 @@ describe("scenario runner", () => {
     expect(result.verdict).toBe(Verdict.Pass);
     expect(result.summary.passed).toBe(4);
     expect(maxActive).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
+  class FakeTraceSource implements TraceSource {
+    readonly metadataKey = "fake";
+    private readonly records = new Map<string, TraceRecord>();
+    private shouldThrow = false;
+
+    seed(sessionId: string, record: TraceRecord): void {
+      this.records.set(sessionId, record);
+    }
+
+    failNext(): void {
+      this.shouldThrow = true;
+    }
+
+    async resolve(sessionId: string): Promise<TraceRecord | undefined> {
+      await new Promise((r) => setTimeout(r, 0));
+      if (this.shouldThrow) {
+        this.shouldThrow = false;
+        throw new Error("backend unavailable");
+      }
+      return this.records.get(sessionId);
+    }
+  }
+
+  const SESSION_ID = "fake-session-abc123";
+
+  function driverWithSession(response: {
+    text: string;
+    raw: Record<string, unknown>;
+  }): RunnerDriver {
+    return {
+      async createConversation() {
+        return { id: SESSION_ID, raw: {} };
+      },
+      async send() {
+        return response;
+      },
+      async closeConversation() {},
+    };
+  }
+
+  it("records skipped status when no trace record is seeded", async () => {
+    const fakeSource = new FakeTraceSource();
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.fake).toMatchObject({ status: "skipped" });
+  });
+
+  it("enriches metrics when a record is seeded for the session", async () => {
+    const fakeSource = new FakeTraceSource();
+    fakeSource.seed(SESSION_ID, {
+      traceCount: 1,
+      costUsd: 0.05,
+      toolCalls: ["search", "read_file"],
+    });
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.fake).toMatchObject({ status: "enriched" });
+    expect(result.metrics.cost_usd).toBe(0.05);
+    expect(result.metrics.tool_calls).toBe(2);
+  });
+
+  it("records error status when resolve() throws, verdict unchanged", async () => {
+    const fakeSource = new FakeTraceSource();
+    fakeSource.failNext();
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.fake).toMatchObject({
+      status: "error",
+      reason: "backend unavailable",
+    });
   });
 });

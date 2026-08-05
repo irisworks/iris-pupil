@@ -5,6 +5,7 @@ import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig } from "../core/config.js";
 import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
 import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
+import { LangfuseTraceSource } from "../langfuse/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
@@ -187,7 +188,8 @@ program
         concurrency: options.concurrency,
         driverConfig: definedConfig(options),
         progress: logProgress,
-        langfuse: options.langfuse === false ? false : { settings: config.langfuse },
+        traceSource:
+          options.langfuse === false ? false : LangfuseTraceSource.fromSettings(config.langfuse),
       });
 
       let stored;

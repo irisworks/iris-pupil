@@ -27,10 +27,11 @@ import {
   evaluateThresholds,
 } from "../eval/index.js";
 import {
-  enrichScenarioWithLangfuse,
-  summarizeLangfuseRun,
-  type LangfuseEnrichmentOptions,
-} from "../langfuse/index.js";
+  applyTraceEnrichment,
+  summarizeTraceRun,
+  type TraceSource,
+  type TraceLookupResult,
+} from "../trace/index.js";
 
 export interface RunnerDriver {
   createConversation(
@@ -56,8 +57,7 @@ export interface RunScenarioOptions {
   driverConfig?: Record<string, unknown>;
   driverFactory?: (scenario: Scenario, context: RunnerDriverContext) => RunnerDriver;
   progress?: (event: RunnerProgressEvent) => void;
-  /** Langfuse enrichment options, or `false` to skip enrichment entirely. */
-  langfuse?: LangfuseEnrichmentOptions | false;
+  traceSource?: TraceSource | false;
 }
 
 export interface RunScenariosOptions extends RunScenarioOptions {
@@ -100,6 +100,25 @@ function errorMessage(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function extractCorrelationKey(result: ScenarioResult): string | undefined {
+  const fromMetadata = isRecord(result.metadata) ? result.metadata.sessionId : undefined;
+  if (typeof fromMetadata === "string" && fromMetadata.length > 0) return fromMetadata;
+  for (const turn of result.turns) {
+    const raw = turn.response?.raw;
+    if (!isRecord(raw)) continue;
+    const id = firstString(raw.sessionId, raw.session_id, raw.id);
+    if (id) return id;
+  }
+  return undefined;
 }
 
 function stringOption(value: unknown, name: string): string | undefined {
@@ -368,12 +387,21 @@ export async function runScenario(
         }),
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
-      // Enrich before scoring so cost/token thresholds see the Langfuse metrics.
-      if (options.langfuse !== false) {
-        await enrichScenarioWithLangfuse(baseResult, {
-          ...(options.langfuse ?? {}),
-          startedAt: attemptStartedAtMs,
-        });
+      // Enrich before scoring so cost/token thresholds see the trace metrics.
+      if (options.traceSource !== false && options.traceSource) {
+        const source = options.traceSource;
+        const key = extractCorrelationKey(baseResult);
+        let lookup: TraceLookupResult;
+        try {
+          const record = key ? await source.resolve(key) : undefined;
+          lookup = record ? { status: "found", record } : { status: "missing" };
+        } catch (error) {
+          lookup = {
+            status: "error",
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+        applyTraceEnrichment(baseResult, key ?? "", lookup, source.metadataKey);
       }
       const trajectory = createDrivenTrajectory({
         turns,
@@ -429,11 +457,17 @@ export async function runScenario(
     lastSessionId,
   );
   // Failed scenarios are exactly where a trace URL is most useful.
-  if (options.langfuse !== false) {
-    await enrichScenarioWithLangfuse(result, {
-      ...(options.langfuse ?? {}),
-      startedAt: lastAttemptStartedAtMs,
-    });
+  if (options.traceSource !== false && options.traceSource) {
+    const source = options.traceSource;
+    const key = extractCorrelationKey(result);
+    let lookup: TraceLookupResult;
+    try {
+      const record = key ? await source.resolve(key) : undefined;
+      lookup = record ? { status: "found", record } : { status: "missing" };
+    } catch (error) {
+      lookup = { status: "error", reason: error instanceof Error ? error.message : String(error) };
+    }
+    applyTraceEnrichment(result, key ?? "", lookup, source.metadataKey);
   }
   options.progress?.({
     type: "scenario:error",
@@ -493,5 +527,8 @@ export async function runScenarios(
   };
 
   // Scenarios are enriched as they finish; this only rolls the statuses up.
-  return summarizeLangfuseRun(run);
+  if (options.traceSource !== false && options.traceSource) {
+    return summarizeTraceRun(run, options.traceSource.metadataKey);
+  }
+  return run;
 }

@@ -6,4 +6,14 @@ export * from "./driver/index.js";
 export * from "./runner/index.js";
 export * from "./eval/index.js";
 export * from "./history/index.js";
-export * from "./langfuse/index.js";
+
+export {
+  applyTraceEnrichment,
+  summarizeTraceRun,
+  type TraceSource,
+  type TraceRecord,
+  type TraceLookupResult,
+  type TraceStatus,
+} from "./trace/index.js";
+
+export { LangfuseTraceSource } from "./langfuse/index.js";

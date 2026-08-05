@@ -6,6 +6,7 @@ import {
   enrichScenarioWithLangfuse,
   extractLangfuseEnrichment,
   langfuseConfigFromEnv,
+  LangfuseTraceSource,
   resolveLangfuseConfig,
 } from "./index.js";
 
@@ -679,6 +680,23 @@ describe("Langfuse enrichment", () => {
     expect(result.metrics).toEqual({ turns: 1, latency_ms: 1000 });
   });
 
+  it("falls back to session endpoint when observations returns 200 with empty data", async () => {
+    const stub = await stubSession(
+      { data: [] },
+      { traces: [{ id: "trace-fb", sessionId: "session-1" }] },
+    );
+    const result = scenarioResult();
+
+    await expect(
+      enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 }),
+    ).resolves.toBe("enriched");
+
+    expect(stub.requests).toHaveLength(2);
+    expect(stub.requests[0]?.url).toContain("/api/public/v2/observations");
+    expect(stub.requests[1]?.url).toContain("/api/public/sessions/session-1");
+    expect(result.metadata?.langfuse).toMatchObject({ status: "enriched", traceId: "trace-fb" });
+  });
+
   it("skips scenarios without a session id", async () => {
     const result = scenarioResult({ metadata: undefined });
 
@@ -714,6 +732,49 @@ describe("Langfuse enrichment", () => {
     expect(result.metadata?.langfuse).toMatchObject({ sessionId: "session-from-turn" });
   });
 
+  it("retries after a 429 rate-limit and eventually enriches", async () => {
+    const stub = await stubSession(
+      { status: 429 },
+      {
+        data: [
+          { id: "obs-1", traceId: "trace-rt", type: "GENERATION", inputUsage: 5, outputUsage: 3 },
+        ],
+      },
+    );
+    const result = scenarioResult();
+
+    await enrichScenarioWithLangfuse(result, {
+      config: config(stub.baseUrl),
+      waitMs: 2000,
+      pollIntervalMs: 50,
+    });
+
+    expect(result.metadata?.langfuse).toMatchObject({ status: "enriched" });
+    expect(result.metrics.input_tokens).toBe(5);
+  });
+
+  it("records a 429 that persists through the wait window as skipped, not error", async () => {
+    const stub = await stubSession({ status: 429 });
+    const result = scenarioResult();
+
+    await enrichScenarioWithLangfuse(result, {
+      config: config(stub.baseUrl),
+      waitMs: 0,
+      pollIntervalMs: 50,
+    });
+
+    expect(result.metadata?.langfuse).toMatchObject({ status: "skipped" });
+  });
+
+  it("records a session-endpoint 404 as skipped, not error", async () => {
+    const stub = await stubSession({ data: [] }, { status: 404 });
+    const result = scenarioResult();
+
+    await enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 });
+
+    expect(result.metadata?.langfuse).toMatchObject({ status: "skipped" });
+  });
+
   it("records lookup errors without failing the run", async () => {
     const stub = await stubSession({ status: 503 });
     const run = runResult();
@@ -747,5 +808,64 @@ describe("Langfuse enrichment", () => {
     ).resolves.toBe("error");
 
     expect(result.metadata?.langfuse).toMatchObject({ status: "error", reason: "aborted" });
+  });
+});
+
+describe("LangfuseTraceSource", () => {
+  it("resolve() returns a TraceRecord with correct fields when a trace is found", async () => {
+    const stub = await stubSession({
+      data: [
+        {
+          id: "obs-1",
+          traceId: "trace-1",
+          type: "GENERATION",
+          inputUsage: 10,
+          outputUsage: 5,
+          totalCost: 0.012,
+        },
+        {
+          id: "obs-2",
+          traceId: "trace-1",
+          type: "TOOL",
+          name: "calendar.create",
+        },
+      ],
+    });
+
+    const source = new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 });
+    const result = await source.resolve("session-1");
+
+    expect(result).toBeDefined();
+    expect(result?.traceCount).toBe(1);
+    expect(result?.costUsd).toBe(0.012);
+    expect(result?.inputTokens).toBe(10);
+    expect(result?.outputTokens).toBe(5);
+    expect(result?.toolCalls).toContain("calendar.create");
+  });
+
+  it("resolve() returns undefined when session not found (observations 404, sessions has empty data)", async () => {
+    const stub = await stubSession({ status: 404 }, { traces: [] });
+
+    const source = new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 });
+    const result = await source.resolve("session-1");
+
+    expect(result).toBeUndefined();
+  });
+
+  it("resolve() returns undefined when session endpoint returns 404 (not an error)", async () => {
+    const stub = await stubSession({ data: [] }, { status: 404 });
+
+    const source = new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 });
+    const result = await source.resolve("session-1");
+
+    expect(result).toBeUndefined();
+  });
+
+  it("resolve() throws when server returns 500", async () => {
+    const stub = await stubSession({ status: 500 });
+
+    const source = new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 });
+
+    await expect(source.resolve("session-1")).rejects.toThrow();
   });
 });

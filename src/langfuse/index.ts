@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { RunResult, ScenarioResult } from "../core/types.js";
+import type { TraceRecord, TraceSource } from "../trace/index.js";
 
 export interface LangfuseEnrichment {
   readonly traceId?: string;
@@ -598,4 +599,52 @@ export async function enrichRunWithLangfuse(
     await enrichScenarioWithLangfuse(result, { ...options, config });
   }
   return summarizeLangfuseRun(run);
+}
+
+export class LangfuseTraceSource implements TraceSource {
+  readonly metadataKey = "langfuse";
+
+  constructor(
+    private readonly config: LangfuseConfig,
+    private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    private readonly options: {
+      waitMs?: number;
+      pollIntervalMs?: number;
+      timeoutMs?: number;
+    } = {},
+  ) {}
+
+  static fromSettings(
+    settings?: LangfuseSettings,
+    env?: NodeJS.ProcessEnv,
+  ): LangfuseTraceSource | undefined {
+    const config = resolveLangfuseConfig({ settings, env });
+    if (!config) return undefined;
+    return new LangfuseTraceSource(config, globalThis.fetch, {
+      waitMs: config.waitMs,
+      timeoutMs: config.timeoutMs,
+    });
+  }
+
+  async resolve(sessionId: string): Promise<TraceRecord | undefined> {
+    const enrichment = await lookupSession(
+      this.config,
+      sessionId,
+      this.fetchImpl,
+      this.options.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
+      this.options.waitMs ?? DEFAULT_LANGFUSE_WAIT_MS,
+      this.options.pollIntervalMs ?? DEFAULT_LANGFUSE_POLL_INTERVAL_MS,
+    );
+    if (!enrichment) return undefined;
+    return {
+      traceId: enrichment.traceId,
+      traceUrl: enrichment.traceUrl,
+      traceCount: enrichment.traceCount,
+      costUsd: enrichment.costUsd,
+      inputTokens: enrichment.inputTokens,
+      outputTokens: enrichment.outputTokens,
+      totalTokens: enrichment.totalTokens,
+      toolCalls: enrichment.toolCalls,
+    };
+  }
 }
