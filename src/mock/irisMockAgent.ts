@@ -213,8 +213,8 @@ export function createIrisMockAgent(
         }
 
         // Trace pass — runs unconditionally, independent of HTTP status (500, 504, 200).
-        // Uses !== null so an explicit toolCalls: [] trace rule produces an empty append
-        // (which is the correct configuration for a tool_called violation in IRIS-161).
+        // Uses !== null so an explicit toolCalls: [] trace rule appends nothing — configuring
+        // a matched rule with an empty toolCalls signals the agent ran but called no tools.
         const traceRule = findTraceRule(text, traceRules);
         const spansToAppend =
           traceRule !== undefined ? traceRule.toolCalls : (defaultToolCalls ?? null);
