@@ -2,6 +2,7 @@ export * from "./core/config.js";
 export * from "./core/types.js";
 export * from "./scenario/index.js";
 export * from "./mock/irisMockAgent.js";
+export { MockTraceSource } from "./mock/mockTraceSource.js";
 export * from "./driver/index.js";
 export * from "./runner/index.js";
 export * from "./eval/index.js";
