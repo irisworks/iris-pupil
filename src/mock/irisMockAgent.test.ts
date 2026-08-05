@@ -307,8 +307,8 @@ describe("span store — trace pass on message", () => {
     expect(spanStore.get(session.sessionId)).toEqual([]);
   });
 
-  // Explicit tool_called violation: rule matches but toolCalls is empty — agent ran but called nothing.
-  // This is the configuration the spec names for exercising tool_called assertion failures in IRIS-161.
+  // Rule matches but toolCalls is empty — agent ran but called nothing.
+  // Configures a trajectory where a tool_called assertion would fail.
   it("trace rule with toolCalls: [] produces empty span list even when rule matches", async () => {
     const spanStore = new Map<string, string[]>();
     mock = createIrisMockAgent(
