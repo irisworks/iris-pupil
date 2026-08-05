@@ -42,7 +42,13 @@ export interface RunnerDriver {
 }
 
 export interface RunnerProgressEvent {
-  type: "scenario:start" | "scenario:retry" | "scenario:pass" | "scenario:fail" | "scenario:error";
+  type:
+    | "scenario:start"
+    | "scenario:retry"
+    | "scenario:pass"
+    | "scenario:needs_review"
+    | "scenario:fail"
+    | "scenario:error";
   scenarioId: string;
   attempt: number;
   maxAttempts: number;
@@ -214,6 +220,20 @@ export function createDrivenTrajectory({
     metadata,
     ...(snapshot !== undefined && { snapshot }),
   };
+}
+
+function progressEventTypeForVerdict(verdict: Verdict): RunnerProgressEvent["type"] {
+  switch (verdict) {
+    case Verdict.Pass:
+    case Verdict.Skip:
+      return "scenario:pass";
+    case Verdict.NeedsReview:
+      return "scenario:needs_review";
+    case Verdict.Error:
+      return "scenario:error";
+    default:
+      return "scenario:fail";
+  }
 }
 
 function createErrorResult(
@@ -389,7 +409,7 @@ export async function runScenario(
       const verdict = aggregateScores(scores);
       const result: ScenarioResult = { ...baseResult, verdict, scores };
       options.progress?.({
-        type: verdict === Verdict.Pass ? "scenario:pass" : "scenario:fail",
+        type: progressEventTypeForVerdict(verdict),
         scenarioId: scenario.id,
         attempt,
         maxAttempts,
