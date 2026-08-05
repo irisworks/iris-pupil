@@ -12,6 +12,7 @@ type EnvSource = Record<string, string | undefined>;
 export interface LoadConfigOptions {
   cwd?: string;
   configPath?: string;
+  profile?: string;
   env?: EnvSource;
 }
 
@@ -24,12 +25,26 @@ const driverConfigSchema = z
   .strict()
   .default({ type: "rest", config: {} });
 
+const profileDriverConfigSchema = z
+  .object({
+    type: z.string().min(1).optional(),
+    preset: z.string().optional(),
+    config: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
 const historyConfigSchema = z
   .object({
     dir: z.string().min(1).default(".pupil"),
   })
   .strict()
   .default({ dir: ".pupil" });
+
+const profileHistoryConfigSchema = z
+  .object({
+    dir: z.string().min(1).optional(),
+  })
+  .strict();
 
 const langfuseConfigSchema = z
   .object({
@@ -44,16 +59,71 @@ const langfuseConfigSchema = z
   .strict()
   .default({ enabled: "auto" });
 
+const profileLangfuseConfigSchema = z
+  .object({
+    enabled: z.union([z.boolean(), z.literal("auto")]).optional(),
+    host: z.string().optional(),
+    publicKey: z.string().optional(),
+    secretKey: z.string().optional(),
+    waitMs: z.number().int().nonnegative().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const profileConfigSchema = z
+  .object({
+    scenarios: z.union([z.string(), z.array(z.string())]).optional(),
+    driver: profileDriverConfigSchema.optional(),
+    history: profileHistoryConfigSchema.optional(),
+    langfuse: profileLangfuseConfigSchema.optional(),
+  })
+  .strict();
+
 const pupilConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).default("examples/scenarios"),
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,
+    profiles: z.record(profileConfigSchema).default({}),
   })
   .strict();
 
 export type PupilConfig = z.infer<typeof pupilConfigSchema>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMerge<T extends Record<string, unknown>>(
+  base: T,
+  override: Record<string, unknown>,
+): T {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const existing = merged[key];
+    merged[key] = isRecord(existing) && isRecord(value) ? deepMerge(existing, value) : value;
+  }
+  return merged as T;
+}
+
+function applyProfile(
+  config: Record<string, unknown>,
+  profile: string | undefined,
+  file: string,
+): Record<string, unknown> {
+  if (!profile) return config;
+  const profiles = isRecord(config.profiles) ? config.profiles : {};
+  const selected = profiles[profile];
+  if (!selected) {
+    throw new PupilError(`Pupil config profile does not exist: ${profile}`, {
+      file,
+      path: "profiles",
+    });
+  }
+
+  return deepMerge(config, selected as Record<string, unknown>);
+}
 
 function formatConfigValidationError(error: ZodError, file: string): PupilError {
   const details = error.issues
@@ -120,7 +190,9 @@ export async function loadPupilConfig(options: LoadConfigOptions = {}): Promise<
         file: configPath,
       });
     }
-    return pupilConfigSchema.parse({});
+    const defaults = pupilConfigSchema.parse({});
+    const profiled = applyProfile(defaults, options.profile, configPath);
+    return pupilConfigSchema.parse(profiled);
   }
 
   const source = await readFile(configPath, "utf-8");
@@ -130,8 +202,14 @@ export async function loadPupilConfig(options: LoadConfigOptions = {}): Promise<
     throw new PupilError(`Invalid YAML in ${configPath}\n${message}`, { file: configPath });
   }
 
-  const rawConfig = document.toJSON() ?? {};
-  const resolvedConfig = resolveEnvRefs(rawConfig, options.env ?? process.env, configPath);
+  const rawConfig = (document.toJSON() ?? {}) as Record<string, unknown>;
+
+  // Profile selection and merging happen on the raw document, before schema
+  // validation: numeric fields may still hold unresolved ${VAR:-default}
+  // templates at this point, which z.coerce.number() can't parse yet.
+  const profiled = applyProfile(rawConfig, options.profile, configPath);
+  const { profiles: _profiles, ...selectedConfig } = profiled;
+  const resolvedConfig = resolveEnvRefs(selectedConfig, options.env ?? process.env, configPath);
   const parsed = pupilConfigSchema.safeParse(resolvedConfig);
   if (!parsed.success) {
     throw formatConfigValidationError(parsed.error, configPath);

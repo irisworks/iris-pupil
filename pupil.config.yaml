@@ -24,3 +24,17 @@ langfuse:
   initialDelayMs: ${LANGFUSE_INITIAL_DELAY_MS:-8000}
   # Total trace lookup window, measured from scenario start when available.
   waitMs: ${LANGFUSE_WAIT_MS:-25000}
+
+profiles:
+  local:
+    driver:
+      config:
+        baseUrl: ${IRIS_BASE_URL:-http://127.0.0.1:3000}
+  staging:
+    driver:
+      config:
+        baseUrl: ${IRIS_STAGING_BASE_URL:-http://127.0.0.1:3000}
+  prod:
+    driver:
+      config:
+        baseUrl: ${IRIS_PROD_BASE_URL:-http://127.0.0.1:3000}

@@ -9,7 +9,6 @@ driver:
   type: rest
   preset: iris-http
   config:
-    baseUrl: http://127.0.0.1:3000
     originChannel: pupil-live
     originThreadTs: pupil-live-successful-flow
     timeoutMs: 30000

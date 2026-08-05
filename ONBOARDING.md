@@ -221,9 +221,7 @@ service — the suite must pass with no network and no API keys.
 
 1. Fix the `compare` latency default to a percentage band (§5). Small, self-contained, and the
    tool is unusable as a gate without it.
-2. Wire `loadPupilConfig()` into `pupil run` behind `--config`, with flags overriding file
-   values.
-3. Add the repo's own `npm run check` GitHub Actions workflow, and green up `main`.
+2. Add the repo's own `npm run check` GitHub Actions workflow, and green up `main`.
 
 Before starting anything larger, read `docs/product-direction.md` §5–6. The build order there is
 deliberate: the evaluator seam needs reshaping to take a `Trajectory` **before** any trajectory
