@@ -21,3 +21,17 @@ langfuse:
   secretKey: ${LANGFUSE_SECRET_KEY:-}
   # Langfuse ingests traces asynchronously; how long to poll for one before skipping.
   waitMs: 10000
+
+profiles:
+  local:
+    driver:
+      config:
+        baseUrl: ${IRIS_BASE_URL:-http://127.0.0.1:3000}
+  staging:
+    driver:
+      config:
+        baseUrl: ${IRIS_STAGING_BASE_URL:-http://127.0.0.1:3000}
+  prod:
+    driver:
+      config:
+        baseUrl: ${IRIS_PROD_BASE_URL:-http://127.0.0.1:3000}

@@ -2,8 +2,8 @@
 
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
-import { loadPupilConfig } from "../core/config.js";
-import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
+import { loadPupilConfig, type PupilConfig } from "../core/config.js";
+import { aggregateVerdicts, PupilError, Verdict, type Scenario } from "../core/types.js";
 import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
@@ -63,6 +63,45 @@ function definedConfig(options: {
       timeoutMs: options.timeoutMs,
     }).filter(([, value]) => value !== undefined),
   );
+}
+
+function runDriverConfig(
+  config: PupilConfig,
+  options: { baseUrl?: string; bearerToken?: string; originThreadTs?: string; timeoutMs?: number },
+): Record<string, unknown> {
+  return { ...config.driver.config, ...definedConfig(options) };
+}
+
+async function loadConfiguredScenarios(path: string | undefined, config: PupilConfig) {
+  const paths = path
+    ? [path]
+    : Array.isArray(config.scenarios)
+      ? config.scenarios
+      : [config.scenarios];
+  const groups = await Promise.all(paths.map((scenarioPath) => loadScenarios(scenarioPath)));
+  const scenarios = groups.flat();
+  assertUniqueScenarioIds(scenarios);
+  return scenarios.sort((left, right) => {
+    const byId = left.id.localeCompare(right.id);
+    if (byId !== 0) return byId;
+    return (left.sourceFile ?? "").localeCompare(right.sourceFile ?? "");
+  });
+}
+
+function assertUniqueScenarioIds(scenarios: Scenario[]): void {
+  const firstById = new Map<string, Scenario>();
+  for (const scenario of scenarios) {
+    const existing = firstById.get(scenario.id);
+    if (existing) {
+      throw new PupilError(
+        `Duplicate scenario id "${scenario.id}" in ${existing.sourceFile ?? "<unknown>"} and ${
+          scenario.sourceFile ?? "<unknown>"
+        }`,
+        { file: scenario.sourceFile, path: "id" },
+      );
+    }
+    firstById.set(scenario.id, scenario);
+  }
 }
 
 function logProgress(event: RunnerProgressEvent): void {
@@ -140,7 +179,9 @@ program
 program
   .command("run")
   .description("Run one scenario file or a directory of scenarios.")
-  .argument("<path>", "Scenario YAML file or directory")
+  .argument("[path]", "Scenario YAML file or directory; defaults to config.scenarios")
+  .option("--config <path>", "Path to pupil.config.yaml")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--base-url <url>", "Override driver.config.baseUrl")
   .option("--bearer-token <token>", "Override bearer auth token")
   .option("--origin-thread-ts <value>", "Override IRIS originThreadTs")
@@ -159,36 +200,43 @@ program
     (value) => parsePositiveInteger(value, "concurrency"),
     1,
   )
-  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
   .action(
     async (
-      path: string,
+      path: string | undefined,
       options: {
+        config?: string;
+        profile?: string;
         baseUrl?: string;
         bearerToken?: string;
         originThreadTs?: string;
         timeoutMs?: number;
         retries: number;
         concurrency: number;
-        historyDir: string;
+        historyDir?: string;
         langfuse: boolean;
       },
     ) => {
-      const scenarios = await loadScenarios(path);
-      const config = await loadPupilConfig();
+      const config = await loadPupilConfig({
+        configPath: options.config,
+        profile: options.profile,
+      });
+      const scenarios = await loadConfiguredScenarios(path, config);
       const result = await runScenarios(scenarios, {
         timeoutMs: options.timeoutMs,
         retries: options.retries,
         concurrency: options.concurrency,
-        driverConfig: definedConfig(options),
+        driverConfig: runDriverConfig(config, options),
         progress: logProgress,
         langfuse: options.langfuse === false ? false : { settings: config.langfuse },
       });
 
       let stored;
       try {
-        stored = await new JsonRunHistoryStore({ dir: options.historyDir }).writeRun(result);
+        stored = await new JsonRunHistoryStore({
+          dir: options.historyDir ?? config.history.dir,
+        }).writeRun(result);
       } catch (error) {
         throw new PupilError(
           `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,

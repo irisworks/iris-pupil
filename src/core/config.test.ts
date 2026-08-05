@@ -22,6 +22,7 @@ describe("loadPupilConfig", () => {
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
+      profiles: {},
     });
   });
 
@@ -69,6 +70,57 @@ describe("loadPupilConfig", () => {
       config: { baseUrl: "http://127.0.0.1:3000", token: "" },
     });
     expect(config.history.dir).toBe(".pupil-test");
+  });
+
+  it("applies a selected profile after resolving only the effective config", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "driver:",
+        "  preset: iris-http",
+        "  config:",
+        "    baseUrl: ${LOCAL_URL}",
+        "    originChannel: pupil-local",
+        "profiles:",
+        "  staging:",
+        "    driver:",
+        "      config:",
+        "        baseUrl: ${STAGING_URL}",
+        "        originChannel: pupil-staging",
+        "  prod:",
+        "    driver:",
+        "      config:",
+        "        baseUrl: ${PROD_URL}",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({
+      cwd: tmpRoot,
+      profile: "staging",
+      env: { STAGING_URL: "https://staging.example.test" },
+    });
+
+    expect(config.driver).toMatchObject({
+      preset: "iris-http",
+      config: {
+        baseUrl: "https://staging.example.test",
+        originChannel: "pupil-staging",
+      },
+    });
+  });
+
+  it("fails when a selected profile does not exist", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "profiles:\n  local:\n    history:\n      dir: .pupil-local\n",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot, profile: "missing" })).rejects.toThrow(
+      /Pupil config profile does not exist: missing/,
+    );
   });
 
   it("substitutes a set-but-empty value for plain ${VAR}, matching bash", async () => {
