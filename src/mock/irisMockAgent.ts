@@ -8,12 +8,19 @@ export interface IrisMockRule {
   status?: number;
 }
 
+export interface MockTraceRule {
+  match: string | RegExp;
+  toolCalls: string[];
+}
+
 export interface IrisMockOptions {
   port?: number;
   host?: string;
   defaultDelayMs?: number;
   rules?: IrisMockRule[];
   apiToken?: string | false;
+  traceRules?: MockTraceRule[];
+  defaultToolCalls?: string[];
 }
 
 export interface RecordedMockRequest {
@@ -88,6 +95,13 @@ function findRule(text: string, rules: IrisMockRule[]): IrisMockRule | undefined
   });
 }
 
+function findTraceRule(text: string, rules: MockTraceRule[]): MockTraceRule | undefined {
+  return rules.find((rule) => {
+    if (typeof rule.match === "string") return text.includes(rule.match);
+    return rule.match.test(text);
+  });
+}
+
 export function createIrisMockAgent(
   options: IrisMockOptions = {},
   spanStore: Map<string, string[]> = new Map(),
@@ -96,6 +110,8 @@ export function createIrisMockAgent(
   const port = options.port ?? 5050;
   const defaultDelayMs = options.defaultDelayMs ?? 0;
   const rules = options.rules ?? [];
+  const traceRules = options.traceRules ?? [];
+  const defaultToolCalls = options.defaultToolCalls;
   const apiToken =
     options.apiToken === false ? undefined : (options.apiToken ?? process.env.IRIS_API_TOKEN);
   const requests: RecordedMockRequest[] = [];
@@ -192,6 +208,19 @@ export function createIrisMockAgent(
         }
         if (text.includes("__hang__")) {
           return;
+        }
+
+        // Trace pass — runs unconditionally, independent of HTTP status (500, 504, 200).
+        // Uses !== null so an explicit toolCalls: [] trace rule produces an empty append
+        // (which is the correct configuration for a tool_called violation in IRIS-161).
+        const traceRule = findTraceRule(text, traceRules);
+        const spansToAppend = traceRule !== undefined
+          ? traceRule.toolCalls
+          : (defaultToolCalls ?? null);
+        if (spansToAppend !== null) {
+          const sessionIdDecoded = decodeURIComponent(messageMatch[1]);
+          const existing = spanStore.get(sessionIdDecoded) ?? [];
+          spanStore.set(sessionIdDecoded, [...existing, ...spansToAppend]);
         }
 
         const delayMs = getDelayFromText(text, defaultDelayMs);
