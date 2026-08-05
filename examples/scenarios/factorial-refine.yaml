@@ -1,0 +1,52 @@
+id: factorial-refine
+name: Agent refines factorial to add input validation
+description: >
+  Multi-turn: first ask for a basic factorial, then ask the agent to add
+  validation for negative inputs. Verifies the agent can iterate on its own code.
+tags:
+  - code-gen
+  - factorial
+  - multi-turn
+
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    timeoutMs: 120000
+
+turns:
+  - user: Write a simple recursive factorial function in Python.
+    expect:
+      - type: contains
+        target: response.text
+        value: "def factorial"
+      - type: regex
+        target: response.text
+        value: "return"
+  - user: Now update it to raise a ValueError for negative inputs.
+    expect:
+      - type: regex
+        target: response.text
+        value: "ValueError|raise|< 0|negative"
+        caseSensitive: false
+      - type: contains
+        target: response.text
+        value: "def factorial"
+
+expect:
+  thresholds:
+    - metric: latency_ms
+      max: 20000
+    - metric: cost_usd
+      max: 0.10
+  judge:
+    enabled: true
+    prompt: >
+      The agent was first asked to write a recursive factorial in Python, then
+      asked to add ValueError for negative inputs. Evaluate the final response:
+      does it include a working factorial with proper negative-input validation?
+    rubric:
+      - Raises ValueError (or equivalent) for negative n
+      - Still handles n=0 correctly
+      - Recursion or iteration is correct
+      - Code is readable and complete
