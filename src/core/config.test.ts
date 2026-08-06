@@ -32,11 +32,11 @@ describe("loadPupilConfig", () => {
       /Pupil config file does not exist: .*missing\.yaml/,
     );
   });
-  it("accepts the full langfuse block, including waitMs and timeoutMs", async () => {
+  it("accepts the full langfuse block, including waitMs, timeoutMs, and initialDelayMs", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
       join(tmpRoot, "pupil.config.yaml"),
-      "driver:\n  config:\n    baseUrl: http://localhost:5050\nlangfuse:\n  host: http://langfuse.local\n  publicKey: pk\n  secretKey: sk\n  waitMs: 30000\n  timeoutMs: 15000\n",
+      "driver:\n  config:\n    baseUrl: http://localhost:5050\nlangfuse:\n  host: http://langfuse.local\n  publicKey: pk\n  secretKey: sk\n  waitMs: 30000\n  timeoutMs: 15000\n  initialDelayMs: 8000\n",
     );
 
     const config = await loadPupilConfig({ cwd: tmpRoot });
@@ -48,6 +48,7 @@ describe("loadPupilConfig", () => {
       secretKey: "sk",
       waitMs: 30000,
       timeoutMs: 15000,
+      initialDelayMs: 8000,
     });
   });
 
