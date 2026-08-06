@@ -22,6 +22,7 @@ describe("loadPupilConfig", () => {
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
+      target: { mode: "driven" },
     });
   });
 
@@ -136,5 +137,55 @@ describe("loadPupilConfig", () => {
     await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
       /pupil\.config\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/,
     );
+  });
+
+  it("parses a full target block and resolves env refs", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "target:",
+        "  system: support-agent",
+        "  environment: ${DEPLOY_ENV:-staging}",
+        "  version: ${DEPLOY_SHA:-}",
+        "  mode: driven",
+        "  fixtureSet: live",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({
+      cwd: tmpRoot,
+      env: { DEPLOY_ENV: "production", DEPLOY_SHA: "abc1234" },
+    });
+
+    expect(config.target).toEqual({
+      system: "support-agent",
+      environment: "production",
+      version: "abc1234",
+      mode: "driven",
+      fixtureSet: "live",
+    });
+  });
+
+  it("target defaults to mode: driven when block is absent", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.target).toEqual({ mode: "driven" });
+  });
+
+  it("rejects an empty string in target.version", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), 'target:\n  version: ""\n');
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/Invalid Pupil config/);
+  });
+
+  it("rejects unknown fields in target block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "target:\n  commit: abc123\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/Unrecognized key/);
   });
 });

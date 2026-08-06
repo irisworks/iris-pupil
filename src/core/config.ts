@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { z, type ZodError } from "zod";
-import { PupilError } from "./types.js";
+import { PupilError, type TargetIdentity } from "./types.js";
 
 const DEFAULT_CONFIG_FILE = "pupil.config.yaml";
 
@@ -44,12 +44,24 @@ const langfuseConfigSchema = z
   .strict()
   .default({ enabled: "auto" });
 
+const targetConfigSchema = z
+  .object({
+    system: z.string().min(1).optional(),
+    environment: z.string().min(1).optional(),
+    version: z.string().min(1).optional(),
+    mode: z.enum(["driven", "observed"]).default("driven"),
+    fixtureSet: z.string().min(1).optional(),
+  })
+  .strict()
+  .default({ mode: "driven" });
+
 const pupilConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).default("examples/scenarios"),
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,
+    target: targetConfigSchema,
   })
   .strict();
 
