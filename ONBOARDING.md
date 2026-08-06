@@ -146,18 +146,11 @@ Pre-existing, unrelated to your change. Fix with
 `npm run format`, or ignore it and check only your own files:
 `npx prettier --check <your-files>`. It reached `main` because no workflow enforces the gate.
 
-**`compare` flags a regression between two identical passing runs.**
-`--latency-threshold-ms` defaults to `0`, so a few milliseconds of noise produces
-`metric_regressions=1` and exit code 1:
-
-```
-REGRESSION iris-basic: pass -> pass
-  reason: latency_ms increased by 4 beyond threshold 0
-```
-
-`phase-plan.md:97` specifies "latency flagged beyond ±20%", so this is a divergence from the
-documented intent, not the design. Pass `--latency-threshold-ms` explicitly for now. Fixing the
-default to a percentage band is a good first contribution.
+**`compare` uses a default latency noise band.** The default latency regression threshold is now
+20% of the baseline `latency_ms`. A tiny runtime fluctuation no longer fails the comparison gate,
+but a larger increase still produces `metric_regressions=1` and exit code 1. Use
+`--latency-threshold-pct` to tune the percentage band, or `--latency-threshold-ms` when you need
+an absolute millisecond threshold instead.
 
 **`pupil.config.yaml` is not loaded by anything.** `loadPupilConfig()` in `src/core/config.ts`
 is implemented, tested, and exported — and called by no CLI command. `run` takes flags only,
