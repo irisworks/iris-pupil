@@ -21,6 +21,6 @@ langfuse:
   secretKey: ${LANGFUSE_SECRET_KEY:-}
   # Langfuse ingests traces asynchronously; the runner counts scenario runtime
   # toward this initial delay before it starts polling.
-  initialDelayMs: 8000
+  initialDelayMs: ${LANGFUSE_INITIAL_DELAY_MS:-8000}
   # Total trace lookup window, measured from scenario start when available.
-  waitMs: 25000
+  waitMs: ${LANGFUSE_WAIT_MS:-25000}
