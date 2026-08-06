@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PupilError, type Scenario, type TurnRecord, Verdict } from "../core/types.js";
 import {
   RestDriverError,
@@ -12,6 +12,7 @@ import { createDrivenTrajectory, runScenario, runScenarios, type RunnerDriver } 
 let mock: IrisMockAgent | undefined;
 
 afterEach(async () => {
+  vi.useRealTimers();
   if (mock) {
     await mock.close();
     mock = undefined;
@@ -345,14 +346,17 @@ describe("scenario runner", () => {
             return {
               ok: true,
               status: 200,
-              json: async () => ({ traces: [{ id: "trace-1", totalCost: 0.02 }] }),
+              json: async () =>
+                calls.length === 1
+                  ? { data: [{ id: "trace-1" }] }
+                  : { id: "trace-1", totalCost: 0.02 },
             };
           }) as unknown as typeof fetch,
         },
       },
     );
 
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(result.metrics.cost_usd).toBe(0.02);
     expect(result.verdict).toBe(Verdict.Fail);
     expect(result.scores.find((score) => score.name === "threshold:maxCostUsd")?.verdict).toBe(
@@ -367,12 +371,13 @@ describe("scenario runner", () => {
       langfuse: {
         config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
         waitMs: 0,
-        fetchImpl: (async () => ({
+        fetchImpl: (async (url: string) => ({
           ok: true,
           status: 200,
-          json: async () => ({
-            traces: [{ id: "trace-err", url: "http://langfuse.local/t/trace-err" }],
-          }),
+          json: async () =>
+            String(url).includes("/api/public/traces/trace-err")
+              ? { id: "trace-err", url: "http://langfuse.local/t/trace-err" }
+              : { data: [{ id: "trace-err" }] },
         })) as unknown as typeof fetch,
       },
     });
@@ -384,6 +389,49 @@ describe("scenario runner", () => {
       traceId: "trace-err",
       traceUrl: "http://langfuse.local/t/trace-err",
     });
+  });
+
+  it("counts scenario runtime toward the Langfuse initial delay", async () => {
+    vi.useFakeTimers();
+    const started = Date.parse("2026-07-31T00:00:00.000Z");
+    vi.setSystemTime(started);
+    const calls: number[] = [];
+
+    const resultPromise = runScenario(scenario(), {
+      driverFactory: () => ({
+        async createConversation() {
+          return { id: "session-1", raw: {} };
+        },
+        async send() {
+          vi.setSystemTime(started + 6000);
+          return { text: "Scheduled.", raw: { status: "ok" } };
+        },
+        async closeConversation() {},
+      }),
+      langfuse: {
+        config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+        initialDelayMs: 8000,
+        waitMs: 15000,
+        pollIntervalMs: 1000,
+        fetchImpl: (async (url: string) => {
+          calls.push(Date.now());
+          return {
+            ok: true,
+            status: 200,
+            json: async () =>
+              String(url).includes("/api/public/traces/trace-1")
+                ? { id: "trace-1", totalCost: 0.001 }
+                : { data: [{ id: "trace-1" }] },
+          };
+        }) as unknown as typeof fetch,
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(calls[0]).toBe(started + 6000);
+    expect(result.metadata?.langfuse).toMatchObject({ status: "enriched" });
   });
 
   it("omits metadata and skips enrichment when Langfuse is disabled", async () => {

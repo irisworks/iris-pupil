@@ -52,8 +52,9 @@ const langfuseConfigSchema = z
     host: z.string().optional(),
     publicKey: z.string().optional(),
     secretKey: z.string().optional(),
-    waitMs: z.number().int().nonnegative().optional(),
-    timeoutMs: z.number().int().positive().optional(),
+    waitMs: z.coerce.number().int().nonnegative().optional(),
+    timeoutMs: z.coerce.number().int().positive().optional(),
+    initialDelayMs: z.coerce.number().int().nonnegative().optional(),
   })
   .strict()
   .default({ enabled: "auto" });
@@ -106,9 +107,14 @@ function deepMerge<T extends Record<string, unknown>>(
   return merged as T;
 }
 
-function applyProfile(config: PupilConfig, profile: string | undefined, file: string): PupilConfig {
+function applyProfile(
+  config: Record<string, unknown>,
+  profile: string | undefined,
+  file: string,
+): Record<string, unknown> {
   if (!profile) return config;
-  const selected = config.profiles[profile];
+  const profiles = isRecord(config.profiles) ? config.profiles : {};
+  const selected = profiles[profile];
   if (!selected) {
     throw new PupilError(`Pupil config profile does not exist: ${profile}`, {
       file,
@@ -185,7 +191,8 @@ export async function loadPupilConfig(options: LoadConfigOptions = {}): Promise<
       });
     }
     const defaults = pupilConfigSchema.parse({});
-    return applyProfile(defaults, options.profile, configPath);
+    const profiled = applyProfile(defaults, options.profile, configPath);
+    return pupilConfigSchema.parse(profiled);
   }
 
   const source = await readFile(configPath, "utf-8");
@@ -195,13 +202,12 @@ export async function loadPupilConfig(options: LoadConfigOptions = {}): Promise<
     throw new PupilError(`Invalid YAML in ${configPath}\n${message}`, { file: configPath });
   }
 
-  const rawConfig = document.toJSON() ?? {};
-  const shaped = pupilConfigSchema.safeParse(rawConfig);
-  if (!shaped.success) {
-    throw formatConfigValidationError(shaped.error, configPath);
-  }
+  const rawConfig = (document.toJSON() ?? {}) as Record<string, unknown>;
 
-  const profiled = applyProfile(shaped.data, options.profile, configPath);
+  // Profile selection and merging happen on the raw document, before schema
+  // validation: numeric fields may still hold unresolved ${VAR:-default}
+  // templates at this point, which z.coerce.number() can't parse yet.
+  const profiled = applyProfile(rawConfig, options.profile, configPath);
   const { profiles: _profiles, ...selectedConfig } = profiled;
   const resolvedConfig = resolveEnvRefs(selectedConfig, options.env ?? process.env, configPath);
   const parsed = pupilConfigSchema.safeParse(resolvedConfig);
