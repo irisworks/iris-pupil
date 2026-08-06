@@ -609,7 +609,8 @@ export class LangfuseTraceSource implements TraceSource {
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
     private readonly options: {
       waitMs?: number;
-      pollIntervalMs?: number;
+      initialDelayMs?: number;
+      initialBackoffMs?: number;
       timeoutMs?: number;
     } = {},
   ) {}
@@ -633,7 +634,8 @@ export class LangfuseTraceSource implements TraceSource {
       this.fetchImpl,
       this.options.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
       this.options.waitMs ?? DEFAULT_LANGFUSE_WAIT_MS,
-      this.options.pollIntervalMs ?? DEFAULT_LANGFUSE_POLL_INTERVAL_MS,
+      this.options.initialDelayMs ?? DEFAULT_LANGFUSE_INITIAL_DELAY_MS,
+      this.options.initialBackoffMs ?? DEFAULT_LANGFUSE_INITIAL_BACKOFF_MS,
     );
     if (!enrichment) return undefined;
     return {
