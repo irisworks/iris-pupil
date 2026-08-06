@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig } from "../core/config.js";
-import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
+import { aggregateVerdicts, PupilError, type TargetIdentity, Verdict } from "../core/types.js";
 import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
 
-const program = new Command();
+export const program = new Command();
+program.enablePositionalOptions();
 const packageManifest = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
 ) as { version: string };
@@ -165,6 +167,10 @@ program
   )
   .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
+  .option("--system <name>", "Agent system name (e.g. support-agent)")
+  .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
+  .option("--version <version>", "Deployed version or commit SHA")
+  .option("--fixture-set <name>", "Active fixture/stub set name")
   .action(
     async (
       path: string,
@@ -177,10 +183,21 @@ program
         concurrency: number;
         historyDir: string;
         langfuse: boolean;
+        system?: string;
+        environment?: string;
+        version?: string;
+        fixtureSet?: string;
       },
     ) => {
       const scenarios = await loadScenarios(path);
       const config = await loadPupilConfig();
+      const mergedTarget: TargetIdentity = {
+        ...config.target,
+        ...(options.system ? { system: options.system } : {}),
+        ...(options.environment ? { environment: options.environment } : {}),
+        ...(options.version ? { version: options.version } : {}),
+        ...(options.fixtureSet ? { fixtureSet: options.fixtureSet } : {}),
+      };
       const result = await runScenarios(scenarios, {
         timeoutMs: options.timeoutMs,
         retries: options.retries,
@@ -188,6 +205,7 @@ program
         driverConfig: definedConfig(options),
         progress: logProgress,
         langfuse: options.langfuse === false ? false : { settings: config.langfuse },
+        target: mergedTarget,
       });
 
       let stored;
@@ -240,6 +258,23 @@ program
     console.log(`Started: ${run.startedAt}`);
     console.log(`Completed: ${run.completedAt}`);
     console.log(`Summary: ${formatSummary(run.summary)}`);
+    if (run.target) {
+      const parts = (
+        [
+          ["system", run.target.system],
+          ["environment", run.target.environment],
+          ["version", run.target.version],
+          ["mode", run.target.mode],
+          ["fixtureSet", run.target.fixtureSet],
+        ] as [string, string | undefined][]
+      )
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" ");
+      if (parts) {
+        console.log(`Target: ${parts}`);
+      }
+    }
 
     for (const result of [...run.results].sort((a, b) =>
       a.scenarioId.localeCompare(b.scenarioId),
@@ -415,4 +450,6 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  void main();
+}
