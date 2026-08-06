@@ -1,7 +1,15 @@
 import { Verdict, verdictSeverity, type RunResult, type ScenarioResult } from "../core/types.js";
+import type { TargetIdentity } from "../core/types.js";
 
 export type ScenarioComparisonStatus =
   "unchanged" | "regressed" | "fixed" | "still_failing" | "new" | "removed";
+
+export interface TargetMismatchEntry {
+  field: "system" | "environment" | "version" | "mode" | "fixtureSet";
+  severity: "hard" | "soft";
+  base: string | undefined;
+  current: string | undefined;
+}
 
 export interface MetricDelta {
   metric: string;
@@ -28,6 +36,7 @@ export interface RunComparison {
   currentRunId: string;
   scenarios: ScenarioComparison[];
   hasRegressions: boolean;
+  targetMismatch: TargetMismatchEntry[];
   summary: Record<ScenarioComparisonStatus, number> & {
     metricRegressions: number;
   };
@@ -115,6 +124,32 @@ function indexByScenarioId(run: RunResult): Map<string, ScenarioResult> {
   return new Map(run.results.map((result) => [result.scenarioId, result]));
 }
 
+const TARGET_FIELDS: [keyof TargetIdentity, "hard" | "soft"][] = [
+  ["system", "hard"],
+  ["mode", "hard"],
+  ["fixtureSet", "hard"],
+  ["environment", "soft"],
+  ["version", "soft"],
+];
+
+function detectTargetMismatches(base: RunResult, current: RunResult): TargetMismatchEntry[] {
+  const bt = base.target;
+  const ct = current.target;
+  if (!bt || !ct) return [];
+
+  const mismatches: TargetMismatchEntry[] = [];
+
+  for (const [field, severity] of TARGET_FIELDS) {
+    const bv = bt[field] as string | undefined;
+    const cv = ct[field] as string | undefined;
+    if (bv !== undefined && cv !== undefined && bv !== cv) {
+      mismatches.push({ field, severity, base: bv, current: cv });
+    }
+  }
+
+  return mismatches;
+}
+
 export function compareRuns(
   base: RunResult,
   current: RunResult,
@@ -171,6 +206,7 @@ export function compareRuns(
     currentRunId: current.runId,
     scenarios,
     hasRegressions: scenarios.some((scenario) => scenario.regression),
+    targetMismatch: detectTargetMismatches(base, current),
     summary,
   };
 }
@@ -184,7 +220,58 @@ function formatDelta(delta: number | undefined): string {
   return delta > 0 ? `+${delta}` : String(delta);
 }
 
+function formatTargetTable(
+  entries: TargetMismatchEntry[],
+  baseRunId: string,
+  currentRunId: string,
+): string {
+  const col = 22;
+  const header = `  Base (${baseRunId})`.padEnd(col) + `Current (${currentRunId})`;
+  const divider = "  " + "─".repeat(col - 2).padEnd(col) + "─".repeat(16);
+  const rows = entries.map((m) => {
+    const left = `  ${m.field}: ${m.base ?? ""}`.padEnd(col);
+    return `${left}${m.field}: ${m.current ?? ""}`;
+  });
+  return [header, divider, ...rows].join("\n");
+}
+
+function formatTargetMismatches(
+  mismatches: TargetMismatchEntry[],
+  baseRunId: string,
+  currentRunId: string,
+): string {
+  const hard = mismatches.filter((m) => m.severity === "hard");
+  const soft = mismatches.filter((m) => m.severity === "soft");
+  const parts: string[] = [];
+
+  if (hard.length > 0) {
+    const table = formatTargetTable(hard, baseRunId, currentRunId);
+    parts.push(
+      [
+        "⚠ Comparison may be invalid",
+        "",
+        table,
+        "",
+        "  Regression metrics may not be meaningful.",
+      ].join("\n"),
+    );
+  }
+
+  if (soft.length > 0) {
+    const table = formatTargetTable(soft, baseRunId, currentRunId);
+    parts.push(["ℹ Cross-target comparison", "", table].join("\n"));
+  }
+
+  return parts.join("\n\n");
+}
+
 export function formatRunComparison(comparison: RunComparison): string {
+  const mismatchBlock = formatTargetMismatches(
+    comparison.targetMismatch,
+    comparison.baseRunId,
+    comparison.currentRunId,
+  );
+
   const lines = [
     `Comparison ${comparison.baseRunId} -> ${comparison.currentRunId}`,
     `Summary: regressed=${comparison.summary.regressed} fixed=${comparison.summary.fixed} still_failing=${comparison.summary.still_failing} new=${comparison.summary.new} removed=${comparison.summary.removed} unchanged=${comparison.summary.unchanged} metric_regressions=${comparison.summary.metricRegressions}`,
@@ -210,5 +297,6 @@ export function formatRunComparison(comparison: RunComparison): string {
     }
   }
 
-  return `${lines.join("\n")}\n`;
+  const body = `${lines.join("\n")}\n`;
+  return mismatchBlock ? `${mismatchBlock}\n\n${body}` : body;
 }
