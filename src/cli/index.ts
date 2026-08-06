@@ -186,7 +186,7 @@ program
         timeoutMs: options.timeoutMs,
         retries: options.retries,
         concurrency: options.concurrency,
-        driverConfig: definedConfig(options),
+        driverConfig: { ...config.driver.config, ...definedConfig(options) },
         progress: logProgress,
         traceSource:
           options.langfuse === false ? false : LangfuseTraceSource.fromSettings(config.langfuse),
