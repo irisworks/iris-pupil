@@ -322,7 +322,8 @@ export async function runScenario(
   options: RunScenarioOptions = {},
 ): Promise<ScenarioResult> {
   const runId = options.runId ?? randomUUID();
-  const startedAt = now();
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
   const maxAttempts = (options.retries ?? 0) + 1;
   const timeoutMs =
     options.timeoutMs ??
@@ -332,11 +333,14 @@ export async function runScenario(
   let lastTurns: TurnRecord[] = [];
   let lastSessionId: string | undefined;
   let attemptsUsed = 0;
+  let lastAttemptStartedAtMs = startedAtMs;
 
   options.progress?.({ type: "scenario:start", scenarioId: scenario.id, attempt: 1, maxAttempts });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attemptsUsed = attempt;
+    const attemptStartedAtMs = Date.now();
+    lastAttemptStartedAtMs = attemptStartedAtMs;
     const config = mergedDriverConfig(scenario, options.driverConfig);
     const context = { runId, scenarioId: scenario.id, attempt, config };
     const driver =
@@ -366,7 +370,10 @@ export async function runScenario(
       };
       // Enrich before scoring so cost/token thresholds see the Langfuse metrics.
       if (options.langfuse !== false) {
-        await enrichScenarioWithLangfuse(baseResult, options.langfuse ?? {});
+        await enrichScenarioWithLangfuse(baseResult, {
+          ...(options.langfuse ?? {}),
+          startedAt: attemptStartedAtMs,
+        });
       }
       const trajectory = createDrivenTrajectory({
         turns,
@@ -423,7 +430,10 @@ export async function runScenario(
   );
   // Failed scenarios are exactly where a trace URL is most useful.
   if (options.langfuse !== false) {
-    await enrichScenarioWithLangfuse(result, options.langfuse ?? {});
+    await enrichScenarioWithLangfuse(result, {
+      ...(options.langfuse ?? {}),
+      startedAt: lastAttemptStartedAtMs,
+    });
   }
   options.progress?.({
     type: "scenario:error",
