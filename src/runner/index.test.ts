@@ -410,12 +410,9 @@ describe("scenario runner", () => {
         },
         async closeConversation() {},
       }),
-      langfuse: {
-        config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
-        initialDelayMs: 8000,
-        waitMs: 15000,
-        pollIntervalMs: 1000,
-        fetchImpl: (async (url: string) => {
+      traceSource: new LangfuseTraceSource(
+        { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+        (async (url: string) => {
           calls.push(Date.now());
           return {
             ok: true,
@@ -426,7 +423,8 @@ describe("scenario runner", () => {
                 : { data: [{ id: "trace-1" }] },
           };
         }) as unknown as typeof fetch,
-      },
+        { initialDelayMs: 8000, waitMs: 15000, initialBackoffMs: 1000 },
+      ),
     });
 
     await vi.advanceTimersByTimeAsync(0);
