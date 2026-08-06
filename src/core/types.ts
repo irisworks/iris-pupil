@@ -41,6 +41,14 @@ export class PupilError extends Error {
   }
 }
 
+export interface TargetIdentity {
+  system?: string;
+  environment?: string;
+  version?: string;
+  mode: "driven" | "observed";
+  fixtureSet?: string;
+}
+
 export interface ScenarioDriverRef {
   type: string;
   preset?: string;
@@ -218,4 +226,5 @@ export interface RunResult {
     errors: number;
   };
   metadata: Record<string, unknown>;
+  target?: TargetIdentity;
 }
