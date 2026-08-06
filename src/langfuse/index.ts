@@ -408,15 +408,22 @@ async function fetchSession(
     const tracesPayload = await tracesResponse.json();
     const traceIds = traceIdsFromPayload(tracesPayload);
     if (traceIds.length > 0) {
+      const traceResponses = await Promise.all(
+        traceIds.map((traceId) =>
+          fetchLangfuse(traceDetailUrl(config, traceId), auth, fetchImpl, timeoutMs),
+        ),
+      );
       const traces: JsonRecord[] = [];
-      for (const traceId of traceIds) {
-        const traceResponse = await fetchLangfuse(
-          traceDetailUrl(config, traceId),
-          auth,
-          fetchImpl,
-          timeoutMs,
-        );
-        if (!traceResponse.ok) return undefined;
+      for (let i = 0; i < traceIds.length; i++) {
+        const traceId = traceIds[i];
+        const traceResponse = traceResponses[i];
+        if (!traceResponse.ok) {
+          // A trace listed by the session query can 404 briefly before it is
+          // readable; treat that as "not ready yet" so the caller retries the
+          // whole session lookup, matching the traces-list not-found handling below.
+          if (traceResponse.status === 404) return undefined;
+          throw new Error(`Langfuse lookup failed with status ${traceResponse.status}`);
+        }
         const trace = await traceResponse.json();
         if (isRecord(trace)) {
           traces.push({ url: `${normalizeBaseUrl(config.baseUrl)}/trace/${traceId}`, ...trace });
