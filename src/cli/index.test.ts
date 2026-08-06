@@ -2,12 +2,22 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Verdict, type RunResult } from "../core/types.js";
 import { JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
+import { program } from "./index.js";
 
 const cliPath = join(process.cwd(), "dist", "cli", "index.js");
+
+const minimalScenarioYaml = [
+  "id: target-test-scenario",
+  "name: Target test scenario",
+  "driver:",
+  "  type: rest",
+  "  preset: iris-http",
+  "input: hello",
+].join("\n");
 
 function runResult(runId: string, verdict: Verdict = Verdict.Pass): RunResult {
   return {
@@ -670,4 +680,181 @@ describe("pupil CLI", () => {
       await new Promise((resolve) => child.once("exit", resolve));
     }
   }, 15000);
+});
+
+describe("run command target flags", () => {
+  it("passes target from CLI flags to runScenarios", async () => {
+    const mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const scenarioDir = await mkdtemp(join(tmpdir(), "pupil-target-scenario-"));
+    const historyDir = await mkdtemp(join(tmpdir(), "pupil-target-history-"));
+    const scenarioPath = join(scenarioDir, "scenario.yaml");
+
+    try {
+      await writeFile(scenarioPath, minimalScenarioYaml);
+      await program.parseAsync([
+        "node",
+        "pupil",
+        "run",
+        "--base-url",
+        `http://${address.host}:${address.port}`,
+        "--history-dir",
+        historyDir,
+        "--system",
+        "support-agent",
+        "--environment",
+        "staging",
+        "--version",
+        "abc1234",
+        "--fixture-set",
+        "live",
+        "--no-langfuse",
+        scenarioPath,
+      ]);
+    } finally {
+      await mock.close();
+      await rm(scenarioDir, { recursive: true, force: true });
+    }
+
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+    const [entry] = await store.listRuns();
+    const stored = await store.readRun(entry.runId);
+    await rm(historyDir, { recursive: true, force: true });
+
+    expect(stored.target).toMatchObject({
+      system: "support-agent",
+      environment: "staging",
+      version: "abc1234",
+      fixtureSet: "live",
+      mode: "driven",
+    });
+  }, 15000);
+
+  it("CLI flags override config.target fields (flags win)", async () => {
+    const mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const historyDir = await mkdtemp(join(tmpdir(), "pupil-history-"));
+    const configDir = await mkdtemp(join(tmpdir(), "pupil-cfg-"));
+    const scenarioPath = join(configDir, "scenario.yaml");
+
+    await writeFile(
+      join(configDir, "pupil.config.yaml"),
+      ["target:", "  system: support-agent", "  environment: staging"].join("\n"),
+    );
+    await writeFile(scenarioPath, minimalScenarioYaml);
+
+    const originalCwd = process.cwd();
+    process.chdir(configDir);
+    try {
+      await program.parseAsync([
+        "node",
+        "pupil",
+        "run",
+        "--base-url",
+        `http://${address.host}:${address.port}`,
+        "--history-dir",
+        historyDir,
+        "--environment",
+        "production",
+        "--no-langfuse",
+        scenarioPath,
+      ]);
+    } finally {
+      process.chdir(originalCwd);
+      await mock.close();
+    }
+
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+    const [entry] = await store.listRuns();
+    const stored = await store.readRun(entry.runId);
+
+    expect(stored.target).toMatchObject({
+      system: "support-agent",
+      environment: "production",
+      mode: "driven",
+    });
+  }, 15000);
+});
+
+describe("report command target output", () => {
+  afterEach(() => {
+    console.log = console.log;
+  });
+
+  it("prints target fields when present", async () => {
+    const historyDir = await mkdtemp(join(tmpdir(), "pupil-report-target-"));
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+
+    const fakeRun: RunResult = {
+      runId: "target-run",
+      verdict: Verdict.Pass,
+      results: [],
+      startedAt: "2026-08-06T10:00:00.000Z",
+      completedAt: "2026-08-06T10:01:00.000Z",
+      summary: { total: 0, passed: 0, failed: 0, needsReview: 0, errors: 0 },
+      metadata: {},
+      target: {
+        system: "support-agent",
+        environment: "staging",
+        version: "v2.3.1",
+        mode: "driven",
+        fixtureSet: "live",
+      },
+    };
+    await store.writeRun(fakeRun);
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(" "));
+    try {
+      await program.parseAsync([
+        "node",
+        "pupil",
+        "report",
+        "target-run",
+        "--history-dir",
+        historyDir,
+      ]);
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(lines.join("\n")).toContain(
+      "Target: system=support-agent environment=staging version=v2.3.1 mode=driven fixtureSet=live",
+    );
+  });
+
+  it("omits target line when run has no target", async () => {
+    const historyDir = await mkdtemp(join(tmpdir(), "pupil-report-notarget-"));
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+
+    const fakeRun: RunResult = {
+      runId: "no-target-run",
+      verdict: Verdict.Pass,
+      results: [],
+      startedAt: "2026-08-06T10:00:00.000Z",
+      completedAt: "2026-08-06T10:01:00.000Z",
+      summary: { total: 0, passed: 0, failed: 0, needsReview: 0, errors: 0 },
+      metadata: {},
+    };
+    await store.writeRun(fakeRun);
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(" "));
+    try {
+      await program.parseAsync([
+        "node",
+        "pupil",
+        "report",
+        "no-target-run",
+        "--history-dir",
+        historyDir,
+      ]);
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(lines.join("\n")).not.toContain("Target:");
+  });
 });
