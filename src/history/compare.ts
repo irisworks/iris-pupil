@@ -37,6 +37,7 @@ export interface RunComparison {
   scenarios: ScenarioComparison[];
   hasRegressions: boolean;
   targetMismatch: TargetMismatchEntry[];
+  targetIdentityUnknown: boolean;
   summary: Record<ScenarioComparisonStatus, number> & {
     metricRegressions: number;
   };
@@ -142,7 +143,13 @@ function detectTargetMismatches(base: RunResult, current: RunResult): TargetMism
   for (const [field, severity] of TARGET_FIELDS) {
     const bv = bt[field] as string | undefined;
     const cv = ct[field] as string | undefined;
-    if (bv !== undefined && cv !== undefined && bv !== cv) {
+    if (bv === cv) continue;
+    // Hard fields (system/mode/fixtureSet) treat one side being unset as a
+    // mismatch too: a stubbed run vs. an undeclared one is exactly the
+    // contamination this check exists to catch. Soft fields (environment/
+    // version) stay lenient so older runs without that metadata don't warn.
+    const bothPresent = bv !== undefined && cv !== undefined;
+    if (severity === "hard" || bothPresent) {
       mismatches.push({ field, severity, base: bv, current: cv });
     }
   }
@@ -207,6 +214,7 @@ export function compareRuns(
     scenarios,
     hasRegressions: scenarios.some((scenario) => scenario.regression),
     targetMismatch: detectTargetMismatches(base, current),
+    targetIdentityUnknown: !base.target || !current.target,
     summary,
   };
 }
@@ -225,13 +233,16 @@ function formatTargetTable(
   baseRunId: string,
   currentRunId: string,
 ): string {
-  const col = 22;
-  const header = `  Base (${baseRunId})`.padEnd(col) + `Current (${currentRunId})`;
-  const divider = "  " + "─".repeat(col - 2).padEnd(col) + "─".repeat(16);
-  const rows = entries.map((m) => {
-    const left = `  ${m.field}: ${m.base ?? ""}`.padEnd(col);
-    return `${left}${m.field}: ${m.current ?? ""}`;
-  });
+  const gap = 2;
+  const leftHeader = `  Base (${baseRunId})`;
+  const rightHeader = `Current (${currentRunId})`;
+  const leftCells = entries.map((m) => `  ${m.field}: ${m.base ?? ""}`);
+  const rightCells = entries.map((m) => `${m.field}: ${m.current ?? ""}`);
+  const col = Math.max(leftHeader.length, ...leftCells.map((cell) => cell.length)) + gap;
+
+  const header = leftHeader.padEnd(col) + rightHeader;
+  const divider = "─".repeat(leftHeader.length).padEnd(col) + "─".repeat(rightHeader.length);
+  const rows = entries.map((_, i) => leftCells[i]!.padEnd(col) + rightCells[i]);
   return [header, divider, ...rows].join("\n");
 }
 
@@ -265,12 +276,26 @@ function formatTargetMismatches(
   return parts.join("\n\n");
 }
 
+function formatTargetIdentityUnknown(): string {
+  return [
+    "ℹ Target identity unknown",
+    "",
+    "  One or both runs predate target identity tracking.",
+    "  Comparison provenance cannot be verified.",
+  ].join("\n");
+}
+
 export function formatRunComparison(comparison: RunComparison): string {
-  const mismatchBlock = formatTargetMismatches(
-    comparison.targetMismatch,
-    comparison.baseRunId,
-    comparison.currentRunId,
-  );
+  // Mutually exclusive: detectTargetMismatches only runs when both runs have
+  // a target, so a "target present but disagrees" warning and a "target
+  // missing entirely" notice never both apply to the same comparison.
+  const mismatchBlock = comparison.targetIdentityUnknown
+    ? formatTargetIdentityUnknown()
+    : formatTargetMismatches(
+        comparison.targetMismatch,
+        comparison.baseRunId,
+        comparison.currentRunId,
+      );
 
   const lines = [
     `Comparison ${comparison.baseRunId} -> ${comparison.currentRunId}`,
