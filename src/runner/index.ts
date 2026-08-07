@@ -26,8 +26,10 @@ import {
   evaluateManualScoring,
   evaluateThresholds,
 } from "../eval/index.js";
+import { LangfuseTraceSource } from "../langfuse/index.js";
 import {
   applyTraceEnrichment,
+  NO_CORRELATION_KEY_REASON,
   summarizeTraceRun,
   type TraceSource,
   type TraceLookupResult,
@@ -57,6 +59,15 @@ export interface RunScenarioOptions {
   driverConfig?: Record<string, unknown>;
   driverFactory?: (scenario: Scenario, context: RunnerDriverContext) => RunnerDriver;
   progress?: (event: RunnerProgressEvent) => void;
+  /**
+   * Trace backend used to enrich results with observability evidence.
+   *
+   * Omitted: falls back to Langfuse configured from the environment, matching the
+   * behaviour callers had before enrichment moved behind `TraceSource`. The fallback
+   * yields nothing when Langfuse is unconfigured, so it is inert by default.
+   * `false`: no enrichment at all.
+   * A `TraceSource`: that backend is used and no fallback is consulted.
+   */
   traceSource?: TraceSource | false;
 }
 
@@ -119,6 +130,43 @@ function extractCorrelationKey(result: ScenarioResult): string | undefined {
     if (id) return id;
   }
   return undefined;
+}
+
+/**
+ * `false` disables enrichment; an explicit source is used as given. Omitting the
+ * option falls back to environment-configured Langfuse, which is what callers got
+ * before enrichment moved behind `TraceSource`. The fallback is the only place core
+ * names a concrete backend, and it resolves to undefined when Langfuse is unset.
+ */
+function resolveTraceSource(option: TraceSource | false | undefined): TraceSource | undefined {
+  if (option === false) return undefined;
+  return option ?? LangfuseTraceSource.fromSettings();
+}
+
+/**
+ * Best-effort: a lookup failure is recorded in metadata and never reaches the verdict.
+ * `startedAt` lets a backend discount scenario runtime from any ingestion-delay wait.
+ */
+async function enrichWithTraceSource(
+  result: ScenarioResult,
+  source: TraceSource,
+  startedAt: number,
+): Promise<void> {
+  const key = extractCorrelationKey(result);
+  let lookup: TraceLookupResult;
+
+  if (key === undefined) {
+    lookup = { status: "missing", reason: NO_CORRELATION_KEY_REASON };
+  } else {
+    try {
+      const record = await source.resolve(key, { startedAt });
+      lookup = record ? { status: "found", record } : { status: "missing" };
+    } catch (error) {
+      lookup = { status: "error", reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  applyTraceEnrichment(result, key, lookup, source.metadataKey);
 }
 
 function stringOption(value: unknown, name: string): string | undefined {
@@ -343,6 +391,7 @@ export async function runScenario(
   const runId = options.runId ?? randomUUID();
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
+  const traceSource = resolveTraceSource(options.traceSource);
   const maxAttempts = (options.retries ?? 0) + 1;
   const timeoutMs =
     options.timeoutMs ??
@@ -388,20 +437,8 @@ export async function runScenario(
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
       // Enrich before scoring so cost/token thresholds see the trace metrics.
-      if (options.traceSource !== false && options.traceSource) {
-        const source = options.traceSource;
-        const key = extractCorrelationKey(baseResult);
-        let lookup: TraceLookupResult;
-        try {
-          const record = key ? await source.resolve(key) : undefined;
-          lookup = record ? { status: "found", record } : { status: "missing" };
-        } catch (error) {
-          lookup = {
-            status: "error",
-            reason: error instanceof Error ? error.message : String(error),
-          };
-        }
-        applyTraceEnrichment(baseResult, key ?? "", lookup, source.metadataKey);
+      if (traceSource) {
+        await enrichWithTraceSource(baseResult, traceSource, attemptStartedAtMs);
       }
       const trajectory = createDrivenTrajectory({
         turns,
@@ -457,17 +494,8 @@ export async function runScenario(
     lastSessionId,
   );
   // Failed scenarios are exactly where a trace URL is most useful.
-  if (options.traceSource !== false && options.traceSource) {
-    const source = options.traceSource;
-    const key = extractCorrelationKey(result);
-    let lookup: TraceLookupResult;
-    try {
-      const record = key ? await source.resolve(key) : undefined;
-      lookup = record ? { status: "found", record } : { status: "missing" };
-    } catch (error) {
-      lookup = { status: "error", reason: error instanceof Error ? error.message : String(error) };
-    }
-    applyTraceEnrichment(result, key ?? "", lookup, source.metadataKey);
+  if (traceSource) {
+    await enrichWithTraceSource(result, traceSource, lastAttemptStartedAtMs);
   }
   options.progress?.({
     type: "scenario:error",
@@ -500,6 +528,10 @@ export async function runScenarios(
     throw new PupilError("runner concurrency must be a positive integer");
   }
 
+  // Resolved once so every scenario shares one instance and the roll-up below
+  // uses the same metadataKey the scenarios were written with.
+  const traceSource = resolveTraceSource(options.traceSource);
+
   const results = new Array<ScenarioResult>(scenarios.length);
   let cursor = 0;
 
@@ -507,7 +539,11 @@ export async function runScenarios(
     while (cursor < scenarios.length) {
       const index = cursor;
       cursor += 1;
-      results[index] = await runScenario(scenarios[index], { ...options, runId });
+      results[index] = await runScenario(scenarios[index], {
+        ...options,
+        runId,
+        traceSource: traceSource ?? false,
+      });
     }
   }
 
@@ -527,8 +563,6 @@ export async function runScenarios(
   };
 
   // Scenarios are enriched as they finish; this only rolls the statuses up.
-  if (options.traceSource !== false && options.traceSource) {
-    return summarizeTraceRun(run, options.traceSource.metadataKey);
-  }
+  if (traceSource) return summarizeTraceRun(run, traceSource.metadataKey);
   return run;
 }

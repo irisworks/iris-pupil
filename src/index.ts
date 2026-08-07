@@ -10,10 +10,22 @@ export * from "./history/index.js";
 export {
   applyTraceEnrichment,
   summarizeTraceRun,
+  NO_CORRELATION_KEY_REASON,
+  NO_TRACE_FOUND_REASON,
   type TraceSource,
   type TraceRecord,
+  type TraceLookupContext,
   type TraceLookupResult,
   type TraceStatus,
 } from "./trace/index.js";
 
-export { LangfuseTraceSource } from "./langfuse/index.js";
+export {
+  extractLangfuseEnrichment,
+  langfuseConfigFromEnv,
+  LangfuseTraceSource,
+  resolveLangfuseConfig,
+  type LangfuseConfig,
+  type LangfuseEnrichment,
+  type LangfuseSettings,
+  type LangfuseTraceSourceOptions,
+} from "./langfuse/index.js";

@@ -13,10 +13,25 @@ export interface TraceRecord {
 
 export type TraceStatus = "enriched" | "skipped" | "error";
 
+export const NO_CORRELATION_KEY_REASON = "No session id available";
+export const NO_TRACE_FOUND_REASON = "No trace found for session";
+
 export type TraceLookupResult =
   | { status: "found"; record: TraceRecord }
-  | { status: "missing" }
+  | { status: "missing"; reason?: string }
   | { status: "error"; reason: string };
+
+/**
+ * Context the runner knows about a completed scenario, passed to every lookup.
+ *
+ * Backends that poll an asynchronous ingestion pipeline use `startedAt` to
+ * discount time the scenario itself already spent, so a slow scenario does not
+ * pay an ingestion delay twice. Backends that read synchronously may ignore it.
+ */
+export interface TraceLookupContext {
+  /** Start of the scenario attempt this trace belongs to, in epoch milliseconds. */
+  readonly startedAt?: number;
+}
 
 /**
  * Resolves observability evidence for a completed scenario run.
@@ -35,9 +50,9 @@ export type TraceLookupResult =
  * Implementations must be stateless and safe to reuse across multiple
  * concurrent scenario executions.
  *
- * Note: resolve() assumes a single string correlation key (session ID).
- * If a future backend requires richer context, revisit this signature
- * with real requirements at that point.
+ * Note: resolve() assumes a single string correlation key (session ID), plus
+ * the optional TraceLookupContext. If a future backend requires a richer key,
+ * revisit this signature with real requirements at that point.
  *
  * Adding a second backend: implement this interface, set metadataKey,
  * implement resolve(), and pass an instance as traceSource to runScenario.
@@ -45,23 +60,30 @@ export type TraceLookupResult =
  */
 export interface TraceSource {
   readonly metadataKey: string;
-  resolve(correlationKey: string): Promise<TraceRecord | undefined>;
+  resolve(correlationKey: string, context?: TraceLookupContext): Promise<TraceRecord | undefined>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * Writes a lookup outcome onto a scenario result. `correlationKey` is undefined when
+ * the run produced no key to look up with; the key is then omitted from metadata so
+ * "we never looked" stays distinguishable from "we looked and found nothing".
+ */
 export function applyTraceEnrichment(
   result: ScenarioResult,
-  correlationKey: string,
+  correlationKey: string | undefined,
   lookup: TraceLookupResult,
   metadataKey: string,
 ): TraceStatus {
+  const sessionId = correlationKey !== undefined ? { sessionId: correlationKey } : {};
+
   if (lookup.status === "error") {
     result.metadata = {
       ...(result.metadata ?? {}),
-      [metadataKey]: { status: "error", sessionId: correlationKey, reason: lookup.reason },
+      [metadataKey]: { status: "error", ...sessionId, reason: lookup.reason },
     };
     return "error";
   }
@@ -71,8 +93,8 @@ export function applyTraceEnrichment(
       ...(result.metadata ?? {}),
       [metadataKey]: {
         status: "skipped",
-        sessionId: correlationKey,
-        reason: "No trace found for session",
+        ...sessionId,
+        reason: lookup.reason ?? NO_TRACE_FOUND_REASON,
       },
     };
     return "skipped";
@@ -89,7 +111,7 @@ export function applyTraceEnrichment(
     ...(result.metadata ?? {}),
     [metadataKey]: {
       status: "enriched",
-      sessionId: correlationKey,
+      ...sessionId,
       traceId: record.traceId,
       traceUrl: record.traceUrl,
       ...(record.traceCount > 1 && { traceCount: record.traceCount }),

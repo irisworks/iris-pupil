@@ -1,6 +1,5 @@
 import { Buffer } from "node:buffer";
-import type { RunResult, ScenarioResult } from "../core/types.js";
-import type { TraceRecord, TraceSource } from "../trace/index.js";
+import type { TraceLookupContext, TraceRecord, TraceSource } from "../trace/index.js";
 
 export interface LangfuseEnrichment {
   readonly traceId?: string;
@@ -36,23 +35,17 @@ export interface LangfuseSettings {
   initialDelayMs?: number;
 }
 
-export interface LangfuseEnrichmentOptions {
-  config?: LangfuseConfig;
-  settings?: LangfuseSettings;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
+/** Polling knobs for {@link LangfuseTraceSource}. */
+export interface LangfuseTraceSourceOptions {
   /** How long to keep polling for a trace; Langfuse ingestion is asynchronous. */
   waitMs?: number;
   /** Earliest point, measured from scenario start, when a second poll is expected to be useful. */
   initialDelayMs?: number;
-  /** Scenario start timestamp in epoch milliseconds. Only used to discount `initialDelayMs`. */
-  startedAt?: number;
   /** Initial backoff delay between trace lookup attempts. Primarily useful for tests. */
-  pollIntervalMs?: number;
+  initialBackoffMs?: number;
+  /** Bound on each individual HTTP lookup. */
+  timeoutMs?: number;
 }
-
-export type LangfuseStatus = "enriched" | "skipped" | "error";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -215,19 +208,6 @@ export function resolveLangfuseConfig(
     ...(timeoutMs !== undefined && { timeoutMs }),
     ...(initialDelayMs !== undefined && { initialDelayMs }),
   };
-}
-
-function sessionIdForScenario(result: ScenarioResult): string | undefined {
-  const fromMetadata = isRecord(result.metadata) ? result.metadata.sessionId : undefined;
-  if (typeof fromMetadata === "string" && fromMetadata.length > 0) return fromMetadata;
-
-  for (const turn of result.turns) {
-    const raw = turn.response?.raw;
-    if (!isRecord(raw)) continue;
-    const sessionId = firstString(raw.sessionId, raw.session_id, raw.id);
-    if (sessionId) return sessionId;
-  }
-  return undefined;
 }
 
 function tracesFromSession(payload: unknown): JsonRecord[] {
@@ -477,142 +457,19 @@ async function lookupSession(
   }
 }
 
-function withLangfuseMetadata(result: ScenarioResult, langfuse: Record<string, unknown>): void {
-  result.metadata = { ...(result.metadata ?? {}), langfuse };
-}
-
-function applyEnrichment(
-  result: ScenarioResult,
-  sessionId: string,
-  enrichment: LangfuseEnrichment | undefined,
-): LangfuseStatus {
-  if (!enrichment) {
-    withLangfuseMetadata(result, {
-      status: "skipped",
-      sessionId,
-      reason: "No trace found for session",
-    });
-    return "skipped";
-  }
-
-  if (enrichment.costUsd !== undefined) result.metrics.cost_usd = enrichment.costUsd;
-  if (enrichment.inputTokens !== undefined) result.metrics.input_tokens = enrichment.inputTokens;
-  if (enrichment.outputTokens !== undefined) result.metrics.output_tokens = enrichment.outputTokens;
-  if (enrichment.totalTokens !== undefined) result.metrics.total_tokens = enrichment.totalTokens;
-  result.metrics.tool_calls = enrichment.toolCalls.length;
-
-  withLangfuseMetadata(result, {
-    status: "enriched",
-    sessionId,
-    traceId: enrichment.traceId,
-    traceUrl: enrichment.traceUrl,
-    ...(enrichment.traceCount > 1 && { traceCount: enrichment.traceCount }),
-    toolCalls: enrichment.toolCalls,
-  });
-  return "enriched";
-}
-
 /**
- * Best-effort enrichment of a single scenario result. Mutates `metrics` and `metadata`
- * in place so callers can score thresholds against the enriched metrics. Returns
- * `undefined` when Langfuse is not configured, leaving the result untouched.
+ * Reads Langfuse trace evidence for a scenario's session id.
+ *
+ * Enrichment semantics (best-effort, never verdict-changing) live in the runner and
+ * `applyTraceEnrichment`; this class only resolves evidence or reports it cannot.
  */
-export async function enrichScenarioWithLangfuse(
-  result: ScenarioResult,
-  options: LangfuseEnrichmentOptions = {},
-): Promise<LangfuseStatus | undefined> {
-  const config = options.config ?? resolveLangfuseConfig(options);
-  if (!config) return undefined;
-
-  const sessionId = sessionIdForScenario(result);
-  if (!sessionId) {
-    withLangfuseMetadata(result, { status: "skipped", reason: "No session id available" });
-    return "skipped";
-  }
-
-  try {
-    const enrichment = await lookupSession(
-      config,
-      sessionId,
-      options.fetchImpl ?? fetch,
-      options.timeoutMs ?? config.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
-      options.waitMs ?? config.waitMs ?? DEFAULT_LANGFUSE_WAIT_MS,
-      options.initialDelayMs ?? config.initialDelayMs ?? DEFAULT_LANGFUSE_INITIAL_DELAY_MS,
-      options.pollIntervalMs ?? DEFAULT_LANGFUSE_INITIAL_BACKOFF_MS,
-      options.startedAt,
-    );
-    return applyEnrichment(result, sessionId, enrichment);
-  } catch (error) {
-    withLangfuseMetadata(result, {
-      status: "error",
-      sessionId,
-      reason: error instanceof Error ? error.message : String(error),
-    });
-    return "error";
-  }
-}
-
-/**
- * Rolls the per-scenario Langfuse statuses already present on `run.results` into a
- * run-level summary. Leaves `run.metadata` untouched when nothing was enriched.
- */
-export function summarizeLangfuseRun(run: RunResult): RunResult {
-  let enriched = 0;
-  let skipped = 0;
-  let failed = 0;
-
-  for (const result of run.results) {
-    const langfuse = isRecord(result.metadata) ? result.metadata.langfuse : undefined;
-    const status = isRecord(langfuse) ? langfuse.status : undefined;
-    if (status === "enriched") enriched += 1;
-    else if (status === "skipped") skipped += 1;
-    else if (status === "error") failed += 1;
-  }
-
-  if (enriched === 0 && skipped === 0 && failed === 0) return run;
-
-  run.metadata = {
-    ...run.metadata,
-    langfuse: {
-      status: failed > 0 ? "partial" : enriched > 0 ? "enriched" : "skipped",
-      enriched,
-      skipped,
-      failed,
-    },
-  };
-  return run;
-}
-
-/**
- * Enriches every scenario result of a completed run. The runner enriches scenarios as
- * they finish (so cost thresholds can be scored); this entry point covers callers that
- * hold a finished `RunResult`.
- */
-export async function enrichRunWithLangfuse(
-  run: RunResult,
-  options: LangfuseEnrichmentOptions = {},
-): Promise<RunResult> {
-  const config = options.config ?? resolveLangfuseConfig(options);
-  if (!config) return run;
-
-  for (const result of run.results) {
-    await enrichScenarioWithLangfuse(result, { ...options, config });
-  }
-  return summarizeLangfuseRun(run);
-}
-
 export class LangfuseTraceSource implements TraceSource {
   readonly metadataKey = "langfuse";
 
   constructor(
     private readonly config: LangfuseConfig,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
-    private readonly options: {
-      waitMs?: number;
-      initialDelayMs?: number;
-      initialBackoffMs?: number;
-      timeoutMs?: number;
-    } = {},
+    private readonly options: LangfuseTraceSourceOptions = {},
   ) {}
 
   static fromSettings(
@@ -624,10 +481,16 @@ export class LangfuseTraceSource implements TraceSource {
     return new LangfuseTraceSource(config, globalThis.fetch, {
       waitMs: config.waitMs,
       timeoutMs: config.timeoutMs,
+      initialDelayMs: config.initialDelayMs,
     });
   }
 
-  async resolve(sessionId: string): Promise<TraceRecord | undefined> {
+  /**
+   * `context.startedAt` is what makes `initialDelayMs` meaningful: the wait before the
+   * second poll is measured from when the scenario started, so a scenario that already
+   * ran longer than the ingestion delay polls again immediately instead of waiting twice.
+   */
+  async resolve(sessionId: string, context?: TraceLookupContext): Promise<TraceRecord | undefined> {
     const enrichment = await lookupSession(
       this.config,
       sessionId,
@@ -636,6 +499,7 @@ export class LangfuseTraceSource implements TraceSource {
       this.options.waitMs ?? DEFAULT_LANGFUSE_WAIT_MS,
       this.options.initialDelayMs ?? DEFAULT_LANGFUSE_INITIAL_DELAY_MS,
       this.options.initialBackoffMs ?? DEFAULT_LANGFUSE_INITIAL_BACKOFF_MS,
+      context?.startedAt,
     );
     if (!enrichment) return undefined;
     return {
