@@ -579,6 +579,39 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
+  it("exits with a distinct code and does not report a regression when targets have a hard mismatch", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-compare-target-"));
+    const historyDir = join(dir, "history");
+
+    try {
+      await mkdir(join(historyDir, "runs"), { recursive: true });
+      const baseRun: RunResult = {
+        ...runResult("base-run", Verdict.Pass),
+        target: { mode: "driven", fixtureSet: "stubbed" },
+      };
+      const currentRun: RunResult = {
+        ...runResult("current-run", Verdict.Fail),
+        target: { mode: "observed" },
+      };
+      await writeFile(join(historyDir, "runs", "base-run.json"), JSON.stringify(baseRun));
+      await writeFile(join(historyDir, "runs", "current-run.json"), JSON.stringify(currentRun));
+
+      const result = spawnSync(
+        process.execPath,
+        [cliPath, "compare", "base-run", "current-run", "--history-dir", historyDir],
+        { encoding: "utf-8" },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stdout).toContain("⚠ Comparison may be invalid");
+      expect(result.stdout).toContain("mode: driven");
+      expect(result.stdout).toContain("mode: observed");
+      expect(result.stdout).toContain("fixtureSet: stubbed");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("uses the default latency percentage band for compare", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pupil-compare-default-"));
     const historyDir = join(dir, "history");

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig } from "../core/config.js";
@@ -410,7 +410,16 @@ program
       });
 
       process.stdout.write(formatRunComparison(comparison));
-      if (comparison.hasRegressions) {
+      const hasHardTargetMismatch = comparison.targetMismatch.some(
+        (mismatch) => mismatch.severity === "hard",
+      );
+      if (hasHardTargetMismatch) {
+        // A hard mismatch (e.g. stubbed vs. live) means the comparison isn't
+        // meaningful, so it must never surface as exit code 1 (a real
+        // regression) — use a distinct code so CI can tell "refused" apart
+        // from "regressed".
+        process.exitCode = 2;
+      } else if (comparison.hasRegressions) {
         process.exitCode = 1;
       }
     },
@@ -450,6 +459,11 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// process.argv[1] keeps whatever path invoked this script (e.g. a symlinked
+// global bin), while import.meta.url is Node's fully resolved real path.
+// Comparing raw strings breaks for any symlinked/linked install; resolving
+// both through the filesystem first makes the comparison symlink-proof while
+// still skipping this when the module is merely imported (e.g. by tests).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   void main();
 }

@@ -270,13 +270,33 @@ describe("target identity mismatch detection", () => {
     ]);
   });
 
-  it("emits no mismatch when a field is absent on either run (legacy compatibility)", () => {
+  it("emits no field mismatch but flags unknown provenance when a run predates target tracking", () => {
     const base = run("base", []);
     const current = runWithTarget("current", [], { mode: "driven", environment: "production" });
 
     const comparison = compareRuns(base, current);
 
     expect(comparison.targetMismatch).toEqual([]);
+    expect(comparison.targetIdentityUnknown).toBe(true);
+  });
+
+  it("does not flag unknown provenance when both runs carry a target", () => {
+    const base = runWithTarget("base", [], { mode: "driven" });
+    const current = runWithTarget("current", [], { mode: "driven" });
+
+    const comparison = compareRuns(base, current);
+
+    expect(comparison.targetIdentityUnknown).toBe(false);
+  });
+
+  it("formats an info notice when target identity is unknown", () => {
+    const base = run("base", []);
+    const current = runWithTarget("current", [], { mode: "driven" });
+
+    const output = formatRunComparison(compareRuns(base, current));
+
+    expect(output).toContain("ℹ Target identity unknown");
+    expect(output).not.toContain("⚠");
   });
 
   it("emits no mismatch when a field is absent on one target but present on the other", () => {
@@ -286,6 +306,17 @@ describe("target identity mismatch detection", () => {
     const comparison = compareRuns(base, current);
 
     expect(comparison.targetMismatch).toEqual([]);
+  });
+
+  it("emits a hard mismatch when a hard field is present on one side only", () => {
+    const base = runWithTarget("base", [], { mode: "driven", fixtureSet: "stubbed" });
+    const current = runWithTarget("current", [], { mode: "driven" });
+
+    const comparison = compareRuns(base, current);
+
+    expect(comparison.targetMismatch).toEqual([
+      { field: "fixtureSet", severity: "hard", base: "stubbed", current: undefined },
+    ]);
   });
 
   it("emits no mismatch when target fields match", () => {
