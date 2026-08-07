@@ -197,6 +197,41 @@ belongs to the pipeline and the agent's repo respectively. If an agent can't be 
 deterministic test configuration from its own repo, that's a defect in that repo — not something
 Pupil should paper over.
 
+### Gating a CI pipeline (IRIS-156)
+
+A single `pupil run --baseline` is enough to gate a pipeline: it auto-compares against the
+stored `.pupil/baseline` run and exits 1 on regression, on top of the existing exit-1-on-fail
+behavior. Add `--strict` to also fail on `needs_review`, `--json` for a machine-readable summary
+(see `src/cli/reporting.ts` for the stable `RunJsonOutput` shape), and `--junit` for a report
+GitHub Actions' test reporting can parse. A `$GITHUB_STEP_SUMMARY` markdown summary is written
+automatically whenever that variable is set — no flag needed.
+
+```yaml
+# .github/workflows/pupil-pr.yml
+name: pupil
+on: pull_request
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci && npm run build
+      - run: |
+          node dist/cli/index.js run evals/flows \
+            --config evals/pupil.config.yaml \
+            --history-dir .pupil \
+            --baseline --strict --json --junit .pupil/junit.xml \
+            > .pupil/run.json
+      - uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Pupil scenarios
+          path: .pupil/junit.xml
+          reporter: java-junit
+```
+
 ---
 
 ## 7. Working here

@@ -1,0 +1,212 @@
+import { describe, expect, it } from "vitest";
+import { compareRuns } from "../history/compare.js";
+import { Verdict, type RunResult, type ScenarioResult } from "../core/types.js";
+import {
+  buildRunJson,
+  buildStepSummaryMarkdown,
+  formatJUnitXml,
+  isStrictFailure,
+} from "./reporting.js";
+
+function scenarioResult(overrides: Partial<ScenarioResult> = {}): ScenarioResult {
+  return {
+    scenarioId: "scenario-1",
+    scenarioName: "Scenario 1",
+    verdict: Verdict.Pass,
+    scores: [
+      {
+        name: "assertion:contains:response.text",
+        verdict: Verdict.Pass,
+        reason: "Expected response.text to contain ok",
+        metadata: {},
+      },
+    ],
+    turns: [],
+    startedAt: "2026-08-07T00:00:00.000Z",
+    completedAt: "2026-08-07T00:00:01.000Z",
+    metrics: { turns: 1, latency_ms: 1000 },
+    ...overrides,
+  };
+}
+
+function runResult(overrides: Partial<RunResult> = {}, results?: ScenarioResult[]): RunResult {
+  const scenarioResults = results ?? [scenarioResult()];
+  return {
+    runId: "run-1",
+    verdict: Verdict.Pass,
+    results: scenarioResults,
+    startedAt: "2026-08-07T00:00:00.000Z",
+    completedAt: "2026-08-07T00:00:01.000Z",
+    summary: {
+      total: scenarioResults.length,
+      passed: scenarioResults.filter((r) => r.verdict === Verdict.Pass).length,
+      failed: scenarioResults.filter((r) => r.verdict === Verdict.Fail).length,
+      needsReview: scenarioResults.filter((r) => r.verdict === Verdict.NeedsReview).length,
+      errors: scenarioResults.filter((r) => r.verdict === Verdict.Error).length,
+    },
+    metadata: {},
+    ...overrides,
+  };
+}
+
+describe("isStrictFailure", () => {
+  it("treats fail and error as failures regardless of strict", () => {
+    expect(isStrictFailure(Verdict.Fail, false)).toBe(true);
+    expect(isStrictFailure(Verdict.Fail, true)).toBe(true);
+    expect(isStrictFailure(Verdict.Error, false)).toBe(true);
+  });
+
+  it("treats needs_review as a failure only in strict mode", () => {
+    expect(isStrictFailure(Verdict.NeedsReview, false)).toBe(false);
+    expect(isStrictFailure(Verdict.NeedsReview, true)).toBe(true);
+  });
+
+  it("never treats pass or skip as a failure", () => {
+    expect(isStrictFailure(Verdict.Pass, true)).toBe(false);
+    expect(isStrictFailure(Verdict.Skip, true)).toBe(false);
+  });
+});
+
+describe("buildRunJson", () => {
+  it("produces a stable shape without turn transcripts or raw payloads", () => {
+    const run = runResult();
+    const json = buildRunJson(run, { strict: false, historyPath: "/tmp/run-1.json" });
+
+    expect(json).toEqual({
+      runId: "run-1",
+      verdict: Verdict.Pass,
+      strict: false,
+      summary: run.summary,
+      historyPath: "/tmp/run-1.json",
+      scenarios: [
+        {
+          scenarioId: "scenario-1",
+          scenarioName: "Scenario 1",
+          verdict: Verdict.Pass,
+          metrics: { turns: 1, latency_ms: 1000 },
+          scores: [
+            {
+              name: "assertion:contains:response.text",
+              verdict: Verdict.Pass,
+              reason: "Expected response.text to contain ok",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("includes a baseline block when a comparison is supplied", () => {
+    const base = runResult({ runId: "base" });
+    const current = runResult({ runId: "current", verdict: Verdict.Fail }, [
+      scenarioResult({ verdict: Verdict.Fail }),
+    ]);
+    const comparison = compareRuns(base, current);
+
+    const json = buildRunJson(current, {
+      strict: false,
+      historyPath: "/tmp/current.json",
+      comparison,
+    });
+
+    expect(json.baseline).toEqual({
+      baseRunId: "base",
+      hasRegressions: true,
+      summary: comparison.summary,
+      regressions: [
+        {
+          scenarioId: "scenario-1",
+          reasons: comparison.scenarios[0].reasons,
+        },
+      ],
+    });
+  });
+});
+
+describe("formatJUnitXml", () => {
+  it("renders a passing testcase with no failure element", () => {
+    const xml = formatJUnitXml(runResult(), { strict: false });
+    expect(xml).toContain('<testsuite name="pupil" tests="1" failures="0" errors="0"');
+    expect(xml).toContain('<testcase name="scenario-1" classname="Scenario 1"');
+    expect(xml).not.toContain("<failure");
+  });
+
+  it("renders needs_review as passing unless strict is set", () => {
+    const run = runResult({ verdict: Verdict.NeedsReview }, [
+      scenarioResult({
+        verdict: Verdict.NeedsReview,
+        scores: [
+          { name: "manual:overall", verdict: Verdict.NeedsReview, reason: "pending", metadata: {} },
+        ],
+      }),
+    ]);
+
+    const lenient = formatJUnitXml(run, { strict: false });
+    expect(lenient).not.toContain("<failure");
+
+    const strict = formatJUnitXml(run, { strict: true });
+    expect(strict).toContain("<failure");
+    expect(strict).toContain('failures="1"');
+  });
+
+  it("renders error verdicts as <error>, not <failure>", () => {
+    const run = runResult({ verdict: Verdict.Error }, [
+      scenarioResult({
+        verdict: Verdict.Error,
+        scores: [{ name: "execution", verdict: Verdict.Error, reason: "boom", metadata: {} }],
+      }),
+    ]);
+
+    const xml = formatJUnitXml(run, { strict: false });
+    expect(xml).toContain('<error message="boom">');
+    expect(xml).not.toContain("<failure");
+    expect(xml).toContain('errors="1"');
+  });
+
+  it("escapes XML-significant characters in names and messages", () => {
+    const run = runResult({}, [
+      scenarioResult({
+        scenarioId: "a & b",
+        scenarioName: 'quote "test"',
+        verdict: Verdict.Fail,
+        scores: [{ name: "s", verdict: Verdict.Fail, reason: "<bad> & ugly", metadata: {} }],
+      }),
+    ]);
+
+    const xml = formatJUnitXml(run, { strict: false });
+    expect(xml).toContain("a &amp; b");
+    expect(xml).toContain("&quot;test&quot;");
+    expect(xml).toContain("&lt;bad&gt; &amp; ugly");
+  });
+});
+
+describe("buildStepSummaryMarkdown", () => {
+  it("renders the run summary table", () => {
+    const md = buildStepSummaryMarkdown(runResult(), {});
+    expect(md).toContain("## Pupil run `run-1`");
+    expect(md).toContain("**Verdict:** pass");
+    expect(md).toContain("| 1 | 1 | 0 | 0 | 0 |");
+  });
+
+  it("renders a regressions table when a comparison has regressions", () => {
+    const base = runResult({ runId: "base" });
+    const current = runResult({ runId: "current", verdict: Verdict.Fail }, [
+      scenarioResult({ verdict: Verdict.Fail }),
+    ]);
+    const comparison = compareRuns(base, current);
+
+    const md = buildStepSummaryMarkdown(current, { comparison });
+    expect(md).toContain("### Comparison vs `base`");
+    expect(md).toContain("**Regressions detected.**");
+    expect(md).toContain("scenario-1");
+  });
+
+  it("reports no regressions when the comparison is clean", () => {
+    const base = runResult({ runId: "base" });
+    const current = runResult({ runId: "current" });
+    const comparison = compareRuns(base, current);
+
+    const md = buildStepSummaryMarkdown(current, { comparison });
+    expect(md).toContain("No regressions.");
+  });
+});

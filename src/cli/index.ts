@@ -1,12 +1,24 @@
 #!/usr/bin/env node
 
+import { appendFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig } from "../core/config.js";
 import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
-import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
+import {
+  compareRuns,
+  formatRunComparison,
+  JsonRunHistoryStore,
+  type RunComparison,
+} from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
+import {
+  buildRunJson,
+  buildStepSummaryMarkdown,
+  formatJUnitXml,
+  isStrictFailure,
+} from "./reporting.js";
 import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
 
 const program = new Command();
@@ -69,28 +81,24 @@ function definedConfig(options: {
   );
 }
 
-function logProgress(event: RunnerProgressEvent): void {
-  if (event.type === "scenario:start") {
-    console.log(`START ${event.scenarioId}`);
-    return;
-  }
+function formatProgressLine(event: RunnerProgressEvent): string {
+  if (event.type === "scenario:start") return `START ${event.scenarioId}`;
   if (event.type === "scenario:retry") {
-    console.log(`RETRY ${event.scenarioId} attempt ${event.attempt}/${event.maxAttempts}`);
-    return;
+    return `RETRY ${event.scenarioId} attempt ${event.attempt}/${event.maxAttempts}`;
   }
-  if (event.type === "scenario:pass") {
-    console.log(`PASS ${event.scenarioId}`);
-    return;
-  }
-  if (event.type === "scenario:needs_review") {
-    console.log(`REVIEW ${event.scenarioId}`);
-    return;
-  }
-  if (event.type === "scenario:fail") {
-    console.log(`FAIL ${event.scenarioId}`);
-    return;
-  }
-  console.log(`ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`);
+  if (event.type === "scenario:pass") return `PASS ${event.scenarioId}`;
+  if (event.type === "scenario:needs_review") return `REVIEW ${event.scenarioId}`;
+  if (event.type === "scenario:fail") return `FAIL ${event.scenarioId}`;
+  return `ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`;
+}
+
+function logProgress(event: RunnerProgressEvent): void {
+  console.log(formatProgressLine(event));
+}
+
+/** Used under `--json` so stdout stays a single parseable JSON payload. */
+function logProgressToStderr(event: RunnerProgressEvent): void {
+  console.error(formatProgressLine(event));
 }
 
 function formatSummary(summary: {
@@ -169,6 +177,14 @@ program
   )
   .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
+  .option(
+    "--baseline",
+    "Auto-compare against the stored baseline run and exit 1 on regression",
+    false,
+  )
+  .option("--strict", "Also fail (exit 1) when the run verdict is needs_review", false)
+  .option("--json", "Print machine-readable JSON run output instead of human-readable lines", false)
+  .option("--junit <path>", "Write a JUnit XML report to this path")
   .action(
     async (
       path: string,
@@ -181,6 +197,10 @@ program
         concurrency: number;
         historyDir: string;
         langfuse: boolean;
+        baseline: boolean;
+        strict: boolean;
+        json: boolean;
+        junit?: string;
       },
     ) => {
       const scenarios = await loadScenarios(path);
@@ -190,25 +210,71 @@ program
         retries: options.retries,
         concurrency: options.concurrency,
         driverConfig: definedConfig(options),
-        progress: logProgress,
+        progress: options.json ? logProgressToStderr : logProgress,
         langfuse: options.langfuse === false ? false : { settings: config.langfuse },
       });
 
+      const store = new JsonRunHistoryStore({ dir: options.historyDir });
       let stored;
       try {
-        stored = await new JsonRunHistoryStore({ dir: options.historyDir }).writeRun(result);
+        stored = await store.writeRun(result);
       } catch (error) {
         throw new PupilError(
           `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
 
-      console.log(`Saved run: ${stored.runPath}`);
-      console.log(
-        `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
-      );
+      let comparison: RunComparison | undefined;
+      if (options.baseline) {
+        const baselineRunId = await store.getBaselineRunId();
+        if (!baselineRunId) {
+          if (!options.json) {
+            console.log(
+              "No baseline set - skipping comparison. Set one with `pupil baseline <runId>`.",
+            );
+          }
+        } else {
+          const baselineRun = await store.readRun(baselineRunId);
+          comparison = compareRuns(baselineRun, result);
+        }
+      }
 
-      if (result.verdict === Verdict.Error || result.verdict === Verdict.Fail) {
+      if (options.junit) {
+        await writeFile(options.junit, formatJUnitXml(result, { strict: options.strict }), "utf-8");
+      }
+
+      const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
+      if (stepSummaryPath) {
+        await appendFile(
+          stepSummaryPath,
+          buildStepSummaryMarkdown(result, { comparison }),
+          "utf-8",
+        );
+      }
+
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            buildRunJson(result, {
+              strict: options.strict,
+              historyPath: stored.runPath,
+              comparison,
+            }),
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.log(`Saved run: ${stored.runPath}`);
+        console.log(
+          `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
+        );
+        if (comparison) {
+          process.stdout.write(formatRunComparison(comparison));
+        }
+      }
+
+      if (isStrictFailure(result.verdict, options.strict) || comparison?.hasRegressions === true) {
         process.exitCode = 1;
       }
     },
