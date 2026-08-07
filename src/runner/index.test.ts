@@ -1,7 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LangfuseTraceSource } from "../langfuse/index.js";
-import type { TraceRecord, TraceSource } from "../trace/index.js";
+import {
+  NO_CORRELATION_KEY_REASON,
+  type TraceLookupContext,
+  type TraceRecord,
+  type TraceSource,
+} from "../trace/index.js";
 import { PupilError, type Scenario, type TurnRecord, Verdict } from "../core/types.js";
 import {
   RestDriverError,
@@ -594,7 +599,13 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
       this.shouldThrow = true;
     }
 
-    async resolve(sessionId: string): Promise<TraceRecord | undefined> {
+    readonly seen: { key: string; startedAt?: number }[] = [];
+
+    async resolve(
+      sessionId: string,
+      context?: TraceLookupContext,
+    ): Promise<TraceRecord | undefined> {
+      this.seen.push({ key: sessionId, startedAt: context?.startedAt });
       await new Promise((r) => setTimeout(r, 0));
       if (this.shouldThrow) {
         this.shouldThrow = false;
@@ -666,5 +677,70 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
       status: "error",
       reason: "backend unavailable",
     });
+  });
+
+  it("passes the attempt start time so backends can discount scenario runtime", async () => {
+    const fakeSource = new FakeTraceSource();
+    const before = Date.now();
+
+    await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(fakeSource.seen).toHaveLength(1);
+    expect(fakeSource.seen[0]?.key).toBe(SESSION_ID);
+    expect(fakeSource.seen[0]?.startedAt).toBeGreaterThanOrEqual(before);
+    expect(fakeSource.seen[0]?.startedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("distinguishes a missing correlation key from a trace that was not found", async () => {
+    const fakeSource = new FakeTraceSource();
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => ({
+        async createConversation() {
+          return { id: "", raw: {} };
+        },
+        async send() {
+          return { text: "ok", raw: {} };
+        },
+        async closeConversation() {},
+      }),
+      traceSource: fakeSource,
+    });
+
+    // No key existed, so no lookup was attempted and no empty sessionId is persisted.
+    expect(fakeSource.seen).toHaveLength(0);
+    expect(result.metadata?.fake).toEqual({
+      status: "skipped",
+      reason: NO_CORRELATION_KEY_REASON,
+    });
+  });
+
+  it("skips enrichment entirely when traceSource is false", async () => {
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: false,
+    });
+
+    expect(result.metadata).toEqual({ sessionId: SESSION_ID });
+  });
+
+  it("falls back to environment Langfuse when traceSource is omitted", async () => {
+    // Unconfigured environment resolves to no source, so results stay untouched.
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+    });
+
+    expect(result.metadata).toEqual({ sessionId: SESSION_ID });
+    expect(LangfuseTraceSource.fromSettings(undefined, {})).toBeUndefined();
+    expect(
+      LangfuseTraceSource.fromSettings(undefined, {
+        LANGFUSE_HOST: "http://langfuse.local",
+        LANGFUSE_PUBLIC_KEY: "pk",
+        LANGFUSE_SECRET_KEY: "sk",
+      }),
+    ).toBeInstanceOf(LangfuseTraceSource);
   });
 });
