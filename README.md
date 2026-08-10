@@ -133,8 +133,8 @@ Planned integrations include:
 - Playwright
 - Copilot Studio
 
-See [`docs/fixtures.md`](docs/fixtures.md) for how to stub these integrations out during PR-time
-evaluation.
+Testing an agent that calls external backends? See [`docs/fixtures.md`](docs/fixtures.md) for how
+to stub them out during PR-time evaluation.
 
 ---
 
