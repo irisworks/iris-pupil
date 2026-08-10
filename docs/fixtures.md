@@ -113,3 +113,22 @@ if the base and current runs carry different fixture sets — or one has none re
 comparison is flagged as invalid and `pupil compare` exits with status `2` rather than reporting
 a false regression. This is the mechanism that makes documenting stub patterns safe: mislabeling
 or forgetting to label a stubbed run can't silently corrupt a baseline.
+
+## Worked example: an IRIS-shaped agent
+
+> The specifics below are a shape derived from `phase-plan.md`, not confirmed against a real
+> deployed agent. Verify paths and env var names against your actual repo before relying on them.
+
+```
+your-agent/
+├── evals/
+│   ├── pupil.config.yaml       # target.fixtureSet: stubbed-slack for the PR tier
+│   ├── docker-compose.override.yml
+│   └── flows/*.yaml
+└── .github/workflows/
+    └── pupil-preview.yml       # brings up the compose override, runs `pupil run --fixture-set stubbed-slack`
+```
+
+`docker-compose.override.yml` layers stub services on top of the agent's normal compose file for
+the PR-preview job only — the post-deploy and nightly-observe workflows never include it, so
+those stages always exercise the real integrations.
