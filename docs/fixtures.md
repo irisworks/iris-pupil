@@ -46,6 +46,14 @@ interception point already exists there — and gateways like LiteLLM cache resp
 For the model side of a first-party agent, there may be nothing left to build: point the gateway
 at a caching or stub backend the same way you would any other tool.
 
+```yaml
+# docker-compose.override.yml
+services:
+  your-agent:
+    environment:
+      LITELLM_BASE_URL: http://litellm-cache:4000
+```
+
 ### 3. MCP substitution
 
 Where a tool is exposed as an MCP server, the boundary between agent and tool is already a
@@ -108,11 +116,15 @@ target:
   fixtureSet: stubbed-slack # live | stubbed-<name>
 ```
 
+Label your live-backend runs the same way (`fixtureSet: live`) — the guard only protects a
+comparison when both sides carry a label.
+
 `pupil compare` treats `fixtureSet` as a **hard** mismatch field, alongside `system` and `mode`:
 if the base and current runs carry different fixture sets — or one has none recorded — the
 comparison is flagged as invalid and `pupil compare` exits with status `2` rather than reporting
-a false regression. This is the mechanism that makes documenting stub patterns safe: mislabeling
-or forgetting to label a stubbed run can't silently corrupt a baseline.
+a false regression. Labelling both sides means a stubbed-vs-live comparison is refused rather
+than reported as a regression. Runs with no fixture set recorded on either side are compared
+normally, so the guarantee only holds once every run — stubbed or live — is labelled.
 
 ## Worked example: an IRIS-shaped agent
 
