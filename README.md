@@ -133,6 +133,9 @@ Planned integrations include:
 - Playwright
 - Copilot Studio
 
+See [`docs/fixtures.md`](docs/fixtures.md) for how to stub these integrations out during PR-time
+evaluation.
+
 ---
 
 ## Roadmap
