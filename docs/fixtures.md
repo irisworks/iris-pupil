@@ -13,3 +13,68 @@ Two rules shape everything below:
    That's what gives the PR tier teeth: preview env + stubbed tools + cached model + forked state
    → cheap, deterministic, fast. Post-deploy stays real-everything, a small smoke suite,
    read-only traces.
+
+## Interception patterns, best first
+
+### 1. Per-tool base URL override (the default answer)
+
+Most well-built agents already configure their integrations by environment variable —
+`SLACK_API_BASE`, `JIRA_URL`, and so on. Point that variable at a stub server instead of the real
+API. No TLS interception, no certificates, no proxy semantics — just a different URL.
+
+```yaml
+# docker-compose.override.yml
+services:
+  your-agent:
+    environment:
+      SLACK_API_BASE: http://slack-stub:9000
+      JIRA_URL: http://jira-stub:9001
+
+  slack-stub:
+    image: your-org/slack-stub:latest
+    ports:
+      - "9000:9000"
+```
+
+Use this whenever the agent already reads a tool's base URL from config. It's the cheapest
+pattern to wire up and the first thing to check before reaching for anything else on this list.
+
+### 2. Gateway-level, for the model layer
+
+If your agent routes model calls through a gateway (IRIS already does, via LiteLLM), the
+interception point already exists there — and gateways like LiteLLM cache responses natively.
+For the model side of a first-party agent, there may be nothing left to build: point the gateway
+at a caching or stub backend the same way you would any other tool.
+
+### 3. MCP substitution
+
+Where a tool is exposed as an MCP server, the boundary between agent and tool is already a
+schema'd protocol. Swap in a recording or stub MCP server implementing the same schema — this is
+far more tractable than intercepting arbitrary HTTP, because the contract is already explicit.
+
+```yaml
+# docker-compose.override.yml
+services:
+  your-agent:
+    environment:
+      MCP_SERVER_URL: http://mcp-stub:9002
+
+  mcp-stub:
+    image: your-org/mcp-stub:latest
+    ports:
+      - "9002:9002"
+```
+
+### 4. Egress HTTP proxy (last resort)
+
+The general solution: route all outbound traffic through `HTTPS_PROXY`/`HTTP_PROXY` to a
+record/replay proxy. This works for any tool regardless of how it's configured, but it needs TLS
+MITM with a CA certificate installed in the agent's trust store — real infrastructure to stand up
+and maintain. Reach for this only when patterns 1–3 don't apply.
+
+**Node gotcha:** Node's built-in `fetch` does **not** honor `HTTP_PROXY`/`HTTPS_PROXY` —
+`undici` (the library behind `fetch`) requires an explicit `ProxyAgent` to be configured in code.
+If your agent is a Node service using `fetch` and relies on pattern 4, setting the proxy
+environment variables alone does nothing: the proxy is silently bypassed, the agent appears to
+work, and every call still hits the live API. Confirm your agent explicitly wires up a
+`ProxyAgent` before trusting this pattern.
