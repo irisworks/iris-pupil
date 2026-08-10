@@ -91,3 +91,25 @@ re-record or re-verify them periodically, not just when someone remembers to.
 
 See also: the [Node/undici proxy gotcha](#4-egress-http-proxy-last-resort) — a second, unrelated
 way a stub setup can silently stop reflecting reality.
+
+## Recording the fixture set: `--fixture-set`
+
+Once your agent is running against stubs, tell Pupil so it can guard against comparing a stubbed
+run against a live one. Pass `--fixture-set <name>` on `pupil run`:
+
+```bash
+pupil run ./scenarios --fixture-set stubbed-slack
+```
+
+or set it in `pupil.config.yaml`:
+
+```yaml
+target:
+  fixtureSet: stubbed-slack # live | stubbed-<name>
+```
+
+`pupil compare` treats `fixtureSet` as a **hard** mismatch field, alongside `system` and `mode`:
+if the base and current runs carry different fixture sets — or one has none recorded — the
+comparison is flagged as invalid and `pupil compare` exits with status `2` rather than reporting
+a false regression. This is the mechanism that makes documenting stub patterns safe: mislabeling
+or forgetting to label a stubbed run can't silently corrupt a baseline.
