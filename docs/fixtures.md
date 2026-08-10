@@ -78,3 +78,16 @@ If your agent is a Node service using `fetch` and relies on pattern 4, setting t
 environment variables alone does nothing: the proxy is silently bypassed, the agent appears to
 work, and every call still hits the live API. Confirm your agent explicitly wires up a
 `ProxyAgent` before trusting this pattern.
+
+## Hazard: stubs drift
+
+A stub is a snapshot of an API's behavior at the moment you recorded or wrote it. Real APIs
+change. If Slack changes its response shape and your Slack stub doesn't, the PR tier stays green
+on every push while production quietly breaks against the real API.
+
+The live post-deploy tier is the backstop for exactly this failure mode — it's why interception
+is scoped to the pre-deploy/preview tier only, never staging. Treat stubs like contract tests:
+re-record or re-verify them periodically, not just when someone remembers to.
+
+See also: the [Node/undici proxy gotcha](#4-egress-http-proxy-last-resort) — a second, unrelated
+way a stub setup can silently stop reflecting reality.
