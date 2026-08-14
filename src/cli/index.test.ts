@@ -585,6 +585,64 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
+  it("logs REVIEW, not FAIL, when pupil run produces a needs_review verdict", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "online" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-needs-review",
+          "name: CLI run needs review",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  manual:",
+          "    required: true",
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--base-url",
+          `http://${address.host}:${address.port}`,
+          "--origin-thread-ts",
+          "thread-1",
+          "--history-dir",
+          historyDir,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.stderr).toBe("");
+      expect(output.stdout).toContain("START cli-run-needs-review");
+      expect(output.stdout).toContain("REVIEW cli-run-needs-review");
+      expect(output.stdout).not.toContain("FAIL cli-run-needs-review");
+      expect(output.stdout).toContain("Saved run:");
+
+      const index = await readFile(join(historyDir, "index.jsonl"), "utf-8");
+      expect(index).toContain('"verdict":"needs_review"');
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("reports a clean error when run history cannot be written", async () => {
     const mock = createIrisMockAgent({
       port: 0,
