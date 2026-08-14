@@ -68,7 +68,7 @@ export async function loadScenarioFile(file: string): Promise<Scenario> {
   return normalizeScenario(parsed, absoluteFile);
 }
 
-function assertUniqueScenarioIds(scenarios: Scenario[]): void {
+export function assertUniqueScenarioIds(scenarios: Scenario[]): void {
   const firstById = new Map<string, Scenario>();
 
   for (const scenario of scenarios) {
@@ -85,13 +85,17 @@ function assertUniqueScenarioIds(scenarios: Scenario[]): void {
   }
 }
 
-export async function loadScenarios(path: string): Promise<Scenario[]> {
-  const files = await discoverScenarioFiles(path);
-  const scenarios = await Promise.all(files.map((file) => loadScenarioFile(file)));
-  assertUniqueScenarioIds(scenarios);
-  return scenarios.sort((left, right) => {
+export function sortScenarios(scenarios: Scenario[]): Scenario[] {
+  return [...scenarios].sort((left, right) => {
     const byId = left.id.localeCompare(right.id);
     if (byId !== 0) return byId;
     return (left.sourceFile ?? "").localeCompare(right.sourceFile ?? "");
   });
+}
+
+export async function loadScenarios(path: string): Promise<Scenario[]> {
+  const files = await discoverScenarioFiles(path);
+  const scenarios = await Promise.all(files.map((file) => loadScenarioFile(file)));
+  assertUniqueScenarioIds(scenarios);
+  return sortScenarios(scenarios);
 }

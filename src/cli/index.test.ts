@@ -614,6 +614,39 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
+  it("lists and reports using history.dir from --config when --history-dir is omitted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-history-config-"));
+    const configuredHistoryDir = join(dir, "history-from-config");
+    const configPath = join(dir, "pupil.config.yaml");
+    const store = new JsonRunHistoryStore({ dir: configuredHistoryDir });
+
+    try {
+      await store.writeRun(runResult("config-run"));
+      await writeFile(
+        configPath,
+        ["history:", `  dir: ${configuredHistoryDir.replace(/\\/g, "\\\\")}`, ""].join("\n"),
+      );
+
+      const list = spawnSync(process.execPath, [cliPath, "list", "--config", configPath], {
+        encoding: "utf-8",
+      });
+      expect(list.status).toBe(0);
+      expect(list.stderr).toBe("");
+      expect(list.stdout).toContain("config-run pass");
+
+      const report = spawnSync(
+        process.execPath,
+        [cliPath, "report", "config-run", "--config", configPath],
+        { encoding: "utf-8" },
+      );
+      expect(report.status).toBe(0);
+      expect(report.stderr).toBe("");
+      expect(report.stdout).toContain("Run config-run: pass");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("applies manual scores and report reflects the updated verdict", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pupil-score-cli-"));
     const historyDir = join(dir, "history");

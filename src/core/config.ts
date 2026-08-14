@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { z, type ZodError } from "zod";
+import { deepMerge, isRecord } from "./deepMerge.js";
 import { PupilError } from "./types.js";
 
 const DEFAULT_CONFIG_FILE = "pupil.config.yaml";
@@ -91,22 +92,6 @@ const pupilConfigSchema = z
 
 export type PupilConfig = z.infer<typeof pupilConfigSchema>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function deepMerge<T extends Record<string, unknown>>(
-  base: T,
-  override: Record<string, unknown>,
-): T {
-  const merged: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(override)) {
-    const existing = merged[key];
-    merged[key] = isRecord(existing) && isRecord(value) ? deepMerge(existing, value) : value;
-  }
-  return merged as T;
-}
-
 function applyProfile(
   config: Record<string, unknown>,
   profile: string | undefined,
@@ -125,10 +110,15 @@ function applyProfile(
   return deepMerge(config, selected as Record<string, unknown>);
 }
 
-function formatConfigValidationError(error: ZodError, file: string): PupilError {
+function formatConfigValidationError(
+  error: ZodError,
+  file: string,
+  pathPrefix?: string,
+): PupilError {
   const details = error.issues
     .map((issue) => {
-      const path = issue.path.length > 0 ? issue.path.join(".") : "<root>";
+      const segments = pathPrefix ? [pathPrefix, ...issue.path] : issue.path;
+      const path = segments.length > 0 ? segments.join(".") : "<root>";
       return `${file}:${path}: ${issue.message}`;
     })
     .join("\n");
@@ -204,10 +194,22 @@ export async function loadPupilConfig(options: LoadConfigOptions = {}): Promise<
 
   const rawConfig = (document.toJSON() ?? {}) as Record<string, unknown>;
 
+  // Profiles are validated against their own (looser) schema up front so a
+  // malformed profile is reported at profiles.<name>... instead of silently
+  // vanishing when `profiles` is stripped before the top-level parse below.
+  const profilesResult = z.record(profileConfigSchema).default({}).safeParse(rawConfig.profiles);
+  if (!profilesResult.success) {
+    throw formatConfigValidationError(profilesResult.error, configPath, "profiles");
+  }
+
   // Profile selection and merging happen on the raw document, before schema
   // validation: numeric fields may still hold unresolved ${VAR:-default}
   // templates at this point, which z.coerce.number() can't parse yet.
-  const profiled = applyProfile(rawConfig, options.profile, configPath);
+  const profiled = applyProfile(
+    { ...rawConfig, profiles: profilesResult.data },
+    options.profile,
+    configPath,
+  );
   const { profiles: _profiles, ...selectedConfig } = profiled;
   const resolvedConfig = resolveEnvRefs(selectedConfig, options.env ?? process.env, configPath);
   const parsed = pupilConfigSchema.safeParse(resolvedConfig);

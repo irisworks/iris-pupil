@@ -26,10 +26,6 @@ langfuse:
   waitMs: ${LANGFUSE_WAIT_MS:-25000}
 
 profiles:
-  local:
-    driver:
-      config:
-        baseUrl: ${IRIS_BASE_URL:-http://127.0.0.1:3000}
   staging:
     driver:
       config:
@@ -37,4 +33,6 @@ profiles:
   prod:
     driver:
       config:
-        baseUrl: ${IRIS_PROD_BASE_URL:-http://127.0.0.1:3000}
+        # No localhost fallback: an unset IRIS_PROD_BASE_URL should fail loudly
+        # rather than silently pointing a "prod" run at localhost.
+        baseUrl: ${IRIS_PROD_BASE_URL}

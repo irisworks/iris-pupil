@@ -189,4 +189,25 @@ describe("loadPupilConfig", () => {
       /pupil\.config\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/,
     );
   });
+
+  it("rejects unknown fields inside a profile with a profiles.<name> path", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "profiles:\n  staging:\n    driver:\n      unknownField: nope\n",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /pupil\.config\.yaml:profiles\.staging\.driver: Unrecognized key\(s\) in object: 'unknownField'/,
+    );
+  });
+
+  it("rejects unknown fields in a profile even when it is not selected", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "profiles:\n  unused:\n    bogus: true\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /pupil\.config\.yaml:profiles\.unused: Unrecognized key\(s\) in object: 'bogus'/,
+    );
+  });
 });
