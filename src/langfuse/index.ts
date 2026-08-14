@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { firstString, isRecord, type JsonRecord } from "../core/json.js";
 import type { TraceLookupContext, TraceRecord, TraceSource } from "../trace/index.js";
 
 export interface LangfuseEnrichment {
@@ -47,8 +48,6 @@ export interface LangfuseTraceSourceOptions {
   timeoutMs?: number;
 }
 
-type JsonRecord = Record<string, unknown>;
-
 const DEFAULT_LANGFUSE_TIMEOUT_MS = 3000;
 const DEFAULT_LANGFUSE_WAIT_MS = 25_000;
 const DEFAULT_LANGFUSE_INITIAL_DELAY_MS = 8_000;
@@ -90,22 +89,11 @@ const TOTAL_TOKEN_PATHS = [
   ["usage", "totalTokens"],
 ];
 
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function asNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim().length > 0) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function firstString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
   }
   return undefined;
 }
