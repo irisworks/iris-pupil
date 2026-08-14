@@ -14,7 +14,7 @@ export interface TraceRecord {
 
 export type TraceStatus = "enriched" | "skipped" | "error";
 
-export const NO_CORRELATION_KEY_REASON = "No session id available";
+export const NO_CORRELATION_KEY_REASON = "No correlation key available";
 export const NO_TRACE_FOUND_REASON = "No trace found for session";
 
 export type TraceLookupResult =
