@@ -56,6 +56,9 @@ export interface RunScenarioOptions {
   runId?: string;
   timeoutMs?: number;
   retries?: number;
+  /** Project-wide defaults (e.g. from pupil.config.yaml); overridden by the scenario's own driver.config. */
+  projectDriverConfig?: Record<string, unknown>;
+  /** Most-specific overrides (e.g. CLI flags); win over both the scenario and project defaults. */
   driverConfig?: Record<string, unknown>;
   driverFactory?: (scenario: Scenario, context: RunnerDriverContext) => RunnerDriver;
   progress?: (event: RunnerProgressEvent) => void;
@@ -183,9 +186,10 @@ function numberOption(value: unknown, name: string): number | undefined {
 
 function mergedDriverConfig(
   scenario: Scenario,
+  projectConfig: Record<string, unknown> | undefined,
   overrides: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  return { ...scenario.driver.config, ...(overrides ?? {}) };
+  return { ...(projectConfig ?? {}), ...scenario.driver.config, ...(overrides ?? {}) };
 }
 
 export function createDriverForScenario(
@@ -409,7 +413,7 @@ export async function runScenario(
     attemptsUsed = attempt;
     const attemptStartedAtMs = Date.now();
     lastAttemptStartedAtMs = attemptStartedAtMs;
-    const config = mergedDriverConfig(scenario, options.driverConfig);
+    const config = mergedDriverConfig(scenario, options.projectDriverConfig, options.driverConfig);
     const context = { runId, scenarioId: scenario.id, attempt, config };
     const driver =
       options.driverFactory?.(scenario, context) ?? createDriverForScenario(scenario, context);

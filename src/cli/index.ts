@@ -186,7 +186,8 @@ program
         timeoutMs: options.timeoutMs,
         retries: options.retries,
         concurrency: options.concurrency,
-        driverConfig: { ...config.driver.config, ...definedConfig(options) },
+        projectDriverConfig: config.driver.config,
+        driverConfig: definedConfig(options),
         progress: logProgress,
         // `?? false` matters: the CLI has already consulted config *and* env, so an
         // unresolved source means enrichment is off. Passing undefined would instead

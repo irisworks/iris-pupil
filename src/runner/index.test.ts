@@ -138,6 +138,59 @@ describe("driven trajectory producer", () => {
 });
 
 describe("scenario runner", () => {
+  it("lets a scenario's own driver.config override project-wide driverConfig defaults", async () => {
+    const seenConfigs: Record<string, unknown>[] = [];
+
+    await runScenario(
+      scenario({ driver: { type: "rest", preset: "iris-http", config: { timeoutMs: 42 } } }),
+      {
+        projectDriverConfig: { timeoutMs: 1000, retries: 3 },
+        driverFactory: (_scenario, context) => {
+          seenConfigs.push(context.config);
+          return {
+            async createConversation() {
+              return { id: crypto.randomUUID(), raw: {} };
+            },
+            async send() {
+              return { text: "ok", raw: {} };
+            },
+            async closeConversation() {},
+          };
+        },
+      },
+    );
+
+    // Scenario-level config must win over project-wide defaults on key collision,
+    // while non-conflicting project defaults still apply.
+    expect(seenConfigs[0]).toMatchObject({ timeoutMs: 42, retries: 3 });
+  });
+
+  it("lets explicit driverConfig overrides win over both scenario and project config", async () => {
+    const seenConfigs: Record<string, unknown>[] = [];
+
+    await runScenario(
+      scenario({ driver: { type: "rest", preset: "iris-http", config: { timeoutMs: 42 } } }),
+      {
+        projectDriverConfig: { timeoutMs: 1000 },
+        driverConfig: { timeoutMs: 7 },
+        driverFactory: (_scenario, context) => {
+          seenConfigs.push(context.config);
+          return {
+            async createConversation() {
+              return { id: crypto.randomUUID(), raw: {} };
+            },
+            async send() {
+              return { text: "ok", raw: {} };
+            },
+            async closeConversation() {},
+          };
+        },
+      },
+    );
+
+    expect(seenConfigs[0]).toMatchObject({ timeoutMs: 7 });
+  });
+
   it("binds each turn's assertions to that turn's own response", async () => {
     const baseUrl = await mockBaseUrl({
       rules: [
