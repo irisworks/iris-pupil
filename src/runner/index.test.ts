@@ -765,6 +765,7 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
 
     // No key existed, so no lookup was attempted and no empty sessionId is persisted.
     expect(fakeSource.seen).toHaveLength(0);
+    expect(result.metadata?.sessionId).toBeUndefined();
     expect(result.metadata?.fake).toEqual({
       status: "skipped",
       reason: NO_CORRELATION_KEY_REASON,
