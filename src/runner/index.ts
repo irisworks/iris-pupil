@@ -316,7 +316,7 @@ function createErrorResult(
       latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
       retries,
     },
-    ...(sessionId !== undefined && { metadata: { sessionId } }),
+    ...(sessionId !== undefined && sessionId.length > 0 && { metadata: { sessionId } }),
     ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
   };
 }
@@ -435,9 +435,10 @@ export async function runScenario(
           latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
           retries: attempt - 1,
         },
-        ...(attemptResult.sessionId !== undefined && {
-          metadata: { sessionId: attemptResult.sessionId },
-        }),
+        ...(attemptResult.sessionId !== undefined &&
+          attemptResult.sessionId.length > 0 && {
+            metadata: { sessionId: attemptResult.sessionId },
+          }),
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
       // Enrich before scoring so cost/token thresholds see the trace metrics.
