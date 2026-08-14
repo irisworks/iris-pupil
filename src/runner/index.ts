@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { firstString, isRecord } from "../core/json.js";
 import {
   aggregateVerdicts,
   PupilError,
@@ -110,17 +111,6 @@ function now(): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function firstString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return undefined;
 }
 
 function extractCorrelationKey(result: ScenarioResult): string | undefined {
