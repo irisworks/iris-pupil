@@ -1,3 +1,4 @@
+import { isRecord } from "../core/json.js";
 import type { RunResult, ScenarioResult } from "../core/types.js";
 
 export interface TraceRecord {
@@ -61,10 +62,6 @@ export interface TraceLookupContext {
 export interface TraceSource {
   readonly metadataKey: string;
   resolve(correlationKey: string, context?: TraceLookupContext): Promise<TraceRecord | undefined>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
