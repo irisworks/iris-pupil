@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { appendFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig } from "../core/config.js";
 import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
@@ -238,16 +239,37 @@ program
       }
 
       if (options.junit) {
-        await writeFile(options.junit, formatJUnitXml(result, { strict: options.strict }), "utf-8");
+        try {
+          await mkdir(dirname(options.junit), { recursive: true });
+          await writeFile(
+            options.junit,
+            formatJUnitXml(result, { strict: options.strict }),
+            "utf-8",
+          );
+        } catch (error) {
+          throw new PupilError(
+            `Failed to write JUnit report to ${options.junit}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
 
       const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
       if (stepSummaryPath) {
-        await appendFile(
-          stepSummaryPath,
-          buildStepSummaryMarkdown(result, { comparison }),
-          "utf-8",
-        );
+        try {
+          await appendFile(
+            stepSummaryPath,
+            buildStepSummaryMarkdown(result, { comparison }),
+            "utf-8",
+          );
+        } catch (error) {
+          console.error(
+            `WARNING: failed to write the GitHub step summary to ${stepSummaryPath}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
 
       if (options.json) {
