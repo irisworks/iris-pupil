@@ -58,16 +58,6 @@ const targetConfigSchema = z
     fixtureSet: optionalTargetString,
   })
   .strict()
-  .transform((obj) => {
-    // Remove undefined values to truly omit fields
-    const result: Record<string, any> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      if (value !== undefined) {
-        result[key] = value;
-      }
-    }
-    return result as any;
-  })
   .default({ mode: "driven" });
 
 const pupilConfigSchema = z
