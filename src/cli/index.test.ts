@@ -1153,4 +1153,120 @@ describe("pupil CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 15000);
+
+  it("accepts an explicit --config path on run", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "custom.config.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-config",
+          "name: CLI run config",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 50", ""].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--config",
+            configPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).not.toContain("unknown option");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("applies the config compare threshold when gating run --baseline", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-compare-"));
+    const historyDir = join(dir, "history");
+    const configPath = join(dir, "custom.config.yaml");
+
+    try {
+      await writeCompareRuns(historyDir, { latencyMs: 1500 });
+      await writeFile(
+        configPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 100", ""].join("\n"),
+      );
+
+      const tolerant = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "compare",
+            "base-run",
+            "current-run",
+            "--history-dir",
+            historyDir,
+            "--config",
+            configPath,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(tolerant.code).toBe(0);
+      expect(tolerant.stdout).not.toContain("REGRESSION");
+
+      const strictConfig = join(dir, "strict.config.yaml");
+      await writeFile(
+        strictConfig,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 10", ""].join("\n"),
+      );
+
+      const strict = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "compare",
+            "base-run",
+            "current-run",
+            "--history-dir",
+            historyDir,
+            "--config",
+            strictConfig,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(strict.code).toBe(1);
+      expect(strict.stdout).toContain("REGRESSION");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
 });

@@ -10,6 +10,7 @@ import {
   compareRuns,
   formatRunComparison,
   JsonRunHistoryStore,
+  resolveCompareOptions,
   type RunComparison,
 } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
@@ -50,9 +51,6 @@ function parseNonNegativeNumber(value: string, name: string): number {
   return parsed;
 }
 
-function parseNonNegativePercent(value: string, name: string): number {
-  return parseNonNegativeNumber(value, name) / 100;
-}
 function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -187,6 +185,17 @@ program
   .option("--strict", "Also fail (exit 1) when the run verdict is needs_review", false)
   .option("--json", "Print machine-readable JSON run output instead of human-readable lines", false)
   .option("--junit <path>", "Write a JUnit XML report to this path")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option(
+    "--latency-threshold-ms <latencyThresholdMs>",
+    "Allowed latency increase in milliseconds before flagging a regression",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-ms"),
+  )
+  .option(
+    "--latency-threshold-pct <latencyThresholdPct>",
+    "Allowed latency increase as a percent before flagging a regression (default: 20)",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-pct"),
+  )
   .action(
     async (
       path: string,
@@ -203,10 +212,15 @@ program
         strict: boolean;
         json: boolean;
         junit?: string;
+        config?: string;
+        latencyThresholdMs?: number;
+        latencyThresholdPct?: number;
       },
     ) => {
       const scenarios = await loadScenarios(path);
-      const config = await loadPupilConfig();
+      const config = await loadPupilConfig(
+        options.config !== undefined ? { configPath: options.config } : {},
+      );
       const result = await runScenarios(scenarios, {
         timeoutMs: options.timeoutMs,
         retries: options.retries,
@@ -235,7 +249,14 @@ program
           );
         } else {
           const baselineRun = await store.readRun(baselineRunId);
-          comparison = compareRuns(baselineRun, result);
+          comparison = compareRuns(
+            baselineRun,
+            result,
+            resolveCompareOptions(config.compare, {
+              latencyThresholdMs: options.latencyThresholdMs,
+              latencyThresholdPct: options.latencyThresholdPct,
+            }),
+          );
         }
       }
 
@@ -440,6 +461,7 @@ program
   .argument("<baseRunId>", "Baseline or previous run id")
   .argument("<currentRunId>", "Current run id")
   .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
   .option(
     "--latency-threshold-ms <latencyThresholdMs>",
     "Allowed latency increase in milliseconds before flagging a regression",
@@ -447,24 +469,36 @@ program
   )
   .option(
     "--latency-threshold-pct <latencyThresholdPct>",
-    "Allowed latency increase as a percent before flagging a regression (default: 20%)",
-    (value) => parseNonNegativePercent(value, "latency-threshold-pct"),
+    "Allowed latency increase as a percent before flagging a regression (default: 20)",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-pct"),
   )
   .action(
     async (
       baseRunId: string,
       currentRunId: string,
-      options: { historyDir: string; latencyThresholdMs?: number; latencyThresholdPct?: number },
+      options: {
+        historyDir: string;
+        config?: string;
+        latencyThresholdMs?: number;
+        latencyThresholdPct?: number;
+      },
     ) => {
+      const config = await loadPupilConfig(
+        options.config !== undefined ? { configPath: options.config } : {},
+      );
       const store = new JsonRunHistoryStore({ dir: options.historyDir });
       const [base, current] = await Promise.all([
         store.readRun(baseRunId),
         store.readRun(currentRunId),
       ]);
-      const comparison = compareRuns(base, current, {
-        latencyRegressionThresholdMs: options.latencyThresholdMs,
-        latencyRegressionThresholdPct: options.latencyThresholdPct,
-      });
+      const comparison = compareRuns(
+        base,
+        current,
+        resolveCompareOptions(config.compare, {
+          latencyThresholdMs: options.latencyThresholdMs,
+          latencyThresholdPct: options.latencyThresholdPct,
+        }),
+      );
 
       process.stdout.write(formatRunComparison(comparison));
       if (comparison.hasRegressions) {
