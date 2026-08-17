@@ -134,8 +134,8 @@ const TARGET_FIELDS: [keyof TargetIdentity, "hard" | "soft"][] = [
 ];
 
 function detectTargetMismatches(base: RunResult, current: RunResult): TargetMismatchEntry[] {
-  const bt = base.target ?? ({} as TargetIdentity);
-  const ct = current.target ?? ({} as TargetIdentity);
+  const bt: Partial<TargetIdentity> = base.target ?? {};
+  const ct: Partial<TargetIdentity> = current.target ?? {};
 
   const mismatches: TargetMismatchEntry[] = [];
 
