@@ -1053,4 +1053,104 @@ describe("pupil CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 15000);
+
+  it("creates missing parent directories for the --junit report path", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+    const junitPath = join(dir, "reports", "nested", "junit.xml");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-junit-nested",
+          "name: CLI run junit nested",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--junit",
+            junitPath,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(await readFile(junitPath, "utf-8")).toContain('<testsuite name="pupil"');
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("warns but still succeeds when the step summary path is unwritable", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-summary-failure",
+          "name: CLI run summary failure",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+          ],
+          {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, GITHUB_STEP_SUMMARY: join(dir, "missing", "summary.md") },
+          },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toContain("failed to write the GitHub step summary");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
 });
