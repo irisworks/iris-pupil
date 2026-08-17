@@ -81,8 +81,12 @@ export function buildRunJson(
   };
 }
 
+/** Characters that are illegal in XML 1.0 text. Tab, LF, and CR are legal and preserved. */
+const XML_ILLEGAL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+
 function xmlEscape(value: string): string {
   return value
+    .replace(XML_ILLEGAL_CHARS, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -128,7 +132,7 @@ export function formatJUnitXml(run: RunResult, options: { strict: boolean }): st
     });
 
   const failures = run.results.filter(
-    (result) => result.verdict === Verdict.Fail || isStrictFailure(result.verdict, options.strict),
+    (result) => result.verdict !== Verdict.Error && isStrictFailure(result.verdict, options.strict),
   ).length;
   const errors = run.results.filter((result) => result.verdict === Verdict.Error).length;
   const skipped = run.results.filter((result) => result.verdict === Verdict.Skip).length;
