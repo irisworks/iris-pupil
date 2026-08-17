@@ -116,15 +116,16 @@ target:
   fixtureSet: stubbed-slack # live | stubbed-<name>
 ```
 
-Label your live-backend runs the same way (`fixtureSet: live`) — the guard only protects a
-comparison when both sides carry a label.
+Label your live-backend runs the same way (`fixtureSet: live`).
 
 `pupil compare` treats `fixtureSet` as a **hard** mismatch field, alongside `system` and `mode`:
-if the base and current runs carry different fixture sets — or one has none recorded — the
-comparison is flagged as invalid and `pupil compare` exits with status `2` rather than reporting
-a false regression. Labelling both sides means a stubbed-vs-live comparison is refused rather
-than reported as a regression. Runs with no fixture set recorded on either side are compared
-normally, so the guarantee only holds once every run — stubbed or live — is labelled.
+if the base and current runs carry different fixture sets — or one has a fixture set recorded and
+the other doesn't — the comparison is flagged as invalid and `pupil compare` exits with status `2`
+rather than reporting a false regression. Because it's a hard field, this catches the asymmetric
+case too: a stubbed run labeled `fixtureSet: stubbed-slack` compared against a run whose target
+carries no `fixtureSet` at all is still refused, not silently compared. The one case the guard
+can't catch is two runs that _neither_ ever recorded a fixture set — there's nothing to compare
+against — so the guarantee only holds once every run, stubbed or live, is labelled.
 
 ## Worked example: an IRIS-shaped agent
 
