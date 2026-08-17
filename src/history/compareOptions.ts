@@ -35,9 +35,21 @@ export function resolveCompareOptions(
   config: CompareConfig | undefined,
   overrides: CompareOptionOverrides = {},
 ): CompareRunsOptions {
-  const latencyRegressionThresholdMs = overrides.latencyThresholdMs ?? config?.latencyThresholdMs;
+  // The two latency knobs are a mutually exclusive unit at the override layer:
+  // if the caller supplies EITHER one, that expresses "use my latency policy
+  // for this invocation," so both of config's latency values are dropped
+  // rather than letting one leftover config value silently combine with the
+  // override. `compare.ts` prefers an absolute ms threshold over a percent
+  // one when both are present, so a config ms ceiling would otherwise defeat
+  // an override that only set a percent.
+  const overridesLatency =
+    overrides.latencyThresholdMs !== undefined || overrides.latencyThresholdPct !== undefined;
+
+  const latencyRegressionThresholdMs = overridesLatency
+    ? overrides.latencyThresholdMs
+    : config?.latencyThresholdMs;
   const latencyRegressionThresholdPct = percentToFraction(
-    overrides.latencyThresholdPct ?? config?.latencyThresholdPct,
+    overridesLatency ? overrides.latencyThresholdPct : config?.latencyThresholdPct,
   );
   const metricRegressionThresholds = config?.metricThresholds;
 

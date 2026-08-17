@@ -71,4 +71,18 @@ describe("resolveCompareOptions", () => {
       latencyRegressionThresholdPct: 0.5,
     });
   });
+
+  it("drops a config ms threshold when only a pct override is given, instead of stacking both", () => {
+    const result = resolveCompareOptions({ latencyThresholdMs: 500 }, { latencyThresholdPct: 5 });
+
+    expect(result).not.toHaveProperty("latencyRegressionThresholdMs");
+    expect(result).toEqual({ latencyRegressionThresholdPct: 0.05 });
+  });
+
+  it("drops a config pct threshold when only an ms override is given, instead of stacking both", () => {
+    const result = resolveCompareOptions({ latencyThresholdPct: 20 }, { latencyThresholdMs: 900 });
+
+    expect(result).not.toHaveProperty("latencyRegressionThresholdPct");
+    expect(result).toEqual({ latencyRegressionThresholdMs: 900 });
+  });
 });
