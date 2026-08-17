@@ -228,11 +228,9 @@ program
       if (options.baseline) {
         const baselineRunId = await store.getBaselineRunId();
         if (!baselineRunId) {
-          if (!options.json) {
-            console.log(
-              "No baseline set - skipping comparison. Set one with `pupil baseline <runId>`.",
-            );
-          }
+          console.error(
+            "WARNING: --baseline was requested but no baseline run is set, so no regression comparison ran. Set one with `pupil baseline <runId>`.",
+          );
         } else {
           const baselineRun = await store.readRun(baselineRunId);
           comparison = compareRuns(baselineRun, result);
@@ -259,6 +257,7 @@ program
               strict: options.strict,
               historyPath: stored.runPath,
               comparison,
+              baselineRequested: options.baseline,
             }),
             null,
             2,

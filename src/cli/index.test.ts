@@ -899,7 +899,7 @@ describe("pupil CLI", () => {
         ),
       );
       expect(first.code).toBe(0);
-      expect(first.stdout).toContain("No baseline set");
+      expect(first.stderr).toContain("no baseline run is set");
       const firstRunId = /Run ([^:]+):/.exec(first.stdout)?.[1];
       expect(firstRunId).toBeDefined();
 
@@ -947,6 +947,58 @@ describe("pupil CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 20000);
+
+  it("warns on stderr and reports status not_set when --baseline finds no baseline", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-no-baseline",
+          "name: CLI run no baseline",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toContain("no baseline run is set");
+
+      const payload = JSON.parse(output.stdout) as { baseline?: { status: string } };
+      expect(payload.baseline).toEqual({ status: "not_set" });
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
 
   it("appends a run summary to $GITHUB_STEP_SUMMARY when it is set", async () => {
     const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
