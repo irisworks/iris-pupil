@@ -175,11 +175,16 @@ describe("loadPupilConfig", () => {
     expect(config.target).toEqual({ mode: "driven" });
   });
 
-  it("rejects an empty string in target.version", async () => {
+  it("coerces an empty string in target fields to absent", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
-    await writeFile(join(tmpRoot, "pupil.config.yaml"), 'target:\n  version: ""\n');
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      'target:\n  system: ""\n  environment: ""\n  version: ""\n  fixtureSet: ""\n',
+    );
 
-    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/Invalid Pupil config/);
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.target).toEqual({ mode: "driven" });
   });
 
   it("rejects unknown fields in target block", async () => {
