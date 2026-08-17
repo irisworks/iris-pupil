@@ -134,9 +134,8 @@ const TARGET_FIELDS: [keyof TargetIdentity, "hard" | "soft"][] = [
 ];
 
 function detectTargetMismatches(base: RunResult, current: RunResult): TargetMismatchEntry[] {
-  const bt = base.target;
-  const ct = current.target;
-  if (!bt || !ct) return [];
+  const bt = base.target ?? ({} as TargetIdentity);
+  const ct = current.target ?? ({} as TargetIdentity);
 
   const mismatches: TargetMismatchEntry[] = [];
 
@@ -145,9 +144,10 @@ function detectTargetMismatches(base: RunResult, current: RunResult): TargetMism
     const cv = ct[field] as string | undefined;
     if (bv === cv) continue;
     // Hard fields (system/mode/fixtureSet) treat one side being unset as a
-    // mismatch too: a stubbed run vs. an undeclared one is exactly the
+    // mismatch too: a stubbed run vs. an undeclared one — including a run
+    // that predates target-identity tracking entirely — is exactly the
     // contamination this check exists to catch. Soft fields (environment/
-    // version) stay lenient so older runs without that metadata don't warn.
+    // version) stay lenient so a merely-incomplete target doesn't warn.
     const bothPresent = bv !== undefined && cv !== undefined;
     if (severity === "hard" || bothPresent) {
       mismatches.push({ field, severity, base: bv, current: cv });
@@ -270,7 +270,15 @@ function formatTargetMismatches(
 
   if (soft.length > 0) {
     const table = formatTargetTable(soft, baseRunId, currentRunId);
-    parts.push(["ℹ Cross-target comparison", "", table].join("\n"));
+    parts.push(
+      [
+        "⚠ Cross-target comparison",
+        "",
+        table,
+        "",
+        "  Metrics may not be comparable across environments or versions.",
+      ].join("\n"),
+    );
   }
 
   return parts.join("\n\n");
@@ -282,20 +290,20 @@ function formatTargetIdentityUnknown(): string {
     "",
     "  One or both runs predate target identity tracking.",
     "  Comparison provenance cannot be verified.",
+    "  Re-baseline with `pupil baseline <runId>` once both runs carry target identity.",
   ].join("\n");
 }
 
 export function formatRunComparison(comparison: RunComparison): string {
-  // Mutually exclusive: detectTargetMismatches only runs when both runs have
-  // a target, so a "target present but disagrees" warning and a "target
-  // missing entirely" notice never both apply to the same comparison.
-  const mismatchBlock = comparison.targetIdentityUnknown
-    ? formatTargetIdentityUnknown()
-    : formatTargetMismatches(
-        comparison.targetMismatch,
-        comparison.baseRunId,
-        comparison.currentRunId,
-      );
+  const blocks: string[] = [];
+
+  const mismatchBlock = formatTargetMismatches(
+    comparison.targetMismatch,
+    comparison.baseRunId,
+    comparison.currentRunId,
+  );
+  if (mismatchBlock) blocks.push(mismatchBlock);
+  if (comparison.targetIdentityUnknown) blocks.push(formatTargetIdentityUnknown());
 
   const lines = [
     `Comparison ${comparison.baseRunId} -> ${comparison.currentRunId}`,
@@ -323,5 +331,5 @@ export function formatRunComparison(comparison: RunComparison): string {
   }
 
   const body = `${lines.join("\n")}\n`;
-  return mismatchBlock ? `${mismatchBlock}\n\n${body}` : body;
+  return blocks.length > 0 ? `${blocks.join("\n\n")}\n\n${body}` : body;
 }
