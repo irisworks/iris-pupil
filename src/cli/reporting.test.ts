@@ -178,6 +178,42 @@ describe("formatJUnitXml", () => {
     expect(xml).toContain("&quot;test&quot;");
     expect(xml).toContain("&lt;bad&gt; &amp; ugly");
   });
+
+  it("counts an error verdict as an error only, never also as a failure", () => {
+    const run = runResult({ verdict: Verdict.Error }, [
+      scenarioResult({
+        verdict: Verdict.Error,
+        scores: [{ name: "execution", verdict: Verdict.Error, reason: "boom", metadata: {} }],
+      }),
+    ]);
+
+    const xml = formatJUnitXml(run, { strict: false });
+
+    expect(xml).toContain('failures="0"');
+    expect(xml).toContain('errors="1"');
+  });
+
+  it("strips XML-illegal control characters but preserves tab, LF, and CR", () => {
+    const run = runResult({ verdict: Verdict.Fail }, [
+      scenarioResult({
+        verdict: Verdict.Fail,
+        scores: [
+          {
+            name: "assertion",
+            verdict: Verdict.Fail,
+            reason: `bad\u0000output\u001b[31m	kept
+kept`,
+            metadata: {},
+          },
+        ],
+      }),
+    ]);
+
+    const xml = formatJUnitXml(run, { strict: false });
+
+    expect(xml).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/);
+    expect(xml).toContain("\tkept");
+  });
 });
 
 describe("buildStepSummaryMarkdown", () => {
