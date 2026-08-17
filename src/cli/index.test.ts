@@ -763,6 +763,39 @@ describe("run command target flags", () => {
     });
   }, 15000);
 
+  it("pupil run always stamps mode: driven, with no --mode flag available", async () => {
+    const mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const historyDir = await mkdtemp(join(tmpdir(), "pupil-history-"));
+    const scenarioDir = await mkdtemp(join(tmpdir(), "pupil-scenario-"));
+    const scenarioPath = join(scenarioDir, "scenario.yaml");
+    await writeFile(scenarioPath, minimalScenarioYaml);
+
+    try {
+      await program.parseAsync([
+        "node",
+        "pupil",
+        "run",
+        "--base-url",
+        `http://${address.host}:${address.port}`,
+        "--history-dir",
+        historyDir,
+        "--no-langfuse",
+        scenarioPath,
+      ]);
+    } finally {
+      await mock.close();
+      await rm(scenarioDir, { recursive: true, force: true });
+    }
+
+    const store = new JsonRunHistoryStore({ dir: historyDir });
+    const [entry] = await store.listRuns();
+    const stored = await store.readRun(entry.runId);
+    await rm(historyDir, { recursive: true, force: true });
+
+    expect(stored.target?.mode).toBe("driven");
+  }, 15000);
+
   it("CLI flags override config.target fields (flags win)", async () => {
     const mock = createIrisMockAgent({ port: 0 });
     const address = await mock.listen();

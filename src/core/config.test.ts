@@ -22,7 +22,7 @@ describe("loadPupilConfig", () => {
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
-      target: { mode: "driven" },
+      target: {},
     });
   });
 
@@ -148,7 +148,6 @@ describe("loadPupilConfig", () => {
         "  system: support-agent",
         "  environment: ${DEPLOY_ENV:-staging}",
         "  version: ${DEPLOY_SHA:-}",
-        "  mode: driven",
         "  fixtureSet: live",
       ].join("\n"),
     );
@@ -162,17 +161,16 @@ describe("loadPupilConfig", () => {
       system: "support-agent",
       environment: "production",
       version: "abc1234",
-      mode: "driven",
       fixtureSet: "live",
     });
   });
 
-  it("target defaults to mode: driven when block is absent", async () => {
+  it("target defaults to an empty block when absent", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
 
     const config = await loadPupilConfig({ cwd: tmpRoot });
 
-    expect(config.target).toEqual({ mode: "driven" });
+    expect(config.target).toEqual({});
   });
 
   it("coerces an empty string in target fields to absent", async () => {
@@ -184,7 +182,7 @@ describe("loadPupilConfig", () => {
 
     const config = await loadPupilConfig({ cwd: tmpRoot });
 
-    expect(config.target).toEqual({ mode: "driven" });
+    expect(config.target).toEqual({});
   });
 
   it("rejects unknown fields in target block", async () => {
@@ -192,5 +190,14 @@ describe("loadPupilConfig", () => {
     await writeFile(join(tmpRoot, "pupil.config.yaml"), "target:\n  commit: abc123\n");
 
     await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/Unrecognized key/);
+  });
+
+  it("rejects a mode field in target block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "target:\n  mode: observed\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /Unrecognized key\(s\) in object: 'mode'/,
+    );
   });
 });
