@@ -44,15 +44,30 @@ const langfuseConfigSchema = z
   .strict()
   .default({ enabled: "auto" });
 
+const optionalTargetString = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
 const targetConfigSchema = z
   .object({
-    system: z.string().min(1).optional(),
-    environment: z.string().min(1).optional(),
-    version: z.string().min(1).optional(),
+    system: optionalTargetString,
+    environment: optionalTargetString,
+    version: optionalTargetString,
     mode: z.enum(["driven", "observed"]).default("driven"),
-    fixtureSet: z.string().min(1).optional(),
+    fixtureSet: optionalTargetString,
   })
   .strict()
+  .transform((obj) => {
+    // Remove undefined values to truly omit fields
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        result[key] = value;
+      }
+    }
+    return result as any;
+  })
   .default({ mode: "driven" });
 
 const pupilConfigSchema = z
