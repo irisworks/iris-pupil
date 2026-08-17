@@ -270,13 +270,15 @@ describe("target identity mismatch detection", () => {
     ]);
   });
 
-  it("emits no field mismatch but flags unknown provenance when a run predates target tracking", () => {
+  it("emits a hard mismatch on fields set only by the tracked run, and flags unknown provenance, when a run predates target tracking", () => {
     const base = run("base", []);
     const current = runWithTarget("current", [], { mode: "driven", environment: "production" });
 
     const comparison = compareRuns(base, current);
 
-    expect(comparison.targetMismatch).toEqual([]);
+    expect(comparison.targetMismatch).toEqual([
+      { field: "mode", severity: "hard", base: undefined, current: "driven" },
+    ]);
     expect(comparison.targetIdentityUnknown).toBe(true);
   });
 
@@ -289,14 +291,24 @@ describe("target identity mismatch detection", () => {
     expect(comparison.targetIdentityUnknown).toBe(false);
   });
 
-  it("formats an info notice when target identity is unknown", () => {
+  it("formats an info notice with no warning when both runs predate target tracking", () => {
     const base = run("base", []);
-    const current = runWithTarget("current", [], { mode: "driven" });
+    const current = run("current", []);
 
     const output = formatRunComparison(compareRuns(base, current));
 
     expect(output).toContain("ℹ Target identity unknown");
     expect(output).not.toContain("⚠");
+  });
+
+  it("formats both a hard warning and the unknown-provenance notice when only one run predates tracking", () => {
+    const base = run("base", []);
+    const current = runWithTarget("current", [], { mode: "driven" });
+
+    const output = formatRunComparison(compareRuns(base, current));
+
+    expect(output).toContain("⚠ Comparison may be invalid");
+    expect(output).toContain("ℹ Target identity unknown");
   });
 
   it("emits no mismatch when a field is absent on one target but present on the other", () => {
@@ -351,7 +363,7 @@ describe("target identity mismatch detection", () => {
     expect(output).toContain("Regression metrics may not be meaningful.");
   });
 
-  it("formats soft mismatches as an info block", () => {
+  it("formats soft mismatches as a cross-target warning", () => {
     const base = runWithTarget("base", [], {
       mode: "driven",
       environment: "staging",
@@ -365,19 +377,19 @@ describe("target identity mismatch detection", () => {
 
     const output = formatRunComparison(compareRuns(base, current));
 
-    expect(output).toContain("ℹ Cross-target comparison");
+    expect(output).toContain("⚠ Cross-target comparison");
     expect(output).toContain("environment: staging");
     expect(output).toContain("environment: production");
-    expect(output).not.toContain("⚠");
+    expect(output).not.toContain("Comparison may be invalid");
   });
 
-  it("suppresses the info block when only hard mismatches exist", () => {
+  it("does not show the cross-target block when only hard mismatches exist", () => {
     const base = runWithTarget("base", [], { mode: "driven" });
     const current = runWithTarget("current", [], { mode: "observed" });
 
     const output = formatRunComparison(compareRuns(base, current));
 
-    expect(output).toContain("⚠");
-    expect(output).not.toContain("ℹ Cross-target");
+    expect(output).toContain("⚠ Comparison may be invalid");
+    expect(output).not.toContain("Cross-target");
   });
 });
