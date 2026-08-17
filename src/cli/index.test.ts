@@ -1208,7 +1208,7 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
-  it("applies the config compare threshold when gating run --baseline", async () => {
+  it("applies the config compare threshold when gating compare", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pupil-compare-"));
     const historyDir = join(dir, "history");
     const configPath = join(dir, "custom.config.yaml");
@@ -1266,6 +1266,143 @@ describe("pupil CLI", () => {
       expect(strict.code).toBe(1);
       expect(strict.stdout).toContain("REGRESSION");
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("applies the config compare threshold when gating run --baseline", async () => {
+    // A slow baseline lets the mock agent's response delay push the current
+    // run's measured latency comfortably past a strict threshold while
+    // staying comfortably under a tolerant one, regardless of scheduling
+    // jitter in the child process.
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "online" }],
+      defaultDelayMs: 500,
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-baseline-config-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+    const tolerantConfigPath = join(dir, "tolerant.config.yaml");
+    const strictConfigPath = join(dir, "strict.config.yaml");
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-baseline-config",
+          "name: CLI run baseline config",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: online",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        tolerantConfigPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 2000", ""].join("\n"),
+      );
+      await writeFile(
+        strictConfigPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 5", ""].join("\n"),
+      );
+
+      const store = new JsonRunHistoryStore({ dir: historyDir });
+      const baselineRun: RunResult = {
+        runId: "baseline-run",
+        verdict: Verdict.Pass,
+        results: [
+          {
+            scenarioId: "cli-run-baseline-config",
+            scenarioName: "CLI run baseline config",
+            verdict: Verdict.Pass,
+            scores: [
+              {
+                name: "assertion:contains:response.text",
+                verdict: Verdict.Pass,
+                reason: "Expected response.text to contain online",
+                metadata: {},
+              },
+            ],
+            turns: [],
+            startedAt: "2026-07-27T00:00:00.000Z",
+            completedAt: "2026-07-27T00:00:00.050Z",
+            metrics: { turns: 1, latency_ms: 50 },
+          },
+        ],
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:00:00.050Z",
+        summary: { total: 1, passed: 1, failed: 0, needsReview: 0, errors: 0 },
+        metadata: {},
+      };
+      await store.writeRun(baselineRun);
+      await store.setBaseline("baseline-run");
+
+      const tolerant = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            baseUrl,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--config",
+            tolerantConfigPath,
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(tolerant.code).toBe(0);
+      const tolerantPayload = JSON.parse(tolerant.stdout) as {
+        baseline?: { status: string; hasRegressions?: boolean };
+      };
+      expect(tolerantPayload.baseline).toMatchObject({ status: "compared", hasRegressions: false });
+
+      const strict = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            baseUrl,
+            "--origin-thread-ts",
+            "thread-2",
+            "--history-dir",
+            historyDir,
+            "--config",
+            strictConfigPath,
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(strict.code).toBe(1);
+      const strictPayload = JSON.parse(strict.stdout) as {
+        baseline?: { status: string; hasRegressions?: boolean };
+      };
+      expect(strictPayload.baseline).toMatchObject({ status: "compared", hasRegressions: true });
+    } finally {
+      await mock.close();
       await rm(dir, { recursive: true, force: true });
     }
   }, 15000);
