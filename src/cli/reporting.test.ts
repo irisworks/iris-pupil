@@ -107,9 +107,11 @@ describe("buildRunJson", () => {
       strict: false,
       historyPath: "/tmp/current.json",
       comparison,
+      baselineRequested: true,
     });
 
     expect(json.baseline).toEqual({
+      status: "compared",
       baseRunId: "base",
       hasRegressions: true,
       summary: comparison.summary,
@@ -120,6 +122,38 @@ describe("buildRunJson", () => {
         },
       ],
     });
+  });
+
+  it("reports status not_set when a baseline was requested but none exists", () => {
+    const json = buildRunJson(runResult(), {
+      strict: false,
+      historyPath: ".pupil/runs/run-1.json",
+      baselineRequested: true,
+    });
+
+    expect(json.baseline).toEqual({ status: "not_set" });
+  });
+
+  it("omits baseline entirely when none was requested", () => {
+    const json = buildRunJson(runResult(), {
+      strict: false,
+      historyPath: ".pupil/runs/run-1.json",
+    });
+
+    expect(json.baseline).toBeUndefined();
+  });
+
+  it("tags a completed comparison with status compared", () => {
+    const base = runResult({ runId: "base-run" });
+    const current = runResult({ runId: "run-1" });
+    const json = buildRunJson(current, {
+      strict: false,
+      historyPath: ".pupil/runs/run-1.json",
+      comparison: compareRuns(base, current),
+      baselineRequested: true,
+    });
+
+    expect(json.baseline).toMatchObject({ status: "compared", baseRunId: "base-run" });
   });
 });
 

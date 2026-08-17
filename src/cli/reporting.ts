@@ -21,12 +21,15 @@ export interface RunJsonScenario {
   scores: RunJsonScore[];
 }
 
-export interface RunJsonBaseline {
-  baseRunId: string;
-  hasRegressions: boolean;
-  summary: RunComparison["summary"];
-  regressions: Array<{ scenarioId: string; reasons: string[] }>;
-}
+export type RunJsonBaseline =
+  | { status: "not_set" }
+  | {
+      status: "compared";
+      baseRunId: string;
+      hasRegressions: boolean;
+      summary: RunComparison["summary"];
+      regressions: Array<{ scenarioId: string; reasons: string[] }>;
+    };
 
 export interface RunJsonOutput {
   runId: string;
@@ -43,21 +46,35 @@ export function isStrictFailure(verdict: Verdict, strict: boolean): boolean {
   return strict && verdictSeverity(verdict) >= verdictSeverity(Verdict.NeedsReview);
 }
 
-function toJsonBaseline(comparison: RunComparison): RunJsonBaseline {
-  return {
-    baseRunId: comparison.baseRunId,
-    hasRegressions: comparison.hasRegressions,
-    summary: comparison.summary,
-    regressions: comparison.scenarios
-      .filter((scenario) => scenario.regression)
-      .map((scenario) => ({ scenarioId: scenario.scenarioId, reasons: scenario.reasons })),
-  };
+function toJsonBaseline(
+  comparison: RunComparison | undefined,
+  baselineRequested: boolean,
+): RunJsonBaseline | undefined {
+  if (comparison) {
+    return {
+      status: "compared",
+      baseRunId: comparison.baseRunId,
+      hasRegressions: comparison.hasRegressions,
+      summary: comparison.summary,
+      regressions: comparison.scenarios
+        .filter((scenario) => scenario.regression)
+        .map((scenario) => ({ scenarioId: scenario.scenarioId, reasons: scenario.reasons })),
+    };
+  }
+  return baselineRequested ? { status: "not_set" } : undefined;
 }
 
 export function buildRunJson(
   run: RunResult,
-  options: { strict: boolean; historyPath: string; comparison?: RunComparison },
+  options: {
+    strict: boolean;
+    historyPath: string;
+    comparison?: RunComparison;
+    baselineRequested?: boolean;
+  },
 ): RunJsonOutput {
+  const baseline = toJsonBaseline(options.comparison, options.baselineRequested ?? false);
+
   return {
     runId: run.runId,
     verdict: run.verdict,
@@ -77,7 +94,7 @@ export function buildRunJson(
           ...(score.reason !== undefined && { reason: score.reason }),
         })),
       })),
-    ...(options.comparison !== undefined && { baseline: toJsonBaseline(options.comparison) }),
+    ...(baseline !== undefined && { baseline }),
   };
 }
 
