@@ -5,3 +5,4 @@ coverage/
 .tmp/
 docs/superpowers/
 .superpowers/
+.env
