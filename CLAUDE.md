@@ -27,6 +27,18 @@ During local development, run the CLI through `node dist/cli/index.js` after `np
 
 Configuration comes from `pupil.config.yaml`'s `langfuse` block first, then the environment (`LANGFUSE_HOST` - `LANGFUSE_BASE_URL` is also accepted - plus `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`). Config values win over env values when both are present. `enabled: false` or `pupil run --no-langfuse` disables it. Because Langfuse ingestion is asynchronous, lookups poll for up to `langfuse.waitMs` (default 25s) before recording a skip. Pupil performs one immediate lookup, then uses `langfuse.initialDelayMs` (default 8s, discounted by scenario runtime) before the second lookup and exponential backoff after that. Each individual HTTP lookup is bounded by `langfuse.timeoutMs` (or `LANGFUSE_TIMEOUT_MS`, default 3s), which slower Langfuse Cloud responses may need raised.
 
+## Target Identity
+
+`pupil run` stamps each `RunResult` with a `target` identity so `pupil compare` can tell whether two runs were actually exercising the same agent. Configure defaults in `pupil.config.yaml`'s `target:` block (`system`, `environment`, `version`, `fixtureSet`), and override any of them per-run with `--system`, `--environment`, `--target-version`, `--fixture-set`. `mode` is not configurable — `pupil run` always stamps `mode: "driven"`; there is no CLI flag for it.
+
+`pupil compare <baseRunId> <currentRunId>` exits with one of three codes:
+
+- `0` - no regressions found.
+- `1` - regressions found.
+- `2` - a hard target-identity mismatch (`system`, `mode`, or `fixtureSet` differ, including one side missing the field) was detected between the two runs. The comparison is refused as invalid rather than scored, since diffing a stubbed run against a live one (or vice versa) isn't meaningful. `environment`/`version` mismatches are "soft" and only produce a warning, not exit 2.
+
+Any run recorded before this feature shipped has no `target` at all, which counts as a hard mismatch on `mode`. This means existing users will hit exit code 2 the first time they run `pupil compare` against an old baseline after upgrading. The fix is `pupil baseline <newRunId>` to establish a fresh, tagged baseline going forward.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.

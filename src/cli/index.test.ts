@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Verdict, type RunResult } from "../core/types.js";
 import { JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
@@ -737,7 +737,7 @@ describe("run command target flags", () => {
         "support-agent",
         "--environment",
         "staging",
-        "--version",
+        "--target-version",
         "abc1234",
         "--fixture-set",
         "live",
@@ -843,10 +843,6 @@ describe("run command target flags", () => {
 });
 
 describe("report command target output", () => {
-  afterEach(() => {
-    console.log = console.log;
-  });
-
   it("prints target fields when present", async () => {
     const historyDir = await mkdtemp(join(tmpdir(), "pupil-report-target-"));
     const store = new JsonRunHistoryStore({ dir: historyDir });
