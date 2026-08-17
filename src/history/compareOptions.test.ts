@@ -50,4 +50,25 @@ describe("resolveCompareOptions", () => {
       latencyRegressionThresholdMs: 0,
     });
   });
+
+  it("lets an explicit zero override win over a non-zero config value", () => {
+    expect(resolveCompareOptions({ latencyThresholdMs: 500 }, { latencyThresholdMs: 0 })).toEqual({
+      latencyRegressionThresholdMs: 0,
+    });
+  });
+
+  it("lets an explicit zero percent override win over a non-zero config value", () => {
+    expect(resolveCompareOptions({ latencyThresholdPct: 20 }, { latencyThresholdPct: 0 })).toEqual({
+      latencyRegressionThresholdPct: 0,
+    });
+  });
+
+  it("applies overrides when no config block is present", () => {
+    expect(
+      resolveCompareOptions(undefined, { latencyThresholdMs: 900, latencyThresholdPct: 50 }),
+    ).toEqual({
+      latencyRegressionThresholdMs: 900,
+      latencyRegressionThresholdPct: 0.5,
+    });
+  });
 });
