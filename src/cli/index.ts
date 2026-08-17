@@ -169,7 +169,7 @@ program
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
   .option("--system <name>", "Agent system name (e.g. support-agent)")
   .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
-  .option("--version <version>", "Deployed version or commit SHA")
+  .option("--target-version <version>", "Deployed version or commit SHA")
   .option("--fixture-set <name>", "Active fixture/stub set name")
   .action(
     async (
@@ -185,7 +185,7 @@ program
         langfuse: boolean;
         system?: string;
         environment?: string;
-        version?: string;
+        targetVersion?: string;
         fixtureSet?: string;
       },
     ) => {
@@ -196,7 +196,7 @@ program
         mode: "driven",
         ...(options.system ? { system: options.system } : {}),
         ...(options.environment ? { environment: options.environment } : {}),
-        ...(options.version ? { version: options.version } : {}),
+        ...(options.targetVersion ? { version: options.targetVersion } : {}),
         ...(options.fixtureSet ? { fixtureSet: options.fixtureSet } : {}),
       };
       const result = await runScenarios(scenarios, {

@@ -5,7 +5,7 @@ export type ScenarioComparisonStatus =
   "unchanged" | "regressed" | "fixed" | "still_failing" | "new" | "removed";
 
 export interface TargetMismatchEntry {
-  field: "system" | "environment" | "version" | "mode" | "fixtureSet";
+  field: keyof TargetIdentity;
   severity: "hard" | "soft";
   base: string | undefined;
   current: string | undefined;
@@ -125,13 +125,17 @@ function indexByScenarioId(run: RunResult): Map<string, ScenarioResult> {
   return new Map(run.results.map((result) => [result.scenarioId, result]));
 }
 
-const TARGET_FIELDS: [keyof TargetIdentity, "hard" | "soft"][] = [
-  ["system", "hard"],
-  ["mode", "hard"],
-  ["fixtureSet", "hard"],
-  ["environment", "soft"],
-  ["version", "soft"],
-];
+// A `Record` over every `TargetIdentity` key (rather than a plain array)
+// forces this literal to stay exhaustive: adding a field to `TargetIdentity`
+// without adding it here is a TypeScript compile error, so new fields can't
+// silently escape contamination detection.
+const TARGET_FIELDS: Record<keyof TargetIdentity, "hard" | "soft"> = {
+  system: "hard",
+  mode: "hard",
+  fixtureSet: "hard",
+  environment: "soft",
+  version: "soft",
+};
 
 function detectTargetMismatches(base: RunResult, current: RunResult): TargetMismatchEntry[] {
   const bt: Partial<TargetIdentity> = base.target ?? {};
@@ -139,7 +143,10 @@ function detectTargetMismatches(base: RunResult, current: RunResult): TargetMism
 
   const mismatches: TargetMismatchEntry[] = [];
 
-  for (const [field, severity] of TARGET_FIELDS) {
+  for (const [field, severity] of Object.entries(TARGET_FIELDS) as [
+    keyof TargetIdentity,
+    "hard" | "soft",
+  ][]) {
     const bv = bt[field] as string | undefined;
     const cv = ct[field] as string | undefined;
     if (bv === cv) continue;
@@ -236,8 +243,8 @@ function formatTargetTable(
   const gap = 2;
   const leftHeader = `  Base (${baseRunId})`;
   const rightHeader = `Current (${currentRunId})`;
-  const leftCells = entries.map((m) => `  ${m.field}: ${m.base ?? ""}`);
-  const rightCells = entries.map((m) => `${m.field}: ${m.current ?? ""}`);
+  const leftCells = entries.map((m) => `  ${m.field}: ${m.base ?? "<not recorded>"}`);
+  const rightCells = entries.map((m) => `${m.field}: ${m.current ?? "<not recorded>"}`);
   const col = Math.max(leftHeader.length, ...leftCells.map((cell) => cell.length)) + gap;
 
   const header = leftHeader.padEnd(col) + rightHeader;
