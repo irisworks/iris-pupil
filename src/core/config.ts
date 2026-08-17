@@ -54,11 +54,10 @@ const targetConfigSchema = z
     system: optionalTargetString,
     environment: optionalTargetString,
     version: optionalTargetString,
-    mode: z.enum(["driven", "observed"]).default("driven"),
     fixtureSet: optionalTargetString,
   })
   .strict()
-  .default({ mode: "driven" });
+  .default({});
 
 const pupilConfigSchema = z
   .object({

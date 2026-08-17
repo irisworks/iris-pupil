@@ -29,5 +29,4 @@ langfuse:
 #   system: my-agent             # which agent (optional; namespaces a shared history store)
 #   environment: ${DEPLOY_ENV:-} # staging | production | pr-123 (optional)
 #   version: ${DEPLOY_SHA:-}     # git SHA, semver tag, or build ID — never a mutable label
-#   mode: driven                 # always driven for pupil run; omit to use the default
 #   fixtureSet: live             # live | stubbed-<name> (optional; guards against fixture contamination)

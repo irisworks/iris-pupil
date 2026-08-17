@@ -193,6 +193,7 @@ program
       const config = await loadPupilConfig();
       const mergedTarget: TargetIdentity = {
         ...config.target,
+        mode: "driven",
         ...(options.system ? { system: options.system } : {}),
         ...(options.environment ? { environment: options.environment } : {}),
         ...(options.version ? { version: options.version } : {}),
