@@ -46,6 +46,7 @@ export interface RunnerProgressEvent {
     | "scenario:start"
     | "scenario:retry"
     | "scenario:pass"
+    | "scenario:skip"
     | "scenario:needs_review"
     | "scenario:fail"
     | "scenario:error";
@@ -222,11 +223,12 @@ export function createDrivenTrajectory({
   };
 }
 
-function progressEventTypeForVerdict(verdict: Verdict): RunnerProgressEvent["type"] {
+export function progressEventTypeForVerdict(verdict: Verdict): RunnerProgressEvent["type"] {
   switch (verdict) {
     case Verdict.Pass:
-    case Verdict.Skip:
       return "scenario:pass";
+    case Verdict.Skip:
+      return "scenario:skip";
     case Verdict.NeedsReview:
       return "scenario:needs_review";
     case Verdict.Error:

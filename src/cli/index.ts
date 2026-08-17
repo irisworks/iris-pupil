@@ -88,6 +88,7 @@ function formatProgressLine(event: RunnerProgressEvent): string {
     return `RETRY ${event.scenarioId} attempt ${event.attempt}/${event.maxAttempts}`;
   }
   if (event.type === "scenario:pass") return `PASS ${event.scenarioId}`;
+  if (event.type === "scenario:skip") return `SKIP ${event.scenarioId}`;
   if (event.type === "scenario:needs_review") return `REVIEW ${event.scenarioId}`;
   if (event.type === "scenario:fail") return `FAIL ${event.scenarioId}`;
   return `ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`;
