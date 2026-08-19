@@ -172,6 +172,44 @@ function evaluateToolCallCount(assertion: ToolCallCountLocal, calls: readonly To
   return score(assertion, Verdict.Pass, count, `Expected ${label} count ${bounds}, saw ${count}`);
 }
 
+type ToolOrderLocal = Extract<ToolAssertionCheck, { type: "tool_order" }>;
+type ToolArgsLocal = Extract<ToolAssertionCheck, { type: "tool_args" }>;
+
+/**
+ * Subsequence match: walk the observed calls once, advancing through the
+ * expected list on each hit. Unrelated calls in between are ignored, and a tool
+ * listed twice requires two distinct calls because the cursor only advances once
+ * per observed call.
+ */
+function evaluateToolOrder(assertion: ToolOrderLocal, calls: readonly ToolCall[]): Score {
+  let cursor = 0;
+  for (const call of calls) {
+    if (cursor >= assertion.tools.length) break;
+    if (toolMatcher(assertion.tools[cursor] as string, assertion.match)(call.name)) cursor += 1;
+  }
+  const observed = calls.map((call) => call.name);
+  return score(
+    assertion,
+    verdictFor(cursor === assertion.tools.length),
+    observed,
+    `Expected tools in order ${assertion.tools.join(" > ")}, saw ${observed.join(" > ") || "(none)"}`,
+  );
+}
+
+function evaluateToolArgs(assertion: ToolArgsLocal, calls: readonly ToolCall[]): Score {
+  const candidates = matchingCalls(calls, assertion.tool, assertion.match);
+  const matched = candidates.some((call) => subsetMatches(assertion.equals, call.args));
+  const observed = candidates.map((call) => call.args);
+  return score(
+    assertion,
+    verdictFor(matched),
+    observed,
+    candidates.length === 0
+      ? `Expected ${assertion.tool} to be called with matching args, but it was never called`
+      : `Expected a ${assertion.tool} call with args matching ${JSON.stringify(assertion.equals)}`,
+  );
+}
+
 export function evaluateToolAssertion(
   assertion: ToolAssertionCheck,
   trajectory: Trajectory,
@@ -188,8 +226,9 @@ export function evaluateToolAssertion(
       return evaluateToolNotCalled(assertion, calls);
     case "tool_call_count":
       return evaluateToolCallCount(assertion, calls);
-    default:
-      // tool_order and tool_args are added in Task 6.
-      return skipScore(assertion);
+    case "tool_order":
+      return evaluateToolOrder(assertion, calls);
+    case "tool_args":
+      return evaluateToolArgs(assertion, calls);
   }
 }

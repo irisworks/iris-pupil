@@ -110,3 +110,116 @@ describe("tool_call_count", () => {
     expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Fail);
   });
 });
+
+describe("tool_order", () => {
+  it("passes on a subsequence with unrelated calls in between", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_order",
+      tools: ["search", "calendar.create"],
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Pass);
+  });
+
+  it("fails when the order is reversed", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_order",
+      tools: ["calendar.create", "search"],
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Fail);
+  });
+
+  it("requires two distinct calls when a tool is listed twice", () => {
+    const twice: ToolAssertionCheck = { type: "tool_order", tools: ["search", "search"] };
+    const thrice: ToolAssertionCheck = {
+      type: "tool_order",
+      tools: ["search", "search", "search"],
+    };
+    expect(evaluateToolAssertion(twice, trajectoryWith(calls)).verdict).toBe(Verdict.Pass);
+    expect(evaluateToolAssertion(thrice, trajectoryWith(calls)).verdict).toBe(Verdict.Fail);
+  });
+
+  it("fails when a listed tool never appears", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_order",
+      tools: ["search", "email.send"],
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Fail);
+  });
+
+  it("skips without evidence", () => {
+    const assertion: ToolAssertionCheck = { type: "tool_order", tools: ["search"] };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(undefined)).verdict).toBe(Verdict.Skip);
+  });
+});
+
+describe("tool_args", () => {
+  it("passes on a subset match, ignoring extra keys", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { title: "Standup" },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Pass);
+  });
+
+  it("fails when a listed value differs", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { title: "Retro" },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Fail);
+  });
+
+  it("fails when a listed key is absent", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { attendees: ["a@example.com"] },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Fail);
+  });
+
+  it("passes when any call to the tool matches", () => {
+    const multi: ToolCall[] = [
+      { name: "calendar.create", index: 0, args: { title: "Retro" } },
+      { name: "calendar.create", index: 1, args: { title: "Standup" } },
+    ];
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { title: "Standup" },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(multi)).verdict).toBe(Verdict.Pass);
+  });
+
+  it("fails when the tool was never called", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "email.send",
+      equals: { to: "a@example.com" },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(calls)).verdict).toBe(Verdict.Fail);
+  });
+
+  it("matches nested objects by subset", () => {
+    const nested: ToolCall[] = [
+      { name: "calendar.create", index: 0, args: { event: { title: "Standup", tz: "UTC" } } },
+    ];
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { event: { title: "Standup" } },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(nested)).verdict).toBe(Verdict.Pass);
+  });
+
+  it("skips without evidence", () => {
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { title: "Standup" },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(undefined)).verdict).toBe(Verdict.Skip);
+  });
+});
