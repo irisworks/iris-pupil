@@ -199,3 +199,261 @@ describe("IRIS mock agent", () => {
     await hangingRequest;
   });
 });
+
+describe("span store — session initialization", () => {
+  it("initialises span store with empty array when a session is created", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent({ port: 0 }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const session = await createSession(baseUrl);
+
+    expect(spanStore.has(session.sessionId)).toBe(true);
+    expect(spanStore.get(session.sessionId)).toEqual([]);
+  });
+
+  it("does not initialise span store when session creation fails", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent({ port: 0 }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}), // missing required fields
+    });
+
+    expect(response.status).toBe(400);
+    expect(spanStore.size).toBe(0);
+  });
+});
+
+describe("span store — trace pass on message", () => {
+  it("appends defaultToolCalls when no trace rule matches", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["search", "send"] }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "hello" }),
+    });
+
+    expect(spanStore.get(session.sessionId)).toEqual(["search", "send"]);
+  });
+
+  it("appends per-rule toolCalls when a trace rule matches by string", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent(
+      {
+        port: 0,
+        traceRules: [{ match: "book meeting", toolCalls: ["calendar_create"] }],
+      },
+      spanStore,
+    );
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "please book meeting for 3pm" }),
+    });
+
+    expect(spanStore.get(session.sessionId)).toEqual(["calendar_create"]);
+  });
+
+  it("appends per-rule toolCalls when a trace rule matches by regex", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent(
+      {
+        port: 0,
+        traceRules: [{ match: /order #\d+/i, toolCalls: ["order_lookup"] }],
+      },
+      spanStore,
+    );
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Check Order #99 status" }),
+    });
+
+    expect(spanStore.get(session.sessionId)).toEqual(["order_lookup"]);
+  });
+
+  it("appends nothing when no trace rule matches and no defaultToolCalls configured", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent({ port: 0 }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "hello" }),
+    });
+
+    expect(spanStore.get(session.sessionId)).toEqual([]);
+  });
+
+  // Rule matches but toolCalls is empty — agent ran but called nothing.
+  // Configures a trajectory where a tool_called assertion would fail.
+  it("trace rule with toolCalls: [] produces empty span list even when rule matches", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent(
+      {
+        port: 0,
+        traceRules: [{ match: "search", toolCalls: [] }],
+        defaultToolCalls: ["fallback_tool"], // should NOT be used — rule matched
+      },
+      spanStore,
+    );
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "search for news" }),
+    });
+
+    // Rule matched → defaultToolCalls is skipped → spans stay empty
+    expect(spanStore.get(session.sessionId)).toEqual([]);
+  });
+
+  it("spans accumulate across multiple turns in emission order", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent(
+      {
+        port: 0,
+        traceRules: [
+          { match: "search", toolCalls: ["web_search"] },
+          { match: "send", toolCalls: ["email_send"] },
+        ],
+      },
+      spanStore,
+    );
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "search for news" }),
+    });
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "send the results" }),
+    });
+
+    expect(spanStore.get(session.sessionId)).toEqual(["web_search", "email_send"]);
+  });
+
+  it("preserves out-of-order and repeated tool names exactly as configured", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent(
+      {
+        port: 0,
+        traceRules: [{ match: "multi", toolCalls: ["b_tool", "a_tool", "b_tool"] }],
+      },
+      spanStore,
+    );
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "multi tool request" }),
+    });
+
+    expect(spanStore.get(session.sessionId)).toEqual(["b_tool", "a_tool", "b_tool"]);
+  });
+
+  it("HTTP rule and trace rule matching are independent — trace rule matches even when HTTP rule does not", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent(
+      {
+        port: 0,
+        rules: [{ match: "http-keyword", reply: "http matched" }],
+        traceRules: [{ match: "trace-keyword", toolCalls: ["tracer"] }],
+      },
+      spanStore,
+    );
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    // "trace-keyword" matches trace rule but NOT http rule → default HTTP reply
+    const response = await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "trace-keyword" }),
+    });
+    const reply = (await response.json()) as { text: string };
+
+    expect(reply.text).toBe("Mock Iris received: trace-keyword");
+    expect(spanStore.get(session.sessionId)).toEqual(["tracer"]);
+  });
+
+  it("HTTP rule and trace rule matching are independent — HTTP rule matches even when trace rule does not", async () => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent(
+      {
+        port: 0,
+        rules: [{ match: "http-keyword", reply: "http matched" }],
+        traceRules: [{ match: "trace-keyword", toolCalls: ["tracer"] }],
+      },
+      spanStore,
+    );
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    // "http-keyword" matches HTTP rule but NOT trace rule → no spans
+    const response = await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "http-keyword" }),
+    });
+    const reply = (await response.json()) as { text: string };
+
+    expect(reply.text).toBe("http matched");
+    expect(spanStore.get(session.sessionId)).toEqual([]);
+  });
+
+  it.each([
+    ["__500__", 500],
+    ["__504__", 504],
+  ])("trace pass fires even when HTTP status is %s", async (text, expectedStatus) => {
+    const spanStore = new Map<string, string[]>();
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["attempted_tool"] }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    const response = await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+
+    expect(response.status).toBe(expectedStatus);
+    expect(spanStore.get(session.sessionId)).toEqual(["attempted_tool"]);
+  });
+});
