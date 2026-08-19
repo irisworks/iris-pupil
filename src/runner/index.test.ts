@@ -867,6 +867,111 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
     expect(result.metrics.tool_calls).toBe(2);
     expect(result.verdict).toBe(Verdict.Pass);
   });
+
+  it("places tool calls with full args onto trajectory.toolCalls, not just metrics", async () => {
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () =>
+        Promise.resolve({
+          traceCount: 1,
+          toolCalls: [{ name: "search", index: 0, args: { city: "NYC", limit: 5 } }],
+        }),
+    };
+
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls.length", equals: 1 },
+            {
+              type: "jsonpath",
+              target: "trajectory",
+              path: "$.toolCalls[0].name",
+              equals: "search",
+            },
+            {
+              type: "jsonpath",
+              target: "trajectory",
+              path: "$.toolCalls[0].args.city",
+              equals: "NYC",
+            },
+            {
+              type: "jsonpath",
+              target: "trajectory",
+              path: "$.toolCalls[0].args.limit",
+              equals: 5,
+            },
+          ],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: toolSource,
+      },
+    );
+
+    // Every assertion above reads trajectory.toolCalls, not result.metadata, so a
+    // regression that routes args through the names-only metadata path (instead of
+    // returning them from enrichWithTraceSource) would fail this test.
+    expect(result.verdict).toBe(Verdict.Pass);
+    for (const score of result.scores) {
+      expect(score.verdict).toBe(Verdict.Pass);
+    }
+  });
+
+  it("sets trajectory.toolCalls to [] (not undefined) when the source found evidence of no calls", async () => {
+    const emptySource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () => Promise.resolve({ traceCount: 1, toolCalls: [] }),
+    };
+
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls", exists: true },
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls.length", equals: 0 },
+          ],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: emptySource,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    for (const score of result.scores) {
+      expect(score.verdict).toBe(Verdict.Pass);
+    }
+  });
+
+  it("leaves trajectory.toolCalls undefined (not []) when there is no trace evidence", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls", exists: false },
+          ],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    for (const score of result.scores) {
+      expect(score.verdict).toBe(Verdict.Pass);
+    }
+  });
 });
 
 describe("progressEventTypeForVerdict", () => {
