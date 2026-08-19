@@ -65,6 +65,35 @@ describe("loadPupilConfig", () => {
     });
   });
 
+  it("resolves an unresolved ${VAR:-false} template for requireTrace to false, not true", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "scenarios: examples/scenarios\nrequireTrace: ${PUPIL_REQUIRE_TRACE:-false}\n",
+      "utf8",
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, env: {} });
+
+    expect(config.requireTrace).toBe(false);
+  });
+
+  it("resolves a ${VAR:-false} template for requireTrace to true when the env var is set to true", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "scenarios: examples/scenarios\nrequireTrace: ${PUPIL_REQUIRE_TRACE:-false}\n",
+      "utf8",
+    );
+
+    const config = await loadPupilConfig({
+      cwd: tmpRoot,
+      env: { PUPIL_REQUIRE_TRACE: "true" },
+    });
+
+    expect(config.requireTrace).toBe(true);
+  });
+
   it("fails when an explicit config path does not exist", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
 
