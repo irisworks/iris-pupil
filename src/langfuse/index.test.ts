@@ -306,7 +306,7 @@ describe("Langfuse payload extraction", () => {
       toolCalls: [{ name: "calendar.create", index: 0 }],
     });
   });
-  it("collects tool names from toolCalls arrays", () => {
+  it("collects tool calls from toolCalls arrays in payload order, without deduplicating", () => {
     expect(
       extractLangfuseEnrichment({
         traces: [
@@ -326,12 +326,121 @@ describe("Langfuse payload extraction", () => {
     ).toEqual([
       { name: "notify", index: 0 },
       { name: "search", index: 1 },
+      { name: "search", index: 2 },
     ]);
   });
 
   it("returns undefined when the session has no traces", () => {
     expect(extractLangfuseEnrichment({ id: "session-1", traces: [] })).toBeUndefined();
     expect(extractLangfuseEnrichment(undefined)).toBeUndefined();
+  });
+});
+
+describe("extractToolCalls via extractLangfuseEnrichment", () => {
+  it("orders tool calls by startTime rather than alphabetically", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        { id: "o1", type: "TOOL", name: "search", startTime: "2026-08-19T10:00:02.000Z" },
+        { id: "o2", type: "TOOL", name: "calendar.create", startTime: "2026-08-19T10:00:01.000Z" },
+      ],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment?.toolCalls.map((c) => c.name)).toEqual(["calendar.create", "search"]);
+    expect(enrichment?.toolCalls.map((c) => c.index)).toEqual([0, 1]);
+  });
+
+  it("preserves duplicate tool calls instead of collapsing them", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        { id: "o1", type: "TOOL", name: "search", startTime: "2026-08-19T10:00:01.000Z" },
+        { id: "o2", type: "TOOL", name: "search", startTime: "2026-08-19T10:00:02.000Z" },
+        { id: "o3", type: "TOOL", name: "search", startTime: "2026-08-19T10:00:03.000Z" },
+      ],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment?.toolCalls).toHaveLength(3);
+  });
+
+  it("keeps payload order when startTime is absent", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        { id: "o1", type: "TOOL", name: "zebra" },
+        { id: "o2", type: "TOOL", name: "apple" },
+      ],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment?.toolCalls.map((c) => c.name)).toEqual(["zebra", "apple"]);
+  });
+
+  it("reads args from an observation input object", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        {
+          id: "o1",
+          type: "TOOL",
+          name: "calendar.create",
+          input: { title: "Standup", tz: "UTC" },
+        },
+      ],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment?.toolCalls[0]?.args).toEqual({ title: "Standup", tz: "UTC" });
+  });
+
+  it("parses args from a JSON string in function.arguments", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        {
+          id: "o1",
+          type: "GENERATION",
+          name: "llm",
+          toolCalls: [{ function: { name: "calendar.create", arguments: '{"title":"Standup"}' } }],
+        },
+      ],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment?.toolCalls[0]?.name).toBe("calendar.create");
+    expect(enrichment?.toolCalls[0]?.args).toEqual({ title: "Standup" });
+  });
+
+  it("returns an empty array, not undefined, when a trace has no tool calls", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [{ id: "o1", type: "GENERATION", name: "llm" }],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment).toBeDefined();
+    expect(enrichment?.toolCalls).toEqual([]);
+  });
+
+  it("captures a tool error when the observation reports one", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        { id: "o1", type: "TOOL", name: "email.send", level: "ERROR", statusMessage: "smtp down" },
+      ],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment?.toolCalls[0]?.error).toBe("smtp down");
   });
 });
 
