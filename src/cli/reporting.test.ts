@@ -302,6 +302,20 @@ describe("buildStepSummaryMarkdown", () => {
 
     expect(buildStepSummaryMarkdown(run, {})).not.toContain("no trace evidence");
   });
+
+  it("pluralizes the warning when more than one tool assertion is skipped", () => {
+    const otherToolSkipScore = {
+      name: "assertion:tool_called:email.send",
+      verdict: Verdict.Skip,
+      reason: "No tool call evidence available",
+      metadata: { skipped: "no_tool_evidence" },
+    };
+    const run = runResult({}, [scenarioResult({ scores: [toolSkipScore, otherToolSkipScore] })]);
+
+    expect(buildStepSummaryMarkdown(run, {})).toContain(
+      "2 tool assertions skipped — no trace evidence",
+    );
+  });
 });
 
 describe("countToolEvidenceSkips", () => {

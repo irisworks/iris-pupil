@@ -228,6 +228,71 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
+  it("warns in the plain terminal summary when a tool assertion is skipped for missing trace evidence", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "online" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-tool-skip-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-tool-skip",
+          "name: CLI run tool skip",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: tool_called",
+          "      tool: calendar.create",
+          "",
+        ].join("\n"),
+      );
+      // An explicit, minimal config (rather than falling back to the ambient
+      // pupil.config.yaml at the repo root) keeps this test isolated from
+      // whatever `requireTrace` value the surrounding project happens to have
+      // configured, so the assertion is guaranteed to skip rather than fail.
+      await writeFile(configPath, ["scenarios: examples/scenarios", ""].join("\n"));
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--config",
+          configPath,
+          "--base-url",
+          `http://${address.host}:${address.port}`,
+          "--origin-thread-ts",
+          "thread-1",
+          "--history-dir",
+          historyDir,
+          "--no-langfuse",
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      expect(output.stdout).toContain("PASS cli-run-tool-skip");
+      expect(output.stdout).toContain(
+        "WARNING: 1 tool assertion skipped — no trace evidence. Run with --require-trace to fail instead of skipping.",
+      );
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("runs scenarios using driver and history settings from --config", async () => {
     const mock = createIrisMockAgent({
       port: 0,

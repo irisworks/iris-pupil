@@ -26,6 +26,7 @@ import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import {
   buildRunJson,
   buildStepSummaryMarkdown,
+  countToolEvidenceSkips,
   formatJUnitXml,
   isStrictFailure,
 } from "./reporting.js";
@@ -432,6 +433,13 @@ program
         console.log(
           `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
         );
+        const toolSkips = countToolEvidenceSkips(result);
+        if (toolSkips > 0) {
+          console.log(
+            `WARNING: ${toolSkips} tool assertion${toolSkips === 1 ? "" : "s"} skipped — no trace evidence. ` +
+              "Run with --require-trace to fail instead of skipping.",
+          );
+        }
         if (comparison) {
           process.stdout.write(formatRunComparison(comparison));
         }
