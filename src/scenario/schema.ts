@@ -13,15 +13,32 @@ const driverSchema = z
   .strict()
   .default({ type: "rest", config: {} });
 
-const textAssertionSchema = z
-  .object({
-    type: z.enum(["contains", "not_contains", "equals", "regex"]),
-    target: z.string().min(1).default("response.text"),
-    value: z.string(),
-    caseSensitive: z.boolean().default(false),
-  })
-  .strict();
+/**
+ * One schema per text-assertion `type` literal (rather than a single schema
+ * with `type: z.enum([...])`) so every variant can sit directly in the flat
+ * `z.discriminatedUnion` below. A shared enum field can't serve as a
+ * discriminated union's discriminant because each branch of a discriminated
+ * union must carry its own single literal value.
+ */
+function textAssertionVariant<T extends string>(type: T) {
+  return z
+    .object({
+      type: z.literal(type),
+      target: z.string().min(1).default("response.text"),
+      value: z.string(),
+      caseSensitive: z.boolean().default(false),
+    })
+    .strict();
+}
 
+const containsSchema = textAssertionVariant("contains");
+const notContainsSchema = textAssertionVariant("not_contains");
+const equalsSchema = textAssertionVariant("equals");
+const regexSchema = textAssertionVariant("regex");
+
+// No `.refine()` here (that would produce a `ZodEffects`, which
+// `z.discriminatedUnion` can't accept as a branch) - the equals/exists
+// requirement is enforced by the `superRefine` on `assertionSchema` below.
 const jsonPathAssertionSchema = z
   .object({
     type: z.literal("jsonpath"),
@@ -30,10 +47,7 @@ const jsonPathAssertionSchema = z
     equals: z.unknown().optional(),
     exists: z.boolean().optional(),
   })
-  .strict()
-  .refine((value) => value.equals !== undefined || value.exists !== undefined, {
-    message: "jsonpath assertion requires equals or exists",
-  });
+  .strict();
 
 const toolNameMatchSchema = z.enum(["exact", "glob"]).default("exact");
 
@@ -54,6 +68,8 @@ const toolNotCalledSchema = z
   })
   .strict();
 
+// Same reasoning as `jsonPathAssertionSchema`: the min/max requirement moves
+// to the outer `superRefine` so this stays a plain object schema.
 const toolCallCountSchema = z
   .object({
     type: z.literal("tool_call_count"),
@@ -62,10 +78,7 @@ const toolCallCountSchema = z
     min: z.number().int().nonnegative().optional(),
     max: z.number().int().nonnegative().optional(),
   })
-  .strict()
-  .refine((value) => value.min !== undefined || value.max !== undefined, {
-    message: "tool_call_count requires at least one of min or max",
-  });
+  .strict();
 
 const toolOrderSchema = z
   .object({
@@ -85,22 +98,41 @@ const toolArgsSchema = z
   .strict();
 
 /**
- * Discriminated on `type` so a malformed tool assertion produces one error
- * pointing at the branch the author meant, instead of one error per branch.
+ * A single flat `z.discriminatedUnion` over all ten `type` literals (the
+ * seven assertion shapes, with the four text-assertion types counted once
+ * each). Zod resolves a discriminated union by reading `type` and parsing
+ * only the matching branch, so a malformed assertion produces exactly the
+ * issues from the branch the author meant - never noise from unrelated
+ * branches, and never the opaque `invalid_union` wrapper a plain `z.union`
+ * (or a discriminated union nested inside one) would produce instead.
  */
-const toolAssertionSchema = z.discriminatedUnion("type", [
-  toolCalledSchema,
-  toolNotCalledSchema,
-  toolOrderSchema,
-  toolArgsSchema,
-]);
-
-const assertionSchema = z.union([
-  toolAssertionSchema,
-  toolCallCountSchema,
-  textAssertionSchema,
-  jsonPathAssertionSchema,
-]);
+const assertionSchema = z
+  .discriminatedUnion("type", [
+    containsSchema,
+    notContainsSchema,
+    equalsSchema,
+    regexSchema,
+    jsonPathAssertionSchema,
+    toolCalledSchema,
+    toolNotCalledSchema,
+    toolCallCountSchema,
+    toolOrderSchema,
+    toolArgsSchema,
+  ])
+  .superRefine((value, ctx) => {
+    if (value.type === "jsonpath" && value.equals === undefined && value.exists === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "jsonpath assertion requires equals or exists",
+      });
+    }
+    if (value.type === "tool_call_count" && value.min === undefined && value.max === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "tool_call_count requires at least one of min or max",
+      });
+    }
+  });
 
 const turnSchema = z
   .object({
@@ -238,50 +270,16 @@ export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
   };
 }
 
-type FlatIssue = { path: (string | number)[]; message: string };
-
-/**
- * `z.union` reports failures as a single `invalid_union` issue carrying one
- * `ZodError` per branch, rather than surfacing the branch the author meant.
- * For the tool/text/jsonpath assertion union, the branch whose `type` field
- * actually matched is the one worth surfacing; branches that failed only
- * because `type` didn't match are discriminator noise, not real errors.
- */
-function expandIssue(issue: ZodError["issues"][number]): FlatIssue[] {
-  if (issue.code === "invalid_union") {
-    // Each branch's issues already carry the full path from the parse root
-    // (not relative to the union), so no path prefix needs to be added here.
-    const branches = issue.unionErrors;
-    const matchedBranches = branches.filter(
-      (branchError) =>
-        !branchError.issues.some(
-          (branchIssue) =>
-            branchIssue.path[branchIssue.path.length - 1] === "type" &&
-            (branchIssue.code === "invalid_literal" || branchIssue.code === "invalid_enum_value"),
-        ),
-    );
-    const chosen =
-      matchedBranches.length === 1
-        ? matchedBranches[0].issues
-        : branches.flatMap((branchError) => branchError.issues);
-
-    return chosen.flatMap((subIssue) => expandIssue(subIssue));
-  }
-
-  return [{ path: issue.path, message: issue.message }];
-}
-
 export function formatScenarioValidationError(
   error: ZodError,
   file?: string,
   pathPrefix: string[] = [],
 ): PupilError {
   const details = error.issues
-    .flatMap((issue) => expandIssue(issue))
-    .map(({ path, message }) => {
-      const fullPath = [...pathPrefix, ...path];
-      const fullPathString = fullPath.length > 0 ? fullPath.join(".") : "<root>";
-      return `${file ? `${file}:` : ""}${fullPathString}: ${message}`;
+    .map((issue) => {
+      const fullPath = [...pathPrefix, ...issue.path];
+      const path = fullPath.length > 0 ? fullPath.join(".") : "<root>";
+      return `${file ? `${file}:` : ""}${path}: ${issue.message}`;
     })
     .join("\n");
 

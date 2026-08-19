@@ -214,4 +214,56 @@ describe("normalizeScenario", () => {
       }),
     ).toThrowError();
   });
+
+  it("reports a single clear error for a jsonpath assertion missing a required field, uncontaminated by tool branches", () => {
+    let thrown: unknown;
+    try {
+      normalizeScenario(
+        {
+          id: "bad-jsonpath-field",
+          input: "hi",
+          expect: { assertions: [{ type: "jsonpath", target: "response.raw" }] },
+        },
+        "bad.yaml",
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    const detailLines = message.split("\n").slice(1);
+
+    expect(detailLines).toHaveLength(1);
+    expect(detailLines[0]).toMatch(/bad\.yaml:expect\.assertions\.0\.path/);
+    expect(message).not.toMatch(/tool_call_count/);
+    expect(message).not.toMatch(/tool_called/);
+    expect(message).not.toMatch(/discriminator/i);
+  });
+
+  it("reports a single clear error for a contains assertion missing a required field, uncontaminated by tool branches", () => {
+    let thrown: unknown;
+    try {
+      normalizeScenario(
+        {
+          id: "bad-contains-field",
+          input: "hi",
+          expect: { assertions: [{ type: "contains", target: "response.text" }] },
+        },
+        "bad.yaml",
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    const detailLines = message.split("\n").slice(1);
+
+    expect(detailLines).toHaveLength(1);
+    expect(detailLines[0]).toMatch(/bad\.yaml:expect\.assertions\.0\.value/);
+    expect(message).not.toMatch(/tool_call_count/);
+    expect(message).not.toMatch(/tool_called/);
+    expect(message).not.toMatch(/discriminator/i);
+  });
 });
