@@ -713,6 +713,742 @@ describe("pupil CLI", () => {
       await new Promise((resolve) => child.once("exit", resolve));
     }
   }, 15000);
+
+  it("prints machine-readable JSON on stdout under --json, with progress on stderr", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-json",
+          "name: CLI run json",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--base-url",
+          `http://${address.host}:${address.port}`,
+          "--origin-thread-ts",
+          "thread-1",
+          "--history-dir",
+          historyDir,
+          "--json",
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toContain("START cli-run-json");
+      expect(output.stderr).toContain("PASS cli-run-json");
+      expect(output.stdout).not.toContain("START");
+
+      const parsed = JSON.parse(output.stdout);
+      expect(parsed).toMatchObject({
+        verdict: "pass",
+        strict: false,
+        scenarios: [{ scenarioId: "cli-run-json", verdict: "pass" }],
+      });
+      expect(parsed.historyPath).toContain(historyDir);
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("fails under --strict when the verdict is needs_review, and not otherwise", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-strict",
+          "name: CLI run strict",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  manual:",
+          "    required: true",
+          "",
+        ].join("\n"),
+      );
+
+      const lenient = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+      expect(lenient.code).toBe(0);
+      expect(lenient.stdout).toContain("REVIEW cli-run-strict");
+
+      const strict = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-2",
+            "--history-dir",
+            historyDir,
+            "--strict",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+      expect(strict.code).toBe(1);
+      expect(strict.stdout).toContain("REVIEW cli-run-strict");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("writes a JUnit XML report under --junit", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+    const junitPath = join(dir, "junit.xml");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-junit",
+          "name: CLI run junit",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--junit",
+            junitPath,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+      expect(output.code).toBe(0);
+
+      const xml = await readFile(junitPath, "utf-8");
+      expect(xml).toContain('<testsuite name="pupil" tests="1" failures="0" errors="0"');
+      expect(xml).toContain('<testcase name="cli-run-junit"');
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("run --baseline skips comparison with no baseline set, then gates on regression once one is", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "online" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-baseline",
+          "name: CLI run baseline",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: online",
+          "",
+        ].join("\n"),
+      );
+
+      const first = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            baseUrl,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--baseline",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+      expect(first.code).toBe(0);
+      expect(first.stderr).toContain("no baseline run is set");
+      const firstRunId = /Run ([^:]+):/.exec(first.stdout)?.[1];
+      expect(firstRunId).toBeDefined();
+
+      const setBaseline = spawnSync(
+        process.execPath,
+        [cliPath, "baseline", firstRunId as string, "--history-dir", historyDir],
+        { encoding: "utf-8" },
+      );
+      expect(setBaseline.status).toBe(0);
+
+      await mock.close();
+      const failingMock = createIrisMockAgent({
+        port: address.port,
+        rules: [{ match: "hello", reply: "offline" }],
+      });
+      await failingMock.listen();
+
+      try {
+        const second = await waitForCli(
+          spawn(
+            process.execPath,
+            [
+              cliPath,
+              "run",
+              scenarioPath,
+              "--base-url",
+              baseUrl,
+              "--origin-thread-ts",
+              "thread-2",
+              "--history-dir",
+              historyDir,
+              "--baseline",
+              "--json",
+            ],
+            { stdio: ["ignore", "pipe", "pipe"] },
+          ),
+        );
+        expect(second.code).toBe(1);
+        const parsed = JSON.parse(second.stdout);
+        expect(parsed.baseline).toMatchObject({ baseRunId: firstRunId, hasRegressions: true });
+      } finally {
+        await failingMock.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  it("warns on stderr and reports status not_set when --baseline finds no baseline", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-no-baseline",
+          "name: CLI run no baseline",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toContain("no baseline run is set");
+
+      const payload = JSON.parse(output.stdout) as { baseline?: { status: string } };
+      expect(payload.baseline).toEqual({ status: "not_set" });
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("appends a run summary to $GITHUB_STEP_SUMMARY when it is set", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+    const summaryPath = join(dir, "step-summary.md");
+    await writeFile(summaryPath, "");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-summary",
+          "name: CLI run summary",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+          ],
+          {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, GITHUB_STEP_SUMMARY: summaryPath },
+          },
+        ),
+      );
+      expect(output.code).toBe(0);
+
+      const summary = await readFile(summaryPath, "utf-8");
+      expect(summary).toContain("## Pupil run `");
+      expect(summary).toContain("**Verdict:** pass");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("creates missing parent directories for the --junit report path", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+    const junitPath = join(dir, "reports", "nested", "junit.xml");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-junit-nested",
+          "name: CLI run junit nested",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--junit",
+            junitPath,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(await readFile(junitPath, "utf-8")).toContain('<testsuite name="pupil"');
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("warns but still succeeds when the step summary path is unwritable", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-summary-failure",
+          "name: CLI run summary failure",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+          ],
+          {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, GITHUB_STEP_SUMMARY: join(dir, "missing", "summary.md") },
+          },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toContain("failed to write the GitHub step summary");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("accepts an explicit --config path on run", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "custom.config.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-config",
+          "name: CLI run config",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 50", ""].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--config",
+            configPath,
+            "--base-url",
+            `http://${address.host}:${address.port}`,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).not.toContain("unknown option");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("applies the config compare threshold when gating compare", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-compare-"));
+    const historyDir = join(dir, "history");
+    const configPath = join(dir, "custom.config.yaml");
+
+    try {
+      await writeCompareRuns(historyDir, { latencyMs: 1500 });
+      await writeFile(
+        configPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 100", ""].join("\n"),
+      );
+
+      const tolerant = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "compare",
+            "base-run",
+            "current-run",
+            "--history-dir",
+            historyDir,
+            "--config",
+            configPath,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(tolerant.code).toBe(0);
+      expect(tolerant.stdout).not.toContain("REGRESSION");
+
+      const strictConfig = join(dir, "strict.config.yaml");
+      await writeFile(
+        strictConfig,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 10", ""].join("\n"),
+      );
+
+      const strict = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "compare",
+            "base-run",
+            "current-run",
+            "--history-dir",
+            historyDir,
+            "--config",
+            strictConfig,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(strict.code).toBe(1);
+      expect(strict.stdout).toContain("REGRESSION");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("applies the config compare threshold when gating run --baseline", async () => {
+    // A slow baseline lets the mock agent's response delay push the current
+    // run's measured latency comfortably past a strict threshold while
+    // staying comfortably under a tolerant one, regardless of scheduling
+    // jitter in the child process.
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "online" }],
+      defaultDelayMs: 500,
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-baseline-config-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const historyDir = join(dir, "history");
+    const tolerantConfigPath = join(dir, "tolerant.config.yaml");
+    const strictConfigPath = join(dir, "strict.config.yaml");
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-baseline-config",
+          "name: CLI run baseline config",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: online",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        tolerantConfigPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 2000", ""].join("\n"),
+      );
+      await writeFile(
+        strictConfigPath,
+        ["scenarios: examples/scenarios", "compare:", "  latencyThresholdPct: 5", ""].join("\n"),
+      );
+
+      const store = new JsonRunHistoryStore({ dir: historyDir });
+      const baselineRun: RunResult = {
+        runId: "baseline-run",
+        verdict: Verdict.Pass,
+        results: [
+          {
+            scenarioId: "cli-run-baseline-config",
+            scenarioName: "CLI run baseline config",
+            verdict: Verdict.Pass,
+            scores: [
+              {
+                name: "assertion:contains:response.text",
+                verdict: Verdict.Pass,
+                reason: "Expected response.text to contain online",
+                metadata: {},
+              },
+            ],
+            turns: [],
+            startedAt: "2026-07-27T00:00:00.000Z",
+            completedAt: "2026-07-27T00:00:00.050Z",
+            metrics: { turns: 1, latency_ms: 50 },
+          },
+        ],
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:00:00.050Z",
+        summary: { total: 1, passed: 1, failed: 0, needsReview: 0, errors: 0 },
+        metadata: {},
+      };
+      await store.writeRun(baselineRun);
+      await store.setBaseline("baseline-run");
+
+      const tolerant = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            baseUrl,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--config",
+            tolerantConfigPath,
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(tolerant.code).toBe(0);
+      const tolerantPayload = JSON.parse(tolerant.stdout) as {
+        baseline?: { status: string; hasRegressions?: boolean };
+      };
+      expect(tolerantPayload.baseline).toMatchObject({ status: "compared", hasRegressions: false });
+
+      const strict = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            baseUrl,
+            "--origin-thread-ts",
+            "thread-2",
+            "--history-dir",
+            historyDir,
+            "--config",
+            strictConfigPath,
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(strict.code).toBe(1);
+      const strictPayload = JSON.parse(strict.stdout) as {
+        baseline?: { status: string; hasRegressions?: boolean };
+      };
+      expect(strictPayload.baseline).toMatchObject({ status: "compared", hasRegressions: true });
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
 });
 
 describe("run command target flags", () => {

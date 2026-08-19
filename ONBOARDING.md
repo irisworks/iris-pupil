@@ -197,6 +197,48 @@ belongs to the pipeline and the agent's repo respectively. If an agent can't be 
 deterministic test configuration from its own repo, that's a defect in that repo — not something
 Pupil should paper over.
 
+### Gating a CI pipeline
+
+A single `pupil run --baseline` is enough to gate a pipeline: it auto-compares against the
+stored `.pupil/baseline` run and exits 1 on regression, on top of the existing exit-1-on-fail
+behavior. Add `--strict` to also fail on `needs_review`, `--json` for a machine-readable summary
+(see `src/cli/reporting.ts` for the stable `RunJsonOutput` shape), and `--junit` for a report
+GitHub Actions' test reporting can parse. A `$GITHUB_STEP_SUMMARY` markdown summary is written
+automatically whenever that variable is set — no flag needed.
+
+```yaml
+# .github/workflows/pupil-pr.yml
+name: pupil
+on: pull_request
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci && npm run build
+      - run: mkdir -p .pupil
+      - run: |
+          node dist/cli/index.js run evals/flows \
+            --config evals/pupil.config.yaml \
+            --history-dir .pupil \
+            --baseline --strict --json --junit .pupil/junit.xml \
+            > .pupil/run.json
+      - uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Pupil scenarios
+          path: .pupil/junit.xml
+          reporter: java-junit
+```
+
+`--baseline` compares against the run id stored in `.pupil/baseline`, so that pointer and the run
+it names have to survive between CI runs. Pupil gitignores `.pupil/` for its own development, so a
+consuming repo has to choose one of: commit `.pupil/baseline` and the baseline run JSON, restore
+`.pupil/` from an `actions/cache` step, or download it from a build artifact. Without one of those,
+`run --baseline` warns on stderr that no baseline is set and gates on the run's own verdict only.
+
 ---
 
 ## 7. Working here

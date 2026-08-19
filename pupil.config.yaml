@@ -30,3 +30,9 @@ langfuse:
 #   environment: ${DEPLOY_ENV:-} # staging | production | pr-123 (optional)
 #   version: ${DEPLOY_SHA:-}     # git SHA, semver tag, or build ID — never a mutable label
 #   fixtureSet: live             # live | stubbed-<name> (optional; guards against fixture contamination)
+
+# Regression thresholds for `pupil compare` and `pupil run --baseline`. Both
+# commands read this block, so they always agree. `latencyThresholdPct` is a
+# percent (20 means 20%) and defaults to 20 when unset. CLI flags override it.
+compare:
+  latencyThresholdPct: ${PUPIL_LATENCY_THRESHOLD_PCT:-20}

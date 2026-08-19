@@ -1,47 +1,31 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Verdict, type RunResult, type ScenarioResult } from "../core/types.js";
 import {
-  enrichRunWithLangfuse,
-  enrichScenarioWithLangfuse,
   extractLangfuseEnrichment,
   langfuseConfigFromEnv,
+  LangfuseTraceSource,
   resolveLangfuseConfig,
 } from "./index.js";
 
 let server: Server | undefined;
 
-function scenarioResult(overrides: Partial<ScenarioResult> = {}): ScenarioResult {
-  return {
-    scenarioId: "scenario-1",
-    scenarioName: "Scenario 1",
-    verdict: Verdict.Pass,
-    scores: [],
-    turns: [],
-    startedAt: "2026-07-30T00:00:00.000Z",
-    completedAt: "2026-07-30T00:00:01.000Z",
-    metrics: { turns: 1, latency_ms: 1000 },
-    metadata: { sessionId: "session-1" },
-    ...overrides,
-  };
-}
-
-function runResult(results: ScenarioResult[] = [scenarioResult()]): RunResult {
-  return {
-    runId: "run-1",
-    verdict: Verdict.Pass,
-    startedAt: "2026-07-30T00:00:00.000Z",
-    completedAt: "2026-07-30T00:00:01.000Z",
-    results,
-    summary: {
-      total: results.length,
-      passed: results.length,
-      failed: 0,
-      needsReview: 0,
-      errors: 0,
-    },
-    metadata: {},
-  };
+/**
+ * Fetch stub for the polling tests: records the timestamp of each session-listing
+ * request and reports a trace only once `ready()` says ingestion has caught up.
+ */
+function pollingFetch(calls: number[], ready: () => boolean): typeof fetch {
+  return (async (url: string | URL) => {
+    if (String(url).includes("/api/public/traces/trace-1")) {
+      return { ok: true, status: 200, json: async () => ({ id: "trace-1", totalCost: 0.004 }) };
+    }
+    calls.push(Date.now());
+    const found = ready();
+    return {
+      ok: true,
+      status: 200,
+      json: async () => (found ? { data: [{ id: "trace-1" }] } : { data: [] }),
+    };
+  }) as unknown as typeof fetch;
 }
 
 interface StubbedServer {
@@ -345,17 +329,25 @@ describe("Langfuse payload extraction", () => {
   });
 });
 
-describe("Langfuse enrichment", () => {
-  it("skips cleanly when Langfuse is not configured", async () => {
-    const run = runResult();
-
-    await expect(enrichRunWithLangfuse(run, { env: {} })).resolves.toBe(run);
-    expect(run.results[0]?.metrics).toEqual({ turns: 1, latency_ms: 1000 });
-    expect(run.results[0]?.metadata).toEqual({ sessionId: "session-1" });
-    expect(run.metadata).toEqual({});
+describe("LangfuseTraceSource lookup", () => {
+  it("is undefined when Langfuse is not configured", () => {
+    expect(LangfuseTraceSource.fromSettings(undefined, {})).toBeUndefined();
   });
 
-  it("enriches run results from Langfuse trace lookup", async () => {
+  it("is undefined when settings disable it, even with a fully configured environment", () => {
+    expect(
+      LangfuseTraceSource.fromSettings(
+        { enabled: false },
+        {
+          LANGFUSE_HOST: "http://langfuse.local",
+          LANGFUSE_PUBLIC_KEY: "pk",
+          LANGFUSE_SECRET_KEY: "sk",
+        },
+      ),
+    ).toBeUndefined();
+  });
+
+  it("authenticates and queries the session traces endpoint", async () => {
     const stub = await stubSession(
       { data: [{ id: "trace-1", sessionId: "session-1" }] },
       {
@@ -366,9 +358,10 @@ describe("Langfuse enrichment", () => {
         observations: [{ id: "obs-1", type: "tool", name: "calendar.create" }],
       },
     );
-    const run = runResult();
 
-    await enrichRunWithLangfuse(run, { config: config(stub.baseUrl), waitMs: 0 });
+    const record = await new LangfuseTraceSource(config(stub.baseUrl), undefined, {
+      waitMs: 0,
+    }).resolve("session-1");
 
     expect(stub.requests).toHaveLength(2);
     expect(stub.requests[0]?.url).toContain("/api/public/traces");
@@ -377,29 +370,19 @@ describe("Langfuse enrichment", () => {
     expect(stub.requests[0]?.authorization).toBe(
       `Basic ${Buffer.from("pk-test:sk-test").toString("base64")}`,
     );
-    expect(run.results[0]?.metrics).toMatchObject({
-      cost_usd: 0.012,
-      input_tokens: 10,
-      output_tokens: 5,
-      total_tokens: 15,
-      tool_calls: 1,
-    });
-    expect(run.results[0]?.metadata?.langfuse).toEqual({
-      status: "enriched",
-      sessionId: "session-1",
+    expect(record).toEqual({
       traceId: "trace-1",
       traceUrl: "http://langfuse.local/project/traces/trace-1",
+      traceCount: 1,
+      costUsd: 0.012,
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
       toolCalls: ["calendar.create"],
-    });
-    expect(run.metadata.langfuse).toEqual({
-      status: "enriched",
-      enriched: 1,
-      skipped: 0,
-      failed: 0,
     });
   });
 
-  it("enriches from trace detail returned for a session trace", async () => {
+  it("reads figures from trace detail observations", async () => {
     const stub = await stubSession(
       { data: [{ id: "trace-1", sessionId: "session-1" }] },
       {
@@ -420,85 +403,59 @@ describe("Langfuse enrichment", () => {
         ],
       },
     );
-    const result = scenarioResult();
 
-    await expect(
-      enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 }),
-    ).resolves.toBe("enriched");
+    const record = await new LangfuseTraceSource(config(stub.baseUrl), undefined, {
+      waitMs: 0,
+    }).resolve("session-1");
 
     expect(stub.requests).toHaveLength(2);
-    expect(stub.requests[0]?.url).toContain("/api/public/traces");
-    expect(stub.requests[0]?.url).toContain("sessionId=session-1");
-    expect(stub.requests[1]?.url).toContain("/api/public/traces/trace-1");
-    expect(result.metrics).toMatchObject({
-      cost_usd: 0.007,
-      input_tokens: 12,
-      output_tokens: 4,
-      total_tokens: 16,
-      tool_calls: 1,
-    });
-    expect(result.metadata?.langfuse).toEqual({
-      status: "enriched",
-      sessionId: "session-1",
+    expect(record).toMatchObject({
       traceId: "trace-1",
       traceUrl: `${stub.baseUrl}/trace/trace-1`,
+      costUsd: 0.007,
+      inputTokens: 12,
+      outputTokens: 4,
+      totalTokens: 16,
       toolCalls: ["calendar.create"],
     });
   });
+
   it("polls until an asynchronously ingested trace appears", async () => {
     const stub = await stubSession(
       { id: "session-1", traces: [] },
       { data: [{ id: "trace-1", sessionId: "session-1" }] },
       { id: "trace-1", totalCost: 0.004 },
     );
-    const result = scenarioResult();
 
-    await expect(
-      enrichScenarioWithLangfuse(result, {
-        config: config(stub.baseUrl),
-        waitMs: 2000,
-        pollIntervalMs: 1,
-      }),
-    ).resolves.toBe("enriched");
+    const record = await new LangfuseTraceSource(config(stub.baseUrl), undefined, {
+      waitMs: 2000,
+      initialBackoffMs: 1,
+    }).resolve("session-1");
 
     expect(stub.requests.length).toBeGreaterThanOrEqual(2);
-    expect(result.metrics.cost_usd).toBe(0.004);
+    expect(record?.costUsd).toBe(0.004);
   });
 
   it("tries once immediately before waiting for the remaining initial delay", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-30T00:00:10.000Z"));
     const calls: number[] = [];
-    const result = scenarioResult();
     const startedAt = Date.now() - 5000;
 
-    const promise = enrichScenarioWithLangfuse(result, {
-      config: config("http://langfuse.local"),
-      startedAt,
-      initialDelayMs: 8000,
-      waitMs: 10000,
-      pollIntervalMs: 1000,
-      fetchImpl: (async (url: string) => {
-        calls.push(Date.now());
-        return {
-          ok: true,
-          status: 200,
-          json: async () => {
-            if (String(url).includes("/api/public/traces/trace-1")) {
-              return { id: "trace-1", totalCost: 0.004 };
-            }
-            return calls.length === 1 ? { data: [] } : { data: [{ id: "trace-1" }] };
-          },
-        };
-      }) as unknown as typeof fetch,
-    });
+    const source = new LangfuseTraceSource(
+      config("http://langfuse.local"),
+      pollingFetch(calls, () => calls.length > 1),
+      { initialDelayMs: 8000, waitMs: 10000, initialBackoffMs: 1000 },
+    );
+    const promise = source.resolve("session-1", { startedAt });
 
     await vi.advanceTimersByTimeAsync(0);
     expect(calls).toEqual([Date.parse("2026-07-30T00:00:10.000Z")]);
     await vi.advanceTimersByTimeAsync(2999);
     expect(calls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
-    await expect(promise).resolves.toBe("enriched");
+    await expect(promise).resolves.toMatchObject({ costUsd: 0.004 });
+    // 5s of the 8s ingestion delay was spent running the scenario, so only 3s remained.
     expect(calls[1]).toBe(startedAt + 8000);
   });
 
@@ -506,138 +463,116 @@ describe("Langfuse enrichment", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-30T00:00:10.000Z"));
     const calls: number[] = [];
-    const result = scenarioResult();
 
-    const promise = enrichScenarioWithLangfuse(result, {
-      config: config("http://langfuse.local"),
-      startedAt: Date.now() - 9000,
-      initialDelayMs: 8000,
-      waitMs: 15000,
-      pollIntervalMs: 1000,
-      fetchImpl: (async (url: string) => {
-        calls.push(Date.now());
-        return {
-          ok: true,
-          status: 200,
-          json: async () =>
-            String(url).includes("/api/public/traces/trace-1")
-              ? { id: "trace-1", totalCost: 0.004 }
-              : { data: [{ id: "trace-1" }] },
-        };
-      }) as unknown as typeof fetch,
-    });
+    const source = new LangfuseTraceSource(
+      config("http://langfuse.local"),
+      pollingFetch(calls, () => true),
+      { initialDelayMs: 8000, waitMs: 15000, initialBackoffMs: 1000 },
+    );
+    const promise = source.resolve("session-1", { startedAt: Date.now() - 9000 });
 
     await vi.advanceTimersByTimeAsync(0);
-    await expect(promise).resolves.toBe("enriched");
-    expect(calls[0]).toBe(Date.parse("2026-07-30T00:00:10.000Z"));
-    vi.useRealTimers();
+    await expect(promise).resolves.toMatchObject({ costUsd: 0.004 });
+    expect(calls).toEqual([Date.parse("2026-07-30T00:00:10.000Z")]);
+  });
+
+  it("carries initialDelayMs from settings through fromSettings", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-30T00:00:10.000Z"));
+    const calls: number[] = [];
+    const startedAt = Date.now();
+    vi.stubGlobal(
+      "fetch",
+      pollingFetch(calls, () => calls.length > 1),
+    );
+
+    const source = LangfuseTraceSource.fromSettings({
+      host: "http://langfuse.local",
+      publicKey: "pk-test",
+      secretKey: "sk-test",
+      initialDelayMs: 6000,
+      waitMs: 20000,
+    });
+    const promise = source?.resolve("session-1", { startedAt });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(6000);
+    await expect(promise).resolves.toMatchObject({ costUsd: 0.004 });
+    expect(calls[1]).toBe(startedAt + 6000);
+    vi.unstubAllGlobals();
   });
 
   it("uses exponential backoff between lookup attempts", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-30T00:00:00.000Z"));
-    const listCallTimes: number[] = [];
-    const result = scenarioResult();
+    const calls: number[] = [];
 
-    const promise = enrichScenarioWithLangfuse(result, {
-      config: config("http://langfuse.local"),
-      waitMs: 20000,
-      pollIntervalMs: 1000,
-      fetchImpl: (async (url: string) => {
-        if (String(url).includes("/api/public/traces/trace-1")) {
-          return { ok: true, status: 200, json: async () => ({ id: "trace-1" }) };
-        }
-        listCallTimes.push(Date.now());
-        return {
-          ok: true,
-          status: 200,
-          json: async () =>
-            listCallTimes.length < 4 ? { data: [] } : { data: [{ id: "trace-1" }] },
-        };
-      }) as unknown as typeof fetch,
-    });
+    const source = new LangfuseTraceSource(
+      config("http://langfuse.local"),
+      pollingFetch(calls, () => calls.length >= 4),
+      { waitMs: 20000, initialBackoffMs: 1000 },
+    );
+    const promise = source.resolve("session-1");
 
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1000);
     await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(4000);
-    await expect(promise).resolves.toBe("enriched");
+    await expect(promise).resolves.toMatchObject({ costUsd: 0.004 });
 
-    expect(listCallTimes).toEqual([
+    expect(calls).toEqual([
       Date.parse("2026-07-30T00:00:00.000Z"),
       Date.parse("2026-07-30T00:00:01.000Z"),
       Date.parse("2026-07-30T00:00:03.000Z"),
       Date.parse("2026-07-30T00:00:07.000Z"),
     ]);
-    vi.useRealTimers();
   });
 
   it("keeps polling after a slow scenario already exceeded waitMs from scenario start", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-30T00:01:00.000Z"));
-    const listCalls: number[] = [];
-    const result = scenarioResult();
+    const calls: number[] = [];
 
-    const promise = enrichScenarioWithLangfuse(result, {
-      config: config("http://langfuse.local"),
-      startedAt: Date.now() - 30000,
-      waitMs: 1000,
-      initialDelayMs: 8000,
-      pollIntervalMs: 100,
-      fetchImpl: (async (url: string) => {
-        if (String(url).includes("/api/public/traces/trace-1")) {
-          return { ok: true, status: 200, json: async () => ({ id: "trace-1", totalCost: 0.004 }) };
-        }
-        listCalls.push(Date.now());
-        return {
-          ok: true,
-          status: 200,
-          json: async () => (listCalls.length === 1 ? { data: [] } : { data: [{ id: "trace-1" }] }),
-        };
-      }) as unknown as typeof fetch,
-    });
+    const source = new LangfuseTraceSource(
+      config("http://langfuse.local"),
+      pollingFetch(calls, () => calls.length > 1),
+      { waitMs: 1000, initialDelayMs: 8000, initialBackoffMs: 100 },
+    );
+    const promise = source.resolve("session-1", { startedAt: Date.now() - 30000 });
 
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(100);
-    await expect(promise).resolves.toBe("enriched");
-    expect(result.metrics.cost_usd).toBe(0.004);
+    await expect(promise).resolves.toMatchObject({ costUsd: 0.004 });
   });
 
   it("uses a fresh timeout signal for each trace lookup request", async () => {
     const signals = new Set<AbortSignal | null | undefined>();
-    const result = scenarioResult();
 
-    await expect(
-      enrichScenarioWithLangfuse(result, {
-        config: config("http://langfuse.local"),
-        waitMs: 0,
-        fetchImpl: (async (url: string, init?: RequestInit) => {
-          signals.add(init?.signal);
-          if (String(url).includes("/api/public/traces/trace-1")) {
-            return {
-              ok: true,
-              status: 200,
-              json: async () => ({ id: "trace-1", totalCost: 0.002 }),
-            };
-          }
-          if (String(url).includes("/api/public/traces/trace-2")) {
-            return {
-              ok: true,
-              status: 200,
-              json: async () => ({ id: "trace-2", totalCost: 0.003 }),
-            };
-          }
-          return {
-            ok: true,
-            status: 200,
-            json: async () => ({ data: [{ id: "trace-1" }, { id: "trace-2" }] }),
-          };
-        }) as unknown as typeof fetch,
-      }),
-    ).resolves.toBe("enriched");
+    const source = new LangfuseTraceSource(
+      config("http://langfuse.local"),
+      (async (url: string, init?: RequestInit) => {
+        signals.add(init?.signal);
+        if (String(url).includes("/api/public/traces/trace-1")) {
+          return { ok: true, status: 200, json: async () => ({ id: "trace-1", totalCost: 0.002 }) };
+        }
+        if (String(url).includes("/api/public/traces/trace-2")) {
+          return { ok: true, status: 200, json: async () => ({ id: "trace-2", totalCost: 0.003 }) };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ id: "trace-1" }, { id: "trace-2" }] }),
+        };
+      }) as unknown as typeof fetch,
+      { waitMs: 0 },
+    );
 
+    await expect(source.resolve("session-1")).resolves.toMatchObject({
+      traceCount: 2,
+      costUsd: 0.005,
+    });
     expect(signals.size).toBe(3);
-    expect(result.metrics.cost_usd).toBe(0.005);
   });
 
   it("keeps polling when a trace detail is listed before it is readable", async () => {
@@ -647,105 +582,62 @@ describe("Langfuse enrichment", () => {
       { data: [{ id: "trace-1" }] },
       { id: "trace-1", totalCost: 0.004 },
     );
-    const result = scenarioResult();
 
-    await expect(
-      enrichScenarioWithLangfuse(result, {
-        config: config(stub.baseUrl),
-        waitMs: 2000,
-        pollIntervalMs: 1,
-      }),
-    ).resolves.toBe("enriched");
+    const record = await new LangfuseTraceSource(config(stub.baseUrl), undefined, {
+      waitMs: 2000,
+      initialBackoffMs: 1,
+    }).resolve("session-1");
 
-    expect(result.metrics.cost_usd).toBe(0.004);
+    expect(record?.costUsd).toBe(0.004);
   });
 
-  it("records a skip when no trace is ingested within waitMs", async () => {
+  it("resolves to undefined when no trace is ingested within waitMs", async () => {
     const stub = await stubSession({ data: [] });
-    const result = scenarioResult();
 
-    await expect(
-      enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 }),
-    ).resolves.toBe("skipped");
+    const record = await new LangfuseTraceSource(config(stub.baseUrl), undefined, {
+      waitMs: 0,
+    }).resolve("session-1");
 
+    expect(record).toBeUndefined();
     expect(stub.requests).toHaveLength(1);
     expect(stub.requests[0]?.url).toContain("/api/public/traces");
     expect(stub.requests[0]?.url).toContain("sessionId=session-1");
-    expect(result.metadata?.langfuse).toEqual({
-      status: "skipped",
-      sessionId: "session-1",
-      reason: "No trace found for session",
-    });
-    expect(result.metrics).toEqual({ turns: 1, latency_ms: 1000 });
   });
 
-  it("skips scenarios without a session id", async () => {
-    const result = scenarioResult({ metadata: undefined });
-
-    await expect(
-      enrichScenarioWithLangfuse(result, { config: config("http://127.0.0.1:1"), waitMs: 0 }),
-    ).resolves.toBe("skipped");
-
-    expect(result.metadata?.langfuse).toEqual({
-      status: "skipped",
-      reason: "No session id available",
-    });
-  });
-
-  it("falls back to the session id carried on a turn response", async () => {
-    const stub = await stubSession({ data: [{ id: "trace-9" }] }, { id: "trace-9" });
-    const result = scenarioResult({
-      metadata: undefined,
-      turns: [
-        {
-          index: 0,
-          user: "hi",
-          startedAt: "2026-07-30T00:00:00.000Z",
-          assertions: [],
-          response: { text: "ok", raw: { session_id: "session-from-turn" } },
-        },
-      ],
-    });
-
-    await enrichScenarioWithLangfuse(result, { config: config(stub.baseUrl), waitMs: 0 });
-
-    expect(stub.requests[0]?.url).toContain("/api/public/traces");
-    expect(stub.requests[0]?.url).toContain("sessionId=session-from-turn");
-    expect(result.metadata?.langfuse).toMatchObject({ sessionId: "session-from-turn" });
-  });
-
-  it("records lookup errors without failing the run", async () => {
+  it("throws on a non-404 lookup failure so the runner can record it", async () => {
     const stub = await stubSession({ status: 503 });
-    const run = runResult();
 
     await expect(
-      enrichRunWithLangfuse(run, { config: config(stub.baseUrl), waitMs: 0 }),
-    ).resolves.toBe(run);
-
-    expect(run.verdict).toBe(Verdict.Pass);
-    expect(run.results[0]?.metadata?.langfuse).toMatchObject({
-      status: "error",
-      sessionId: "session-1",
-      reason: "Langfuse lookup failed with status 503",
-    });
-    expect(run.metadata.langfuse).toMatchObject({ status: "partial", failed: 1 });
+      new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 }).resolve("session-1"),
+    ).rejects.toThrow("Langfuse lookup failed with status 503");
   });
 
-  it("records an aborted lookup as an error without throwing", async () => {
-    const result = scenarioResult();
+  it("propagates an aborted lookup as a rejection", async () => {
+    const source = new LangfuseTraceSource(
+      config("http://127.0.0.1:9"),
+      ((_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        })) as unknown as typeof fetch,
+      { timeoutMs: 10, waitMs: 0 },
+    );
+
+    await expect(source.resolve("session-1")).rejects.toThrow("aborted");
+  });
+
+  it("resolves to undefined when the session listing 404s before the traces exist", async () => {
+    const stub = await stubSession({ status: 404 }, { traces: [] });
 
     await expect(
-      enrichScenarioWithLangfuse(result, {
-        config: config("http://127.0.0.1:9"),
-        timeoutMs: 10,
-        waitMs: 0,
-        fetchImpl: ((_url: string, init?: { signal?: AbortSignal }) =>
-          new Promise((_resolve, reject) => {
-            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
-          })) as unknown as typeof fetch,
-      }),
-    ).resolves.toBe("error");
+      new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 }).resolve("session-1"),
+    ).resolves.toBeUndefined();
+  });
 
-    expect(result.metadata?.langfuse).toMatchObject({ status: "error", reason: "aborted" });
+  it("resolves to undefined when a listed trace detail 404s", async () => {
+    const stub = await stubSession({ data: [] }, { status: 404 });
+
+    await expect(
+      new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 }).resolve("session-1"),
+    ).resolves.toBeUndefined();
   });
 });
