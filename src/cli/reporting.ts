@@ -1,5 +1,6 @@
 import type { RunComparison } from "../history/compare.js";
 import { Verdict, verdictSeverity, type RunResult } from "../core/types.js";
+import { NO_TOOL_EVIDENCE_MARKER } from "../eval/toolAssertions.js";
 
 /**
  * Stable, documented shape for `pupil run --json`. Deliberately narrower than
@@ -39,6 +40,21 @@ export interface RunJsonOutput {
   scenarios: RunJsonScenario[];
   historyPath: string;
   baseline?: RunJsonBaseline;
+  toolEvidenceSkips: number;
+}
+
+/**
+ * Number of tool assertions that could not be checked because no trace evidence
+ * arrived. These do not fail the run by default, so they must be visible in the
+ * report — otherwise green means both "verified" and "could not verify".
+ */
+export function countToolEvidenceSkips(run: RunResult): number {
+  return run.results.reduce(
+    (total, result) =>
+      total +
+      result.scores.filter((score) => score.metadata.skipped === NO_TOOL_EVIDENCE_MARKER).length,
+    0,
+  );
 }
 
 export function isStrictFailure(verdict: Verdict, strict: boolean): boolean {
@@ -81,6 +97,7 @@ export function buildRunJson(
     strict: options.strict,
     summary: run.summary,
     historyPath: options.historyPath,
+    toolEvidenceSkips: countToolEvidenceSkips(run),
     scenarios: [...run.results]
       .sort((a, b) => a.scenarioId.localeCompare(b.scenarioId))
       .map((result) => ({
@@ -201,6 +218,15 @@ export function buildStepSummaryMarkdown(
         );
       }
     }
+  }
+
+  const toolSkips = countToolEvidenceSkips(run);
+  if (toolSkips > 0) {
+    lines.push(
+      "",
+      `> ⚠️ ${toolSkips} tool assertion${toolSkips === 1 ? "" : "s"} skipped — no trace evidence. ` +
+        "Run with `--require-trace` to fail instead of skipping.",
+    );
   }
 
   lines.push("");

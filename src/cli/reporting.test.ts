@@ -4,6 +4,7 @@ import { Verdict, type RunResult, type ScenarioResult } from "../core/types.js";
 import {
   buildRunJson,
   buildStepSummaryMarkdown,
+  countToolEvidenceSkips,
   formatJUnitXml,
   isStrictFailure,
 } from "./reporting.js";
@@ -78,6 +79,7 @@ describe("buildRunJson", () => {
       strict: false,
       summary: run.summary,
       historyPath: "/tmp/run-1.json",
+      toolEvidenceSkips: 0,
       scenarios: [
         {
           scenarioId: "scenario-1",
@@ -278,5 +280,53 @@ describe("buildStepSummaryMarkdown", () => {
 
     const md = buildStepSummaryMarkdown(current, { comparison });
     expect(md).toContain("No regressions.");
+  });
+
+  const toolSkipScore = {
+    name: "assertion:tool_called:calendar.create",
+    verdict: Verdict.Skip,
+    reason: "No tool call evidence available",
+    metadata: { skipped: "no_tool_evidence" },
+  };
+
+  it("warns in the step summary when tool assertions were not verified", () => {
+    const run = runResult({}, [scenarioResult({ scores: [toolSkipScore] })]);
+
+    expect(buildStepSummaryMarkdown(run, {})).toContain(
+      "1 tool assertion skipped — no trace evidence",
+    );
+  });
+
+  it("omits the warning when every tool assertion was verified", () => {
+    const run = runResult({}, [scenarioResult({ scores: [] })]);
+
+    expect(buildStepSummaryMarkdown(run, {})).not.toContain("no trace evidence");
+  });
+});
+
+describe("countToolEvidenceSkips", () => {
+  const toolSkipScore = {
+    name: "assertion:tool_called:calendar.create",
+    verdict: Verdict.Skip,
+    reason: "No tool call evidence available",
+    metadata: { skipped: "no_tool_evidence" },
+  };
+
+  it("counts tool assertions skipped for missing evidence", () => {
+    const run = runResult({}, [
+      scenarioResult({
+        scores: [
+          toolSkipScore,
+          {
+            name: "threshold:cost_usd",
+            verdict: Verdict.Skip,
+            reason: "Cost metric is missing; skipping cost threshold",
+            metadata: {},
+          },
+        ],
+      }),
+    ]);
+
+    expect(countToolEvidenceSkips(run)).toBe(1);
   });
 });
