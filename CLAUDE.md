@@ -27,6 +27,25 @@ During local development, run the CLI through `node dist/cli/index.js` after `np
 
 Configuration comes from `pupil.config.yaml`'s `langfuse` block first, then the environment (`LANGFUSE_HOST` - `LANGFUSE_BASE_URL` is also accepted - plus `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`). Config values win over env values when both are present. `enabled: false` or `pupil run --no-langfuse` disables it. Because Langfuse ingestion is asynchronous, lookups poll for up to `langfuse.waitMs` (default 25s) before recording a skip. Pupil performs one immediate lookup, then uses `langfuse.initialDelayMs` (default 8s, discounted by scenario runtime) before the second lookup and exponential backoff after that. Each individual HTTP lookup is bounded by `langfuse.timeoutMs` (or `LANGFUSE_TIMEOUT_MS`, default 3s), which slower Langfuse Cloud responses may need raised.
 
+## CI Gating
+
+`pupil run` can gate a pipeline on its own: `--baseline` compares against the run id in
+`.pupil/baseline` and exits 1 on regression, `--strict` also fails on `needs_review`, `--json`
+emits a machine-readable payload on stdout while progress moves to stderr, and `--junit <path>`
+writes a JUnit report. A markdown summary is appended to `$GITHUB_STEP_SUMMARY` whenever that
+variable is set.
+
+Two deliberate asymmetries: `--junit` fails the run if the file cannot be written, because the user
+asked for it, while a failed `$GITHUB_STEP_SUMMARY` append only warns, matching the best-effort
+rule used for Langfuse. And a missing baseline warns on stderr but does not fail, so a first CI run
+can establish one.
+
+Regression thresholds live in the `compare` block of `pupil.config.yaml`
+(`latencyThresholdPct` as a percent, `latencyThresholdMs`, and per-metric `metricThresholds`).
+`src/history/compareOptions.ts` resolves them for both `pupil run --baseline` and `pupil compare`
+so the two commands cannot disagree; `--latency-threshold-ms` and `--latency-threshold-pct`
+override the config per invocation.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.

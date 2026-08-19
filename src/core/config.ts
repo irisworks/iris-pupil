@@ -44,12 +44,22 @@ const langfuseConfigSchema = z
   .strict()
   .default({ enabled: "auto" });
 
+const compareConfigSchema = z
+  .object({
+    latencyThresholdMs: z.coerce.number().nonnegative().optional(),
+    latencyThresholdPct: z.coerce.number().nonnegative().optional(),
+    metricThresholds: z.record(z.coerce.number().nonnegative()).optional(),
+  })
+  .strict()
+  .default({});
+
 const pupilConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).default("examples/scenarios"),
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,
+    compare: compareConfigSchema,
   })
   .strict();
 

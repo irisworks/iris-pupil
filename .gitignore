@@ -3,3 +3,6 @@ dist/
 coverage/
 .pupil/
 .tmp/
+docs/superpowers/
+.superpowers/
+.env

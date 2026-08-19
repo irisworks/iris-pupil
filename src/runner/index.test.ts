@@ -7,7 +7,13 @@ import {
   type RestDriverResponse,
 } from "../driver/index.js";
 import { createIrisMockAgent, type IrisMockAgent } from "../mock/irisMockAgent.js";
-import { createDrivenTrajectory, runScenario, runScenarios, type RunnerDriver } from "./index.js";
+import {
+  createDrivenTrajectory,
+  progressEventTypeForVerdict,
+  runScenario,
+  runScenarios,
+  type RunnerDriver,
+} from "./index.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -577,5 +583,15 @@ describe("scenario runner", () => {
     expect(result.verdict).toBe(Verdict.Pass);
     expect(result.summary.passed).toBe(4);
     expect(maxActive).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("progressEventTypeForVerdict", () => {
+  it("maps every verdict to its own progress event type", () => {
+    expect(progressEventTypeForVerdict(Verdict.Pass)).toBe("scenario:pass");
+    expect(progressEventTypeForVerdict(Verdict.Skip)).toBe("scenario:skip");
+    expect(progressEventTypeForVerdict(Verdict.NeedsReview)).toBe("scenario:needs_review");
+    expect(progressEventTypeForVerdict(Verdict.Fail)).toBe("scenario:fail");
+    expect(progressEventTypeForVerdict(Verdict.Error)).toBe("scenario:error");
   });
 });
