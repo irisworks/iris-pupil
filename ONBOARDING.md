@@ -281,3 +281,4 @@ paths.
 | `phase-plan.md`             | Original Phase 1 plan. Historical — some of it is superseded, and the IRIS endpoint facts in it are the best written record of that interface. |
 | `CLAUDE.md`                 | Repo conventions and command reference.                                                                                                        |
 | `README.md`                 | Public-facing pitch. Note its architecture diagram shows Slack and MCP drivers that don't exist yet.                                           |
+| `docs/fixtures.md`          | How to stub tool/model backends for PR-time evaluation, and how `--fixture-set` guards `compare`.                                              |
