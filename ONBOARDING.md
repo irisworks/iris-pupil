@@ -1,7 +1,7 @@
 # Onboarding — Pupil
 
-For engineers joining the Pupil project. Everything below was verified against commit `281a12c`
-on 2026-07-28 with Node v22.22.2 and npm 10.9.7.
+For engineers joining the Pupil project. Everything below was verified against commit `d9265c6`
+on 2026-08-19 with Node v22.21.0 and npm 10.9.4.
 
 Read this first, then `docs/product-direction.md` for where the product is going and why.
 
@@ -36,7 +36,7 @@ IRIS-specific should leak outside `src/driver/presets.ts`.
 ```bash
 npm install
 npm run build
-npx vitest run          # 102 tests, ~4s
+npx vitest run          # 288 tests, ~14s
 node dist/cli/index.js --help
 ```
 
@@ -83,21 +83,27 @@ Run history lands in `.pupil/` (gitignored here; **committed** in consuming repo
 
 ```
 src/
-├── cli/index.ts        # commander wiring. Command parsing only — no logic.
+├── cli/
+│   ├── index.ts          # commander wiring. Command parsing only — no logic.
+│   └── reporting.ts      # --json (RunJsonOutput), JUnit XML, $GITHUB_STEP_SUMMARY
 ├── core/
-│   ├── types.ts        # domain model: Verdict, Scenario, TurnRecord, Score, RunResult
-│   └── config.ts       # pupil.config.yaml loader + ${ENV_VAR} resolution
-├── scenario/           # schema.ts (zod), loader.ts (dir scan + normalize)
+│   ├── types.ts          # domain model: Verdict, Scenario, TurnRecord, Score, RunResult
+│   └── config.ts         # pupil.config.yaml loader + ${ENV_VAR} resolution
+├── scenario/             # schema.ts (zod), loader.ts (dir scan + normalize)
 ├── driver/
-│   ├── index.ts        # generic REST driver, {{var}} templates, jsonpath extract
-│   └── presets.ts      # iris-http preset — the ONLY place IRIS specifics belong
-├── eval/index.ts       # assertion + threshold evaluators, score aggregation
-├── runner/index.ts     # multi-turn execution, concurrency, timeout, retry
+│   ├── index.ts          # generic REST driver, {{var}} templates, jsonpath extract
+│   └── presets.ts        # iris-http preset — the ONLY place IRIS specifics belong
+├── eval/index.ts         # assertion + threshold evaluators, score aggregation
+├── runner/index.ts       # multi-turn execution, concurrency, timeout, retry
 ├── history/
-│   ├── index.ts        # JsonRunHistoryStore: .pupil/runs/*.json + index.jsonl
-│   └── compare.ts      # regression comparison engine
-├── langfuse/index.ts   # 4-line stub. Not implemented.
-└── mock/               # IRIS-shaped mock HTTP agent
+│   ├── index.ts          # JsonRunHistoryStore: .pupil/runs/*.json + index.jsonl
+│   ├── compare.ts        # regression comparison engine
+│   └── compareOptions.ts # threshold resolution shared by `run --baseline` and `compare`
+├── trace/index.ts        # TraceSource interface + backend-agnostic enrichment (IRIS-158)
+├── langfuse/index.ts     # Langfuse TraceSource (504 lines): GET /api/public/traces?sessionId=…,
+│                         # then /api/public/traces/:traceId for the observations. Poll/retry,
+│                         # cost/token/tool-call capture.
+└── mock/                 # IRIS-shaped mock HTTP agent + MockTraceSource (tool spans, IRIS-160)
 ```
 
 Tests sit next to their source as `*.test.ts`. Scenario fixtures are in
@@ -120,31 +126,36 @@ Tests sit next to their source as `*.test.ts`. Scenario fixtures are in
 
 ## 4. Current state
 
-Phase 1 is roughly 80% built. Landed: scenario schema and loader, mock agent, REST driver,
-`iris-http` preset, runner, assertion and threshold evaluators, JSON run history, regression
-comparison.
+Phase 1's original scope is fully built and then some. Landed: scenario schema and loader, mock
+agent, REST driver, `iris-http` preset, runner (built around a source-agnostic `Trajectory`,
+IRIS-154), assertion and threshold evaluators, JSON run history, regression comparison, Langfuse
+trace enrichment behind a swappable `TraceSource` (IRIS-158), a `MockTraceSource` that emits
+configurable tool spans (IRIS-160), config profiles (IRIS-153), target identity (IRIS-155),
+CI-gate ergonomics (IRIS-156), manual scoring, and this repo's own CI check workflow.
 
-CLI today: `validate`, `discover`, `run`, `compare`, `mock-agent`. `list`, `report`, and
-`baseline` are in **PR #26**, awaiting review.
+CLI today: `validate`, `discover`, `run`, `compare`, `mock-agent`, `list`, `report`, `baseline`,
+`score` — all merged, all accepting `--config`/`--profile`.
 
-Not built, despite appearing in the type model:
+Still missing, despite appearing in the type model or the vision:
 
-| Thing                                 | State                                                         |
-| ------------------------------------- | ------------------------------------------------------------- |
-| Tool-call / trajectory awareness      | **absent** — `grep -ri tool src/` finds nothing outside tests |
-| Trace reading (Langfuse or otherwise) | 4-line interface stub                                         |
-| LLM judge                             | config parses, nothing consumes it                            |
-| Manual scoring (`pupil score`)        | types exist, no command                                       |
-| CI workflows                          | none at all                                                   |
+| Thing                                 | State                                                                                                                                                                                                                                                 |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool-call **assertions**              | **absent.** Tool calls are now _read_ — `metadata.langfuse.toolCalls` and `metrics.tool_calls` come from trace enrichment (`src/trace/index.ts`) — but no assertion type consumes them. `tool_called`/`tool_order`/`tool_args` are IRIS-161, next up. |
+| Trajectory from traces                | `Trajectory.source` allows `"trace"`, but only the driven producer exists. Needs IRIS-164 (`pupil observe`).                                                                                                                                          |
+| `traceparent` correlation             | not started (IRIS-159) — correlation today is the `sessionId` echo, see §5                                                                                                                                                                            |
+| LLM judge                             | config parses; `evaluateJudge` returns a `skip` score reading `LLM judge not configured`                                                                                                                                                              |
+| Driver registry / 2nd driver          | not started — the runner hardcodes `if (scenario.driver.type !== "rest") throw`                                                                                                                                                                       |
+| Invariants, seeding, 2nd trace source | not started (IRIS-163, IRIS-165, IRIS-167)                                                                                                                                                                                                            |
+| Manual scoring (`pupil score`)        | **shipped** (IRIS-96)                                                                                                                                                                                                                                 |
+| CI workflows                          | `.github/workflows/check.yml` runs `npm run check` on Node 20 + 22 (IRIS-152)                                                                                                                                                                         |
 
 ---
 
 ## 5. Gotchas — read before you lose an afternoon
 
-**`npm run check` is red on `main`.** `prettier --check` fails on `CLAUDE.md`.
-Pre-existing, unrelated to your change. Fix with
-`npm run format`, or ignore it and check only your own files:
-`npx prettier --check <your-files>`. It reached `main` because no workflow enforces the gate.
+**`npm run check` is green on `main`** (IRIS-152) — typecheck, build, 288/288 tests, and
+prettier clean on every tracked file. If you see a stray prettier failure locally, check it isn't
+an untracked local file (e.g. an editor/tooling settings file) before assuming `main` is red.
 
 **`compare` uses a default latency noise band.** The default latency regression threshold is now
 20% of the baseline `latency_ms`. A tiny runtime fluctuation no longer fails the comparison gate,
@@ -158,9 +169,16 @@ file and `--profile` selects a `profiles.<name>` block to deep-merge over the re
 precedence is config < scenario < CLI flag, so the `examples/iris/*.yaml` scenarios no longer
 hardcode `baseUrl` — they inherit it from the config or a profile.
 
-**`RunResult.metadata` is an unpopulated free-form bag.** Nothing writes to it yet. It needs to
-carry target identity (environment, deployed version, mode, fixture set) before baselines across
-stages mean anything.
+**Target identity is a top-level `RunResult.target`, not `metadata`.** IRIS-155 shipped it as its
+own typed field (`system`, `environment`, `version`, `fixtureSet`, and a `mode` that `run` always
+stamps as `"driven"`), configured under `target:` in `pupil.config.yaml` or via
+`--system`/`--environment`/`--target-version`/`--fixture-set`. `compare` exits **2** on a hard
+mismatch (`system`, `mode`, `fixtureSet`), so a pre-IRIS-155 baseline — which has no `target` at
+all — is a hard mismatch on `mode`. Re-establish one with `pupil baseline <newRunId>`.
+
+**`RunResult.metadata` is a free-form bag with exactly one writer.** Trace enrichment puts its
+evidence under `metadata.langfuse` (status, trace id/url, `toolCalls`). Don't assume it's empty,
+and don't assume anything else populates it.
 
 **The driver registry doesn't exist.** `src/runner/index.ts` hardcodes
 `if (scenario.driver.type !== "rest") throw`. Adding a non-REST driver means building the
@@ -254,22 +272,30 @@ npx vitest run
 npx prettier --check <files you touched>
 ```
 
-Full `npm run check` runs `prettier --check . && typecheck && build && vitest run` — currently
-red on `main` for reasons unrelated to your change (§5).
+Full `npm run check` runs `prettier --check . && typecheck && build && vitest run` — green on
+`main` (§5).
 
 Add tests next to the code. Anything touching an agent goes through the mock agent, never a live
 service — the suite must pass with no network and no API keys.
 
 ### Good first contributions
 
-1. Fix the `compare` latency default to a percentage band (§5). Small, self-contained, and the
-   tool is unusable as a gate without it.
-2. Add the repo's own `npm run check` GitHub Actions workflow, and green up `main`.
+1. **Treat missing trace-derived metrics as `skip`, not `fail`.** `metricKey()` in
+   `src/eval/index.ts` normalizes aliases for `turns`, `latency_ms`, and `cost_usd` only, and
+   `evaluateThreshold` special-cases just `cost_usd` when the metric is absent. So a threshold on
+   `tool_calls` or `total_tokens` — both written by trace enrichment — hard-**fails** a scenario
+   whenever Langfuse is unreachable or disabled, instead of skipping like cost does. Extend the
+   alias table and the skip branch to every trace-derived metric. Small, well-covered by
+   `src/eval/index.test.ts`, and it removes a real false-red.
+2. **Give the driver registry a seam.** `src/runner/index.ts` throws on any
+   `scenario.driver.type !== "rest"`. Replacing that hardcode with a small registry lookup is
+   self-contained and unblocks every future driver.
 
-Before starting anything larger, read `docs/product-direction.md` §5–6. The build order there is
-deliberate: the evaluator seam needs reshaping to take a `Trajectory` **before** any trajectory
-feature is added, otherwise driven runs and observed traces end up with two divergent scoring
-paths.
+Before starting anything larger, read `docs/product-direction.md` §5–6. The evaluator seam takes
+a `Trajectory` (IRIS-154) and the `TraceSource` interface plus a tool-span-emitting mock
+(IRIS-158/160) have both landed, so the next sequencing constraint is downstream: tool-call
+assertions (IRIS-161) and invariants (IRIS-163) need a trace-derived `Trajectory` producer, which
+is IRIS-164's job.
 
 ---
 

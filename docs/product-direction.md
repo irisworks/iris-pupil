@@ -1,6 +1,6 @@
 # Pupil — Product Direction
 
-Status: draft for review · 2026-07-28 · baseline commit `281a12c`
+Status: draft for review · 2026-08-19 · baseline commit `d9265c6`
 
 Revision 2. Supersedes the first draft, which assumed Pupil could build and start the agent it
 evaluates, and which overstated our differentiation on trajectory assertions. Both corrected
@@ -27,59 +27,106 @@ Four commitments follow:
 
 ### What exists and works
 
-Phase 1 is roughly 80% built. `main` = `281a12c`; 4,600 lines of TypeScript, 102 tests.
+Phase 1's original scope is done, M6 (CI-gateable) has closed except for this document, and M7
+(Agent-aware) is underway. `main` = `d9265c6`; ~4,650 lines of TypeScript (excl. tests, ~11,350
+incl.), 288 tests across 20 files.
 
-| Area                                                                                      | State                                                   |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Scenario schema + loader (zod, YAML, dir scan, flat-`input` shorthand)                    | done                                                    |
-| IRIS-compatible mock HTTP agent                                                           | done                                                    |
-| Generic REST driver (`{{var}}` templates, jsonpath extract, retry on 408/429/5xx)         | done                                                    |
-| `iris-http` preset (deep-merged over driver config)                                       | done                                                    |
-| Runner (multi-turn, concurrency, per-scenario timeout, retry in a fresh conversation)     | done                                                    |
-| Assertion evaluator (`contains`/`not_contains`/`equals`/`regex`/`jsonpath`)               | done                                                    |
-| Threshold evaluator (`turns`, `latency_ms`, `cost_usd` with alias normalization)          | done                                                    |
-| JSON run history (`.pupil/runs/*.json`, `index.jsonl`, `baseline`)                        | done                                                    |
-| Regression comparison (regressed / fixed / still-failing / new / removed + metric deltas) | done                                                    |
-| CLI: `validate`, `discover`, `run`, `compare`, `mock-agent`                               | done                                                    |
-| CLI: `list`, `report`, `baseline`                                                         | **open in PR #26**, review requested, idle since Jul 28 |
+| Area                                                                                       | State                 |
+| ------------------------------------------------------------------------------------------ | --------------------- |
+| Scenario schema + loader (zod, YAML, dir scan, flat-`input` shorthand)                     | done                  |
+| IRIS-compatible mock HTTP agent                                                            | done                  |
+| Generic REST driver (`{{var}}` templates, jsonpath extract, retry on 408/429/5xx)          | done                  |
+| `iris-http` preset (deep-merged over driver config)                                        | done                  |
+| Runner (multi-turn, concurrency, per-scenario timeout, retry in a fresh conversation)      | done                  |
+| Evaluator seam takes a `Trajectory`, not a raw response (IRIS-154)                         | done                  |
+| Assertion evaluator (`contains`/`not_contains`/`equals`/`regex`/`jsonpath`)                | done                  |
+| Threshold evaluator (`turns`, `latency_ms`, `cost_usd` with alias normalization)           | done                  |
+| `compare` latency regression threshold as a percentage band, not a 0ms default (IRIS-151)  | done                  |
+| JSON run history (`.pupil/runs/*.json`, `index.jsonl`, `baseline`)                         | done                  |
+| Regression comparison (regressed / fixed / still-failing / new / removed + metric deltas)  | done                  |
+| CLI: `validate`, `discover`, `run`, `compare`, `mock-agent`, `list`, `report`, `baseline`  | done                  |
+| Manual scoring (`pupil score`) (IRIS-96)                                                   | done                  |
+| Langfuse trace enrichment — session→trace lookup, poll/retry, cost/tokens (IRIS-97)        | done                  |
+| This repo's own CI check workflow, Node 20 + 22 (IRIS-152)                                 | done                  |
+| `loadPupilConfig()` wired into `run` behind `--config`/`--profile` (IRIS-153)              | done, PR #55          |
+| Target identity as a typed `RunResult.target` + `compare` exit 2 on mismatch (IRIS-155)    | done, PR #53          |
+| `TraceSource` interface + Langfuse reader behind it (IRIS-158)                             | done, PR #54          |
+| Mock agent emits configurable tool spans, plus `MockTraceSource` (IRIS-160)                | done, PR #60          |
+| CI-gate ergonomics: `--baseline`, `--strict`, `--json`, `--junit`, step summary (IRIS-156) | done, PR #59          |
+| Fixture and stub conventions documented (IRIS-166)                                         | **in review**, PR #57 |
 
 ### Gaps, in order of how much they hurt
 
-1. **No tool-call awareness anywhere.** `grep -ri tool src/` returns nothing outside tests.
-   `TurnRecord.response` is `{text, raw}`; metrics are `turns`, `latency_ms`, `retries`. Today
-   Pupil evaluates _an HTTP endpoint that returns a string_ — the one thing the vision rules
-   out.
-2. **No trace reading.** `src/langfuse/index.ts` is a 4-line interface stub. Consequently
-   `cost_usd` thresholds always SKIP and commitments 2–4 above are all unreachable.
-3. **The evaluator seam is drive-shaped.** `AssertionEvaluationContext` is
-   `{response, turn, result}`. Section 4 depends on the evaluator taking a `Trajectory` that
-   either a driven run or a fetched trace can produce. Cheap to fix now, expensive later —
-   fix it late and there will be two divergent scoring paths, which is precisely how the
-   continuity claim dies in implementation.
-4. **No CI story.** No `.github/workflows/`, no `--json`, no JUnit, no `run --baseline`
-   auto-compare, no `--strict`.
+1. **Tool calls are read but not assertable.** This is now a narrower gap than it reads in
+   earlier revisions. `TraceRecord.toolCalls` exists, `src/trace/index.ts` writes
+   `metrics.tool_calls` and `metadata.<source>.toolCalls` onto every enriched run, and
+   `MockTraceSource` can emit configurable spans for tests. What is still absent is any
+   **assertion** over that data: no `tool_called`, `tool_not_called`, `tool_call_count`,
+   `tool_order`, or `tool_args`. So a scenario can budget on how many tools ran but cannot say
+   _which_ — IRIS-161. Until then, deterministic assertions are still text-only, which is the
+   one thing the vision rules out.
+2. **Trace reading is swappable, but there is still only one implementation.** IRIS-158 landed
+   the seam: `TraceSource` in `src/trace/index.ts`, with the Langfuse reader
+   (`src/langfuse/index.ts`, 504 lines, IRIS-97) as one implementation behind it and
+   `MockTraceSource` as another. Lookup is `GET /api/public/traces?sessionId=…` followed by
+   `GET /api/public/traces/:traceId` for observations, with poll/retry; `cost_usd` and token
+   thresholds score against the enriched metrics rather than always skipping. The remaining gap
+   is proof the interface is real — a second production backend (OTel, Phoenix), IRIS-167.
+3. **~~The evaluator seam is drive-shaped.~~ RESOLVED (IRIS-154).** The runner now builds a
+   `Trajectory` (`{source: "driven"|"trace", steps[], ...}`) and assertions/thresholds evaluate
+   that, not a raw `{response, turn, result}` shape. This is the foundation gap 1 and gap 9
+   (§2.4, §6 step 9) build on.
+4. **~~CI story is partial.~~ RESOLVED (IRIS-152 + IRIS-156).**
+   `.github/workflows/check.yml` runs `npm run check` on Node 20 + 22, and PR #59 added the
+   gating surface: `run --baseline` auto-compare with exit 1, `--strict` to fail on
+   `needs_review`, `--json` (stable `RunJsonOutput` in `src/cli/reporting.ts`), `--junit <path>`,
+   and an automatic `$GITHUB_STEP_SUMMARY` append. What remains is documentation and adoption,
+   not code.
 
-   Concretely: **`npm run check` is currently red on `main`.** `prettier --check` fails on
-   `CLAUDE.md`. Verified against a clean tree at `281a12c` — pre-existing, and it reached
-   `main` because no workflow enforces the gate.
+   `npm run check` **is green on `main`** as of `d9265c6` — typecheck, build, 288/288 tests,
+   prettier clean on every tracked file. (An earlier revision of this document reported it red
+   due to a `CLAUDE.md` formatting issue; that was fixed.)
 
 5. **`pupil.config.yaml` is wired in.** Every command that needs it loads it, `--config` points
    at another file, and `--profile` deep-merges a `profiles.<name>` block over the top-level
    blocks. Driver precedence is config < scenario < CLI flag; the `examples/iris/*.yaml`
    scenarios inherit `baseUrl` instead of hardcoding it.
-6. **`RunResult.metadata` is an unpopulated free-form bag.** Section 4 needs target identity
-   (environment, deployed version, mode, fixture set) in there for baselines to mean anything.
+6. **~~`RunResult.metadata` is an unpopulated free-form bag.~~ RESOLVED (IRIS-155), differently
+   than section 4 proposed.** Target identity landed as its own typed top-level field,
+   `RunResult.target` (`system`, `environment`, `version`, `fixtureSet`, `mode`), not as keys
+   inside `metadata` — and `compare` now exits 2 on a hard mismatch of `system`/`mode`/
+   `fixtureSet` rather than scoring an invalid comparison. `metadata` remains free-form and holds
+   trace evidence under `metadata.<traceSource>`. Section 4.3 records the shipped shape and the
+   baseline-migration consequence.
 7. **Driver abstraction is REST-shaped and not pluggable.** `Driver` is `{ readonly type }`;
    the runner hardcodes `if (scenario.driver.type !== "rest") throw`. No registry.
-8. **No LLM judge, no manual scoring.** Both parse; neither is consumed.
+8. **No LLM judge; manual scoring shipped.** Judge config parses and nothing consumes it —
+   still a gap. Manual scoring (`pupil score`) landed in IRIS-96 and is no longer a gap.
 
-### Inferred Linear state
+### Verified Linear state (irisflow team, iris-pupil project)
 
-No Linear connector was available in the session that produced this document, so the following
-is reconstructed from `IRIS-xx` refs in git history and `phase-plan.md` — **verify before
-planning against it**. Landed: 84, 85, 86, 87, 89, 90, 91, 92, 93, 94, 98. In review: 95
-(PR #26). Unaccounted for: 88 (template engine — code exists in `driver/index.ts`, likely
-folded into 87), 96 (manual scoring), 97 (Langfuse).
+Replaces the git-history reconstruction in the prior revision now that the Linear connector is
+available. Grouped by milestone; verify against Linear directly before planning, this is a
+snapshot as of `d9265c6`. The M6/M7/M9 rows below were re-derived from merged pull requests
+rather than a live Linear query, so treat issue states as PR-accurate and Linear-unconfirmed.
+
+| Milestone                        | Issues                                                                                                                              |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| M0 Scaffold and CLI              | 82 done                                                                                                                             |
+| M1 Scenario Schema and Loader    | 83, 84, 85, 86 done                                                                                                                 |
+| M2 Mock Agent and Driver         | 87, 89 done; 88 (template engine) canceled — folded into 87                                                                         |
+| M3 Runner Scoring and History    | 90, 91, 92, 93 done                                                                                                                 |
+| M4 Compare, Report, and Baseline | 94, 95, 96 done                                                                                                                     |
+| M5 Langfuse and Live IRIS        | 97, 98 done; 99 (docs polish) canceled — superseded by this issue, IRIS-157                                                         |
+| M6 v0.2 CI-gateable              | 151, 152, 153, 154, 155, 156 done · **157 (this doc)** in progress — the milestone's last open item                                 |
+| M7 v0.3 Agent-aware              | 158, 160 done · 161 (tool assertions) todo, now unblocked · 159 (traceparent) not started                                           |
+| M8 v0.4 Continuous               | 163 (invariants), 164 (`pupil observe`) not started                                                                                 |
+| M9 v0.5 Cheap and repeatable     | 166 (fixture conventions) in review, PR #57 · 165 (seeding) not started                                                             |
+| M10 v0.6 Broad                   | 167 (second TraceSource, LLM judge, driver registry) not started — deliberately left as one placeholder, to be split when M9 closes |
+
+Small hardening issues not tied to a milestone (all done): 104 (reject dual input/turns), 105
+(error on missing explicit configPath), 106 (reject duplicate scenario ids), 107 (PR #1 review
+follow-ups), 108 (set-but-empty env var semantics).
 
 ## 3. Competitive landscape
 
@@ -221,7 +268,9 @@ Plus repo-level invariants applying to every scenario and all production traffic
 
 Driving an agent produces a trajectory; fetching a trace produces a trajectory. `run` and
 `observe` become two producers of one structure, and the invariant evaluator never learns which
-it got. See gap 3 in section 2 — this is a small refactor now and a fork in the codebase later.
+it got. **This part shipped** — gap 3 in section 2 is resolved (IRIS-154): the runner already
+builds a `Trajectory`, so `observe` (§6 step 9, not yet started) only needs to be the second
+producer of the same shape, not a second scoring path.
 
 One genuine design question inside it: a driven run is **one sample**, an observation is a
 **population**, and `PASS` vs `4.2% violation` are not the same verdict type. Proposed
@@ -238,10 +287,15 @@ Same history store, same `RunResult` shape, three baseline selectors over one co
 | Post-deploy     | the run that gated the currently-deployed prod build | block promotion |
 | Nightly observe | last night's rates                                   | alert on drift  |
 
-`src/history/compare.ts` already joins runs. What is missing is gap 6: **runs must be tagged
-with target identity** — environment, deployed version/commit, mode (`driven` | `observed`), and
-fixture set. Without it a staging run is indistinguishable from a production observation and the
-lineage means nothing.
+`src/history/compare.ts` already joins runs, and **target identity shipped** (IRIS-155, PR #53):
+every run carries `RunResult.target` with `system`, `environment`, `version`, `fixtureSet`, and
+`mode` (`run` always stamps `"driven"`; `"observed"` arrives with `pupil observe`, step 9). Without
+it a staging run was indistinguishable from a production observation; now `compare` refuses the
+comparison outright — exit 2 — when `system`, `mode`, or `fixtureSet` disagree, and warns on
+`environment`/`version`. Note this landed as a typed top-level field, not as keys inside
+`metadata` as earlier revisions of this section proposed. One migration consequence: any run
+recorded before IRIS-155 has no `target`, which reads as a hard `mode` mismatch, so the first
+`compare` after upgrading needs a fresh `pupil baseline <newRunId>`.
 
 Get this right and Pupil can print the sentence that proves the claim, which nothing in the
 landscape can produce today:
@@ -364,8 +418,8 @@ Two structural rules:
 - **Do not build a record/replay proxy.** WireMock, mitmproxy, VCR, Polly, and MSW exist.
   Pupil defines the contract — tool endpoints are configurable, here is a compose fragment —
   and the agent repo owns its stubs. What _is_ Pupil-shaped is one small thing nobody else
-  does: **record the fixture set identity in run metadata**, so a stubbed run is never compared
-  against a live run and reported as a regression. Cross-mode baseline contamination is a real
+  does: **record the fixture set identity on the run** (`RunResult.target.fixtureSet`, shipped in
+  IRIS-155), so a stubbed run is never compared against a live run and reported as a regression. Cross-mode baseline contamination is a real
   failure mode and the fix is three fields.
 - **Interception requires control of deployment config**, so it belongs to the pre-deploy and
   preview tier, never to someone else's staging. That is what gives the PR tier teeth: preview
@@ -384,7 +438,7 @@ Getting these wrong is how CI eval projects die.
 | ----------------------------------------------------- | ---------------- |
 | Driving the agent, assertions, invariants, history    | Pupil            |
 | Trace reading and correlation                         | Pupil            |
-| Fixture-set identity recorded in run metadata         | Pupil            |
+| Fixture-set identity recorded in `RunResult.target`   | Pupil            |
 | Deploying the agent, preview envs, staging            | the pipeline     |
 | Model keys, DB, vector store, auth, tool stub content | the agent's repo |
 | Scenario and invariant files, and the baseline        | the agent's repo |
@@ -400,45 +454,56 @@ needing dependency injection before a class is unit-testable.
 ## 6. Build plan
 
 Ordered, each step shippable. The reprioritization that matters: **trace reading moves from
-M7-additive to critical path**, because IRIS's `POST /sessions/:id/message` returns `{text}`
-only, making traces the sole route to tool calls, cost, and tokens — and the same reader is
-what makes observe mode and the continuity claim possible.
+M7-additive to critical path**, because IRIS's `POST /sessions/:id/message` returns `{text,
+sessionId}` — the `sessionId` was added specifically for trace correlation, but no tool-call
+data — making traces the sole route to tool calls, cost, and tokens. The same reader is what
+makes observe mode and the continuity claim possible.
 
-1. **Land PR #26** (`list`/`report`/`baseline`). Blocking review, not work.
-2. **Wire `loadPupilConfig()` into `run`** — `--config`, flags override file, environment
-   profiles so one suite targets preview, staging, and prod.
-3. **Refactor the evaluator seam to `Trajectory`** (section 4.2). Do this before any trajectory
-   feature, not after.
-4. **Target identity in `RunResult.metadata`** — environment, version, mode, fixture set
-   (section 4.3).
-5. **CI-gate ergonomics** — `run --baseline` auto-compare with exit 1, `--strict`, `--json`,
-   JUnit XML, `$GITHUB_STEP_SUMMARY`. Plus this repo's own `npm run check` workflow.
-6. **`TraceSource` + Langfuse reader + `traceparent` correlation** (section 5.1), with a mock
-   agent that emits tool spans so it is testable without live IRIS.
-7. **Trajectory model and tool assertions** — `toolCalls[]` on the trajectory; `tool_called`,
-   `tool_not_called`, `tool_call_count`, `tool_order`, `tool_args`. Add `tool_calls`,
-   `cost_usd`, `tokens` metrics.
-8. **Invariants** — the `invariants:` block, `maxViolationRate`, repo-level policy files
-   (section 4.1).
-9. **`pupil observe`** — the second `Trajectory` producer. Trace source + filter + window,
-   invariant rates, same `RunResult` into the same store so `compare` works unchanged.
-10. **Seeding** (section 5.2) — `seed:` block, `replay` first since it always works, then
-    `fork` and `inject` as agent support allows.
-11. **Fixture conventions** (section 5.3) — documented stub patterns and compose fragments, not
-    a proxy implementation.
-12. **Second `TraceSource`** — OTLP or Phoenix, proving the interface is real.
-13. **LLM judge**, opt-in, deterministic verdicts unaffected when unconfigured.
-14. **Driver registry + second driver**; then **manual scoring** (`pupil score`).
+1. **✅ Done — Land PR #26** (`list`/`report`/`baseline`). Merged.
+2. **✅ Done (IRIS-153, PR #55) — Wire `loadPupilConfig()` into `run`** — `--config`, flags
+   override file, environment profiles so one suite targets preview, staging, and prod.
+3. **✅ Done (IRIS-154) — Refactor the evaluator seam to `Trajectory`** (section 4.2).
+4. **✅ Done (IRIS-155, PR #53) — Target identity** — shipped as a typed `RunResult.target`
+   (`system`, `environment`, `version`, `fixtureSet`, `mode`) rather than loose keys in
+   `metadata`, with `compare` exiting 2 on a hard mismatch (section 4.3).
+5. **✅ Done — CI-gate ergonomics.** This repo's own `npm run check` workflow shipped
+   (IRIS-152), and IRIS-156 (PR #59) added `run --baseline` auto-compare with exit 1, `--strict`,
+   `--json`, `--junit`, and the automatic `$GITHUB_STEP_SUMMARY` append.
+6. **🟡 Partial — `TraceSource` + Langfuse reader + `traceparent` correlation** (section 5.1).
+   The interface extraction (IRIS-158, PR #54) and a mock agent that emits tool spans plus a
+   `MockTraceSource` (IRIS-160, PR #60) have both landed. `traceparent` correlation itself
+   (IRIS-159) is not started, so correlation is still the `sessionId` echo — strategy 2.
+7. **⬜ Todo (IRIS-161) — Tool assertions** — `tool_called`, `tool_not_called`,
+   `tool_call_count`, `tool_order`, `tool_args` over the `toolCalls` the `TraceSource` already
+   returns. The trace-derived metrics themselves (`tool_calls`, `cost_usd`, `input_tokens`,
+   `output_tokens`, `total_tokens`) shipped with IRIS-97/158 and are **not** part of this step.
+   Unblocked by step 6.
+8. **⬜ Not started (IRIS-163) — Invariants** — the `invariants:` block, `maxViolationRate`,
+   repo-level policy files (section 4.1).
+9. **⬜ Not started (IRIS-164) — `pupil observe`** — the second `Trajectory` producer. Trace
+   source + filter + window, invariant rates, same `RunResult` into the same store so `compare`
+   works unchanged.
+10. **⬜ Not started (IRIS-165) — Seeding** (section 5.2) — `seed:` block, `replay` first since
+    it always works, then `fork` and `inject` as agent support allows.
+11. **🔵 In review (IRIS-166, PR #57) — Fixture conventions** (section 5.3) — documented stub
+    patterns and compose fragments, not a proxy implementation.
+12. **⬜ Not started — Second `TraceSource`** — OTLP or Phoenix, proving the interface is real.
+13. **⬜ Not started — LLM judge**, opt-in, deterministic verdicts unaffected when unconfigured.
+14. **Driver registry + second driver: ⬜ not started. Manual scoring (`pupil score`): ✅ done**
+    (IRIS-96, shipped ahead of this build-plan position).
+
+Steps 12–14 are held as one Linear placeholder (IRIS-167), deliberately not split into
+individual issues until M9 closes.
 
 ## 7. Release ladder and internal adoption
 
-| Release                         | Steps | What it unlocks                                                                        |
-| ------------------------------- | ----- | -------------------------------------------------------------------------------------- |
-| **v0.2 — CI-gateable**          | 1–5   | Runs in `iris-core` CI **advisory / non-blocking**. Correct plumbing, weak assertions. |
-| **v0.3 — Agent-aware**          | 6–7   | **Internal adoption point.** Blocking gate on trajectory regressions.                  |
-| **v0.4 — Continuous**           | 8–9   | Invariants shared across stages; production drift watch. The claim becomes true.       |
-| **v0.5 — Cheap and repeatable** | 10–11 | Seeded state and stubbed tools make the PR tier fast and free.                         |
-| **v0.6 — Broad**                | 12–14 | Second trace source, judge, second driver. Open-source launch case.                    |
+| Release                         | Steps | Status                                 | What it unlocks                                                                        |
+| ------------------------------- | ----- | -------------------------------------- | -------------------------------------------------------------------------------------- |
+| **v0.2 — CI-gateable**          | 1–5   | 5/5 done                               | Runs in `iris-core` CI **advisory / non-blocking**. Correct plumbing, weak assertions. |
+| **v0.3 — Agent-aware**          | 6–7   | step 6 partial, step 7 todo            | **Internal adoption point.** Blocking gate on trajectory regressions.                  |
+| **v0.4 — Continuous**           | 8–9   | not started                            | Invariants shared across stages; production drift watch. The claim becomes true.       |
+| **v0.5 — Cheap and repeatable** | 10–11 | step 11 in review, step 10 not started | Seeded state and stubbed tools make the PR tier fast and free.                         |
+| **v0.6 — Broad**                | 12–14 | not started (one Linear placeholder)   | Second trace source, judge, second driver. Open-source launch case.                    |
 
 **Start using it at v0.2, trust it at v0.3.**
 
@@ -454,18 +519,37 @@ the product name stops being aspirational.
 Two preconditions, cheap now and expensive later:
 
 - **Own CI first.** This repo's `npm run check` must be green on every PR before another repo
-  depends on it. It is currently red — see gap 4.
+  depends on it. **It is green as of `d9265c6`** (IRIS-152) — typecheck, build, 288/288 tests,
+  prettier clean.
 - **Baseline hygiene.** Committed (`.pupil/baseline` in git, reviewable, PR-scoped) versus
   CI-cached. Committed fits the git-diffable, no-backend story and should be the documented
   default.
 
 ## 8. Worked example: irisworks/iris-core
 
-The `iris-core` repo was **not in scope for the session that produced this document**, so the
-specifics below are a shape derived from the IRIS interface documented in `phase-plan.md` —
-plain Node HTTP on `127.0.0.1:3000`, `GET /health`, `POST /sessions`,
-`POST /sessions/:id/message` blocking and returning `{text}`, `POST /sessions/:id/reset`,
-Langfuse via LiteLLM, no OTel. **Confirm against the real repo before building.**
+**Verified directly against `irisworks/iris-core`'s server code**
+(`iris-runtime/src/engine/api.ts`) as of this revision, superseding the `phase-plan.md`-derived
+shape in the prior draft:
+
+- Plain Node HTTP on `127.0.0.1:3000` (`IRIS_API_PORT`), `GET /health` → `{ok, channels}`.
+- `POST /sessions` requires `{originChannel, originThreadTs}`; returns the full session object,
+  including `sessionId`.
+- `POST /sessions/:id/message` returns **`{text, sessionId}`, not `{text}` alone** (api.ts:678) —
+  the `sessionId` echo was added specifically so callers correlating a turn with its Langfuse
+  trace (Pupil, IRIS-97) can read it off the turn response. Pupil does not currently use the echo:
+  the `iris-http` preset extracts only `reply: "$.text"` from the message response and takes its
+  correlation key from `createConversation`'s `conversationId: "$.sessionId"`, which the runner
+  then threads through as `conversation.id`. The echo is a redundant second route to the same
+  value — useful if a scenario ever drives `message` without creating the session itself.
+- `POST /sessions/:id/reset` exists as documented.
+- Auth: both repos read the same `IRIS_API_TOKEN` env var name (`Authorization: Bearer <token>`)
+  — no field-name translation needed between them.
+- No `/sessions/:id/fork` or history-injection endpoint exists — session forking and inject-mode
+  seeding (section 5.2) are not supported today.
+- Session-correlated Langfuse traces **already shipped** in iris-core: PR `iris-core#134` merged
+  on 2026-08-03, closing issue `#133`. It explicitly **does not include `traceparent`
+  propagation** — so strategy 1 in section 5.1 still needs a separate ask to that team, and must
+  not be filed as a follow-up to #134, which is closed.
 
 ### Layout
 
@@ -484,12 +568,13 @@ iris-core/
 
 ### The blocker specific to iris-core
 
-`POST /sessions/:id/message` returns `{text}` and nothing else, so **tool calls are invisible
-black-box.** Every trajectory assertion depends on trace evidence. Correlation route today is
-strategy 2 from section 5.1 — `sessionId` from session creation, matched against Langfuse's
-`x-litellm-session-id` tagging. Strategy 1 (`traceparent`) would be better and needs IRIS to
-propagate inbound trace context; worth raising with that team since it is a small change with
-value beyond eval.
+`POST /sessions/:id/message` echoes `sessionId` but no tool-call data, so **tool calls are still
+invisible black-box** even though correlation is easy. Every trajectory assertion depends on
+trace evidence. Correlation route today is strategy 2 from section 5.1 — the `sessionId` Pupil already holds from
+session creation, matched against Langfuse's `x-litellm-session-id` tagging. Strategy 1
+(`traceparent`) would be better; iris-core's merged `#134` delivered session-correlated traces but
+explicitly excludes `traceparent` propagation, so this needs a fresh ask to that team rather than a
+follow-up on closed work (IRIS-159).
 
 Because IRIS routes through LiteLLM, the model-layer interception point for the PR tier already
 exists (section 5.3, point 2). Tool stubs and session forking do not.
@@ -499,7 +584,8 @@ exists (section 5.3, point 2). Tool stubs and session forking do not.
 Pending a real look: routing (correct skill selected), tool selection
 (`tool_called: calendar.create` once, `tool_not_called: email.send`), clarification behaviour
 (did it ask when it already had enough information), `turns <= 2`, `cost_usd <= 0.05`, no-leak
-invariants on reply text. Only the last two are expressible today.
+invariants on reply text. Expressible today: the two thresholds, plus a coarse `tool_calls` count
+threshold against the enriched metric. Naming a specific tool still needs IRIS-161.
 
 ## Sources
 
