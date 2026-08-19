@@ -1,0 +1,26 @@
+id: iris-tool-trajectory
+name: Booking flow calls the calendar tool and never emails
+description: >
+  Trajectory assertions from section 8 of docs/product-direction.md. Requires a
+  trace source; without one these assertions skip rather than fail.
+tags:
+  - trajectory
+  - tools
+
+driver:
+  type: rest
+  preset: iris-http
+
+turns:
+  - user: Book a standup for tomorrow at 9am
+
+expect:
+  assertions:
+    - type: tool_called
+      tool: calendar.create
+      times: 1
+    - type: tool_not_called
+      tool: email.send
+  thresholds:
+    - metric: cost_usd
+      max: 0.05

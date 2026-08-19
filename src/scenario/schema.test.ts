@@ -153,4 +153,65 @@ describe("normalizeScenario", () => {
       ),
     ).toThrow(/bad\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/);
   });
+
+  it("accepts all five tool assertion types", () => {
+    const scenario = normalizeScenario({
+      id: "tools",
+      input: "book a meeting",
+      expect: {
+        assertions: [
+          { type: "tool_called", tool: "calendar.create", times: 1 },
+          { type: "tool_not_called", tool: "email.send" },
+          { type: "tool_call_count", tool: "search", min: 1, max: 3 },
+          { type: "tool_order", tools: ["search", "calendar.create"] },
+          { type: "tool_args", tool: "calendar.create", equals: { title: "Standup" } },
+        ],
+      },
+    });
+
+    expect(scenario.expect.assertions).toHaveLength(5);
+  });
+
+  it("defaults tool name matching to exact", () => {
+    const scenario = normalizeScenario({
+      id: "tools",
+      input: "hi",
+      expect: { assertions: [{ type: "tool_called", tool: "search" }] },
+    });
+
+    expect(scenario.expect.assertions[0]).toMatchObject({ match: "exact" });
+  });
+
+  it("reports a single error for a malformed tool assertion", () => {
+    expect(() =>
+      normalizeScenario(
+        {
+          id: "tools",
+          input: "hi",
+          expect: { assertions: [{ type: "tool_called" }] },
+        },
+        "scenarios/tools.yaml",
+      ),
+    ).toThrowError(/scenarios\/tools\.yaml:expect\.assertions\.0\.tool/);
+  });
+
+  it("rejects tool_call_count without min or max", () => {
+    expect(() =>
+      normalizeScenario({
+        id: "tools",
+        input: "hi",
+        expect: { assertions: [{ type: "tool_call_count", tool: "search" }] },
+      }),
+    ).toThrowError(/min or max/);
+  });
+
+  it("rejects an unknown key on a tool assertion", () => {
+    expect(() =>
+      normalizeScenario({
+        id: "tools",
+        input: "hi",
+        expect: { assertions: [{ type: "tool_called", tool: "search", nope: true }] },
+      }),
+    ).toThrowError();
+  });
 });
