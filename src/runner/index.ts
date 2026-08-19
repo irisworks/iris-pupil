@@ -6,6 +6,7 @@ import {
   type RunResult,
   type Scenario,
   type ScenarioResult,
+  type TargetIdentity,
   type Trajectory,
   type TurnRecord,
   Verdict,
@@ -85,6 +86,7 @@ export interface RunScenarioOptions {
 export interface RunScenariosOptions extends RunScenarioOptions {
   concurrency?: number;
   metadata?: Record<string, unknown>;
+  target?: TargetIdentity;
 }
 
 export interface RunnerDriverContext {
@@ -577,6 +579,7 @@ export async function runScenarios(
     completedAt,
     summary: summarize(results),
     metadata: options.metadata ?? {},
+    ...(options.target !== undefined && { target: options.target }),
   };
 
   // Scenarios are enriched as they finish; this only rolls the statuses up.

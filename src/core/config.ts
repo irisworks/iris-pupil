@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { z, type ZodError } from "zod";
-import { PupilError } from "./types.js";
+import { PupilError, type TargetIdentity } from "./types.js";
 
 const DEFAULT_CONFIG_FILE = "pupil.config.yaml";
 
@@ -44,6 +44,21 @@ const langfuseConfigSchema = z
   .strict()
   .default({ enabled: "auto" });
 
+const optionalTargetString = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
+const targetConfigSchema = z
+  .object({
+    system: optionalTargetString,
+    environment: optionalTargetString,
+    version: optionalTargetString,
+    fixtureSet: optionalTargetString,
+  })
+  .strict()
+  .default({});
+
 const compareConfigSchema = z
   .object({
     latencyThresholdMs: z.coerce.number().nonnegative().optional(),
@@ -59,6 +74,7 @@ const pupilConfigSchema = z
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,
+    target: targetConfigSchema,
     compare: compareConfigSchema,
   })
   .strict();

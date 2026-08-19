@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig } from "../core/config.js";
-import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
+import { aggregateVerdicts, PupilError, type TargetIdentity, Verdict } from "../core/types.js";
 import {
   compareRuns,
   formatRunComparison,
@@ -24,7 +25,8 @@ import {
 } from "./reporting.js";
 import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
 
-const program = new Command();
+export const program = new Command();
+program.enablePositionalOptions();
 const packageManifest = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
 ) as { version: string };
@@ -178,6 +180,10 @@ program
   )
   .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
+  .option("--system <name>", "Agent system name (e.g. support-agent)")
+  .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
+  .option("--target-version <version>", "Deployed version or commit SHA")
+  .option("--fixture-set <name>", "Active fixture/stub set name")
   .option(
     "--baseline",
     "Auto-compare against the stored baseline run and exit 1 on regression",
@@ -209,6 +215,10 @@ program
         concurrency: number;
         historyDir: string;
         langfuse: boolean;
+        system?: string;
+        environment?: string;
+        targetVersion?: string;
+        fixtureSet?: string;
         baseline: boolean;
         strict: boolean;
         json: boolean;
@@ -222,6 +232,14 @@ program
       const config = await loadPupilConfig(
         options.config !== undefined ? { configPath: options.config } : {},
       );
+      const mergedTarget: TargetIdentity = {
+        ...config.target,
+        mode: "driven",
+        ...(options.system ? { system: options.system } : {}),
+        ...(options.environment ? { environment: options.environment } : {}),
+        ...(options.targetVersion ? { version: options.targetVersion } : {}),
+        ...(options.fixtureSet ? { fixtureSet: options.fixtureSet } : {}),
+      };
       const result = await runScenarios(scenarios, {
         timeoutMs: options.timeoutMs,
         retries: options.retries,
@@ -236,6 +254,7 @@ program
           options.langfuse === false
             ? false
             : (LangfuseTraceSource.fromSettings(config.langfuse) ?? false),
+        target: mergedTarget,
       });
 
       const store = new JsonRunHistoryStore({ dir: options.historyDir });
@@ -361,6 +380,23 @@ program
     console.log(`Started: ${run.startedAt}`);
     console.log(`Completed: ${run.completedAt}`);
     console.log(`Summary: ${formatSummary(run.summary)}`);
+    if (run.target) {
+      const parts = (
+        [
+          ["system", run.target.system],
+          ["environment", run.target.environment],
+          ["version", run.target.version],
+          ["mode", run.target.mode],
+          ["fixtureSet", run.target.fixtureSet],
+        ] as [string, string | undefined][]
+      )
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" ");
+      if (parts) {
+        console.log(`Target: ${parts}`);
+      }
+    }
 
     for (const result of [...run.results].sort((a, b) =>
       a.scenarioId.localeCompare(b.scenarioId),
@@ -509,7 +545,16 @@ program
       );
 
       process.stdout.write(formatRunComparison(comparison));
-      if (comparison.hasRegressions) {
+      const hasHardTargetMismatch = comparison.targetMismatch.some(
+        (mismatch) => mismatch.severity === "hard",
+      );
+      if (hasHardTargetMismatch) {
+        // A hard mismatch (e.g. stubbed vs. live) means the comparison isn't
+        // meaningful, so it must never surface as exit code 1 (a real
+        // regression) — use a distinct code so CI can tell "refused" apart
+        // from "regressed".
+        process.exitCode = 2;
+      } else if (comparison.hasRegressions) {
         process.exitCode = 1;
       }
     },
@@ -549,4 +594,11 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// process.argv[1] keeps whatever path invoked this script (e.g. a symlinked
+// global bin), while import.meta.url is Node's fully resolved real path.
+// Comparing raw strings breaks for any symlinked/linked install; resolving
+// both through the filesystem first makes the comparison symlink-proof while
+// still skipping this when the module is merely imported (e.g. by tests).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void main();
+}

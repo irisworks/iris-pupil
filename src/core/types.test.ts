@@ -56,4 +56,40 @@ describe("core domain types", () => {
 
     expect(run.verdict).toBe(Verdict.Pass);
   });
+
+  it("accepts a RunResult with a full target identity", () => {
+    const run: RunResult = {
+      runId: "run-1",
+      verdict: Verdict.Pass,
+      startedAt: "2026-08-06T00:00:00.000Z",
+      completedAt: "2026-08-06T00:01:00.000Z",
+      metadata: {},
+      results: [],
+      summary: { total: 0, passed: 0, failed: 0, needsReview: 0, errors: 0 },
+      target: {
+        system: "support-agent",
+        environment: "staging",
+        version: "v2.3.1",
+        mode: "driven",
+        fixtureSet: "live",
+      },
+    };
+
+    expect(run.target?.system).toBe("support-agent");
+    expect(run.target?.mode).toBe("driven");
+  });
+
+  it("accepts a RunResult without target (legacy compatibility)", () => {
+    const run: RunResult = {
+      runId: "run-2",
+      verdict: Verdict.Pass,
+      startedAt: "2026-08-06T00:00:00.000Z",
+      completedAt: "2026-08-06T00:01:00.000Z",
+      metadata: {},
+      results: [],
+      summary: { total: 0, passed: 0, failed: 0, needsReview: 0, errors: 0 },
+    };
+
+    expect(run.target).toBeUndefined();
+  });
 });

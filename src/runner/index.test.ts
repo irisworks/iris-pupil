@@ -644,6 +644,39 @@ describe("scenario runner", () => {
   });
 });
 
+describe("runScenarios target identity", () => {
+  it("writes target onto the RunResult when provided", async () => {
+    const closes: string[] = [];
+    const disposals = { count: 0 };
+    const fakeDriver = new FakeDriver({ text: "ok", raw: {} }, closes, disposals);
+
+    const result = await runScenarios([scenario()], {
+      traceSource: false,
+      target: { mode: "driven", system: "support-agent", environment: "staging" },
+      driverFactory: () => fakeDriver,
+    });
+
+    expect(result.target).toEqual({
+      mode: "driven",
+      system: "support-agent",
+      environment: "staging",
+    });
+  });
+
+  it("leaves target undefined when not provided", async () => {
+    const closes: string[] = [];
+    const disposals = { count: 0 };
+    const fakeDriver = new FakeDriver({ text: "ok", raw: {} }, closes, disposals);
+
+    const result = await runScenarios([scenario()], {
+      traceSource: false,
+      driverFactory: () => fakeDriver,
+    });
+
+    expect(result.target).toBeUndefined();
+  });
+});
+
 describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
   class FakeTraceSource implements TraceSource {
     readonly metadataKey = "fake";

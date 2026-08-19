@@ -22,6 +22,7 @@ describe("loadPupilConfig", () => {
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
+      target: {},
       compare: {},
     });
   });
@@ -136,6 +137,68 @@ describe("loadPupilConfig", () => {
 
     await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
       /pupil\.config\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/,
+    );
+  });
+
+  it("parses a full target block and resolves env refs", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "target:",
+        "  system: support-agent",
+        "  environment: ${DEPLOY_ENV:-staging}",
+        "  version: ${DEPLOY_SHA:-}",
+        "  fixtureSet: live",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({
+      cwd: tmpRoot,
+      env: { DEPLOY_ENV: "production", DEPLOY_SHA: "abc1234" },
+    });
+
+    expect(config.target).toEqual({
+      system: "support-agent",
+      environment: "production",
+      version: "abc1234",
+      fixtureSet: "live",
+    });
+  });
+
+  it("target defaults to an empty block when absent", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.target).toEqual({});
+  });
+
+  it("coerces an empty string in target fields to absent", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      'target:\n  system: ""\n  environment: ""\n  version: ""\n  fixtureSet: ""\n',
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.target).toEqual({});
+  });
+
+  it("rejects unknown fields in target block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "target:\n  commit: abc123\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/Unrecognized key/);
+  });
+
+  it("rejects a mode field in target block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "target:\n  mode: observed\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /Unrecognized key\(s\) in object: 'mode'/,
     );
   });
 

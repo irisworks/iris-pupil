@@ -1,7 +1,15 @@
 import { Verdict, verdictSeverity, type RunResult, type ScenarioResult } from "../core/types.js";
+import type { TargetIdentity } from "../core/types.js";
 
 export type ScenarioComparisonStatus =
   "unchanged" | "regressed" | "fixed" | "still_failing" | "new" | "removed";
+
+export interface TargetMismatchEntry {
+  field: keyof TargetIdentity;
+  severity: "hard" | "soft";
+  base: string | undefined;
+  current: string | undefined;
+}
 
 export interface MetricDelta {
   metric: string;
@@ -28,6 +36,8 @@ export interface RunComparison {
   currentRunId: string;
   scenarios: ScenarioComparison[];
   hasRegressions: boolean;
+  targetMismatch: TargetMismatchEntry[];
+  targetIdentityUnknown: boolean;
   summary: Record<ScenarioComparisonStatus, number> & {
     metricRegressions: number;
   };
@@ -115,6 +125,45 @@ function indexByScenarioId(run: RunResult): Map<string, ScenarioResult> {
   return new Map(run.results.map((result) => [result.scenarioId, result]));
 }
 
+// A `Record` over every `TargetIdentity` key (rather than a plain array)
+// forces this literal to stay exhaustive: adding a field to `TargetIdentity`
+// without adding it here is a TypeScript compile error, so new fields can't
+// silently escape contamination detection.
+const TARGET_FIELDS: Record<keyof TargetIdentity, "hard" | "soft"> = {
+  system: "hard",
+  mode: "hard",
+  fixtureSet: "hard",
+  environment: "soft",
+  version: "soft",
+};
+
+function detectTargetMismatches(base: RunResult, current: RunResult): TargetMismatchEntry[] {
+  const bt: Partial<TargetIdentity> = base.target ?? {};
+  const ct: Partial<TargetIdentity> = current.target ?? {};
+
+  const mismatches: TargetMismatchEntry[] = [];
+
+  for (const [field, severity] of Object.entries(TARGET_FIELDS) as [
+    keyof TargetIdentity,
+    "hard" | "soft",
+  ][]) {
+    const bv = bt[field] as string | undefined;
+    const cv = ct[field] as string | undefined;
+    if (bv === cv) continue;
+    // Hard fields (system/mode/fixtureSet) treat one side being unset as a
+    // mismatch too: a stubbed run vs. an undeclared one — including a run
+    // that predates target-identity tracking entirely — is exactly the
+    // contamination this check exists to catch. Soft fields (environment/
+    // version) stay lenient so a merely-incomplete target doesn't warn.
+    const bothPresent = bv !== undefined && cv !== undefined;
+    if (severity === "hard" || bothPresent) {
+      mismatches.push({ field, severity, base: bv, current: cv });
+    }
+  }
+
+  return mismatches;
+}
+
 export function compareRuns(
   base: RunResult,
   current: RunResult,
@@ -171,6 +220,8 @@ export function compareRuns(
     currentRunId: current.runId,
     scenarios,
     hasRegressions: scenarios.some((scenario) => scenario.regression),
+    targetMismatch: detectTargetMismatches(base, current),
+    targetIdentityUnknown: !base.target || !current.target,
     summary,
   };
 }
@@ -184,7 +235,83 @@ function formatDelta(delta: number | undefined): string {
   return delta > 0 ? `+${delta}` : String(delta);
 }
 
+function formatTargetTable(
+  entries: TargetMismatchEntry[],
+  baseRunId: string,
+  currentRunId: string,
+): string {
+  const gap = 2;
+  const leftHeader = `  Base (${baseRunId})`;
+  const rightHeader = `Current (${currentRunId})`;
+  const leftCells = entries.map((m) => `  ${m.field}: ${m.base ?? "<not recorded>"}`);
+  const rightCells = entries.map((m) => `${m.field}: ${m.current ?? "<not recorded>"}`);
+  const col = Math.max(leftHeader.length, ...leftCells.map((cell) => cell.length)) + gap;
+
+  const header = leftHeader.padEnd(col) + rightHeader;
+  const divider = "─".repeat(leftHeader.length).padEnd(col) + "─".repeat(rightHeader.length);
+  const rows = entries.map((_, i) => leftCells[i]!.padEnd(col) + rightCells[i]);
+  return [header, divider, ...rows].join("\n");
+}
+
+function formatTargetMismatches(
+  mismatches: TargetMismatchEntry[],
+  baseRunId: string,
+  currentRunId: string,
+): string {
+  const hard = mismatches.filter((m) => m.severity === "hard");
+  const soft = mismatches.filter((m) => m.severity === "soft");
+  const parts: string[] = [];
+
+  if (hard.length > 0) {
+    const table = formatTargetTable(hard, baseRunId, currentRunId);
+    parts.push(
+      [
+        "⚠ Comparison may be invalid",
+        "",
+        table,
+        "",
+        "  Regression metrics may not be meaningful.",
+      ].join("\n"),
+    );
+  }
+
+  if (soft.length > 0) {
+    const table = formatTargetTable(soft, baseRunId, currentRunId);
+    parts.push(
+      [
+        "⚠ Cross-target comparison",
+        "",
+        table,
+        "",
+        "  Metrics may not be comparable across environments or versions.",
+      ].join("\n"),
+    );
+  }
+
+  return parts.join("\n\n");
+}
+
+function formatTargetIdentityUnknown(): string {
+  return [
+    "ℹ Target identity unknown",
+    "",
+    "  One or both runs predate target identity tracking.",
+    "  Comparison provenance cannot be verified.",
+    "  Re-baseline with `pupil baseline <runId>` once both runs carry target identity.",
+  ].join("\n");
+}
+
 export function formatRunComparison(comparison: RunComparison): string {
+  const blocks: string[] = [];
+
+  const mismatchBlock = formatTargetMismatches(
+    comparison.targetMismatch,
+    comparison.baseRunId,
+    comparison.currentRunId,
+  );
+  if (mismatchBlock) blocks.push(mismatchBlock);
+  if (comparison.targetIdentityUnknown) blocks.push(formatTargetIdentityUnknown());
+
   const lines = [
     `Comparison ${comparison.baseRunId} -> ${comparison.currentRunId}`,
     `Summary: regressed=${comparison.summary.regressed} fixed=${comparison.summary.fixed} still_failing=${comparison.summary.still_failing} new=${comparison.summary.new} removed=${comparison.summary.removed} unchanged=${comparison.summary.unchanged} metric_regressions=${comparison.summary.metricRegressions}`,
@@ -210,5 +337,6 @@ export function formatRunComparison(comparison: RunComparison): string {
     }
   }
 
-  return `${lines.join("\n")}\n`;
+  const body = `${lines.join("\n")}\n`;
+  return blocks.length > 0 ? `${blocks.join("\n\n")}\n\n${body}` : body;
 }
