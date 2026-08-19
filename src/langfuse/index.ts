@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { firstString, isRecord, type JsonRecord } from "../core/json.js";
+import type { ToolCall } from "../core/types.js";
 import type { TraceLookupContext, TraceRecord, TraceSource } from "../trace/index.js";
 
 export interface LangfuseEnrichment {
@@ -10,7 +11,7 @@ export interface LangfuseEnrichment {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
-  readonly toolCalls: string[];
+  readonly toolCalls: ToolCall[];
 }
 
 export interface LangfuseConfig {
@@ -264,7 +265,7 @@ function aggregate(
   return total;
 }
 
-function extractToolCalls(records: JsonRecord[]): string[] {
+function extractToolCalls(records: JsonRecord[]): ToolCall[] {
   const names = new Set<string>();
   for (const record of records) {
     const type = firstString(record.type, record.observationType, record.kind)?.toLowerCase() ?? "";
@@ -286,7 +287,7 @@ function extractToolCalls(records: JsonRecord[]): string[] {
       }
     }
   }
-  return [...names].sort();
+  return [...names].sort().map((name, index) => ({ name, index }));
 }
 
 export function extractLangfuseEnrichment(

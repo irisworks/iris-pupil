@@ -254,7 +254,10 @@ describe("Langfuse payload extraction", () => {
       inputTokens: 30,
       outputTokens: 11,
       totalTokens: 41,
-      toolCalls: ["calendar.create", "calendar.read"],
+      toolCalls: [
+        { name: "calendar.create", index: 0 },
+        { name: "calendar.read", index: 1 },
+      ],
     });
   });
 
@@ -300,7 +303,7 @@ describe("Langfuse payload extraction", () => {
       inputTokens: 15,
       outputTokens: 5,
       totalTokens: 16,
-      toolCalls: ["calendar.create"],
+      toolCalls: [{ name: "calendar.create", index: 0 }],
     });
   });
   it("collects tool names from toolCalls arrays", () => {
@@ -320,7 +323,10 @@ describe("Langfuse payload extraction", () => {
           },
         ],
       })?.toolCalls,
-    ).toEqual(["notify", "search"]);
+    ).toEqual([
+      { name: "notify", index: 0 },
+      { name: "search", index: 1 },
+    ]);
   });
 
   it("returns undefined when the session has no traces", () => {
@@ -378,7 +384,7 @@ describe("LangfuseTraceSource lookup", () => {
       inputTokens: 10,
       outputTokens: 5,
       totalTokens: 15,
-      toolCalls: ["calendar.create"],
+      toolCalls: [{ name: "calendar.create", index: 0 }],
     });
   });
 
@@ -416,7 +422,7 @@ describe("LangfuseTraceSource lookup", () => {
       inputTokens: 12,
       outputTokens: 4,
       totalTokens: 16,
-      toolCalls: ["calendar.create"],
+      toolCalls: [{ name: "calendar.create", index: 0 }],
     });
   });
 

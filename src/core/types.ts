@@ -49,6 +49,26 @@ export interface TargetIdentity {
   fixtureSet?: string;
 }
 
+/**
+ * One observed tool invocation, in call order.
+ *
+ * Shaped near OpenTelemetry GenAI concepts (name, input, timing, error) without
+ * binding Pupil to experimental semantic-convention field names — the same
+ * reasoning applied to TrajectoryStep.
+ */
+export interface ToolCall {
+  /** Tool identifier as reported by the agent, e.g. "calendar.create". */
+  name: string;
+  /** 0-based position in call order across the whole trajectory. */
+  index: number;
+  /** Parsed argument payload, when the backend provides one. */
+  args?: unknown;
+  /** ISO-8601 start time, when the backend provides one. */
+  startedAt?: string;
+  /** Set when the tool itself reported a failure. */
+  error?: string;
+}
+
 export interface ScenarioDriverRef {
   type: string;
   preset?: string;

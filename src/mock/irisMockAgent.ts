@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { MockTraceSource } from "./mockTraceSource.js";
+import type { ToolCall } from "../core/types.js";
 import type { TraceSource } from "../trace/index.js";
 
 export interface IrisMockRule {
@@ -106,7 +107,7 @@ function findTraceRule(text: string, rules: MockTraceRule[]): MockTraceRule | un
 
 export function createIrisMockAgent(
   options: IrisMockOptions = {},
-  spanStore: Map<string, string[]> = new Map(),
+  spanStore: Map<string, ToolCall[]> = new Map(),
 ): IrisMockAgent {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 5050;
@@ -221,7 +222,10 @@ export function createIrisMockAgent(
         if (spansToAppend !== null) {
           const sessionIdDecoded = decodeURIComponent(messageMatch[1]);
           const existing = spanStore.get(sessionIdDecoded) ?? [];
-          spanStore.set(sessionIdDecoded, [...existing, ...spansToAppend]);
+          spanStore.set(sessionIdDecoded, [
+            ...existing,
+            ...spansToAppend.map((name, offset) => ({ name, index: existing.length + offset })),
+          ]);
         }
 
         const delayMs = getDelayFromText(text, defaultDelayMs);
@@ -297,7 +301,7 @@ export interface MockAgentBundle {
 }
 
 export function createMockAgentBundle(options?: IrisMockOptions): MockAgentBundle {
-  const spanStore = new Map<string, string[]>();
+  const spanStore = new Map<string, ToolCall[]>();
   return {
     agent: createIrisMockAgent(options, spanStore),
     traceSource: new MockTraceSource(spanStore),

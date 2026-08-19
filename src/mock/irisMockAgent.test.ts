@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createIrisMockAgent, type IrisMockAgent } from "./irisMockAgent.js";
+import type { ToolCall } from "../core/types.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -202,7 +203,7 @@ describe("IRIS mock agent", () => {
 
 describe("span store — session initialization", () => {
   it("initialises span store with empty array when a session is created", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent({ port: 0 }, spanStore);
     const address = await mock.listen();
     const baseUrl = `http://${address.host}:${address.port}`;
@@ -214,7 +215,7 @@ describe("span store — session initialization", () => {
   });
 
   it("does not initialise span store when session creation fails", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent({ port: 0 }, spanStore);
     const address = await mock.listen();
     const baseUrl = `http://${address.host}:${address.port}`;
@@ -232,7 +233,7 @@ describe("span store — session initialization", () => {
 
 describe("span store — trace pass on message", () => {
   it("appends defaultToolCalls when no trace rule matches", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["search", "send"] }, spanStore);
     const address = await mock.listen();
     const baseUrl = `http://${address.host}:${address.port}`;
@@ -244,11 +245,14 @@ describe("span store — trace pass on message", () => {
       body: JSON.stringify({ text: "hello" }),
     });
 
-    expect(spanStore.get(session.sessionId)).toEqual(["search", "send"]);
+    expect(spanStore.get(session.sessionId)).toEqual([
+      { name: "search", index: 0 },
+      { name: "send", index: 1 },
+    ]);
   });
 
   it("appends per-rule toolCalls when a trace rule matches by string", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent(
       {
         port: 0,
@@ -266,11 +270,11 @@ describe("span store — trace pass on message", () => {
       body: JSON.stringify({ text: "please book meeting for 3pm" }),
     });
 
-    expect(spanStore.get(session.sessionId)).toEqual(["calendar_create"]);
+    expect(spanStore.get(session.sessionId)).toEqual([{ name: "calendar_create", index: 0 }]);
   });
 
   it("appends per-rule toolCalls when a trace rule matches by regex", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent(
       {
         port: 0,
@@ -288,11 +292,11 @@ describe("span store — trace pass on message", () => {
       body: JSON.stringify({ text: "Check Order #99 status" }),
     });
 
-    expect(spanStore.get(session.sessionId)).toEqual(["order_lookup"]);
+    expect(spanStore.get(session.sessionId)).toEqual([{ name: "order_lookup", index: 0 }]);
   });
 
   it("appends nothing when no trace rule matches and no defaultToolCalls configured", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent({ port: 0 }, spanStore);
     const address = await mock.listen();
     const baseUrl = `http://${address.host}:${address.port}`;
@@ -310,7 +314,7 @@ describe("span store — trace pass on message", () => {
   // Rule matches but toolCalls is empty — agent ran but called nothing.
   // Configures a trajectory where a tool_called assertion would fail.
   it("trace rule with toolCalls: [] produces empty span list even when rule matches", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent(
       {
         port: 0,
@@ -334,7 +338,7 @@ describe("span store — trace pass on message", () => {
   });
 
   it("spans accumulate across multiple turns in emission order", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent(
       {
         port: 0,
@@ -360,11 +364,14 @@ describe("span store — trace pass on message", () => {
       body: JSON.stringify({ text: "send the results" }),
     });
 
-    expect(spanStore.get(session.sessionId)).toEqual(["web_search", "email_send"]);
+    expect(spanStore.get(session.sessionId)).toEqual([
+      { name: "web_search", index: 0 },
+      { name: "email_send", index: 1 },
+    ]);
   });
 
   it("preserves out-of-order and repeated tool names exactly as configured", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent(
       {
         port: 0,
@@ -382,11 +389,15 @@ describe("span store — trace pass on message", () => {
       body: JSON.stringify({ text: "multi tool request" }),
     });
 
-    expect(spanStore.get(session.sessionId)).toEqual(["b_tool", "a_tool", "b_tool"]);
+    expect(spanStore.get(session.sessionId)).toEqual([
+      { name: "b_tool", index: 0 },
+      { name: "a_tool", index: 1 },
+      { name: "b_tool", index: 2 },
+    ]);
   });
 
   it("HTTP rule and trace rule matching are independent — trace rule matches even when HTTP rule does not", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent(
       {
         port: 0,
@@ -408,11 +419,11 @@ describe("span store — trace pass on message", () => {
     const reply = (await response.json()) as { text: string };
 
     expect(reply.text).toBe("Mock Iris received: trace-keyword");
-    expect(spanStore.get(session.sessionId)).toEqual(["tracer"]);
+    expect(spanStore.get(session.sessionId)).toEqual([{ name: "tracer", index: 0 }]);
   });
 
   it("HTTP rule and trace rule matching are independent — HTTP rule matches even when trace rule does not", async () => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent(
       {
         port: 0,
@@ -441,7 +452,7 @@ describe("span store — trace pass on message", () => {
     ["__500__", 500],
     ["__504__", 504],
   ])("trace pass fires even when HTTP status is %s", async (text, expectedStatus) => {
-    const spanStore = new Map<string, string[]>();
+    const spanStore = new Map<string, ToolCall[]>();
     mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["attempted_tool"] }, spanStore);
     const address = await mock.listen();
     const baseUrl = `http://${address.host}:${address.port}`;
@@ -454,6 +465,6 @@ describe("span store — trace pass on message", () => {
     });
 
     expect(response.status).toBe(expectedStatus);
-    expect(spanStore.get(session.sessionId)).toEqual(["attempted_tool"]);
+    expect(spanStore.get(session.sessionId)).toEqual([{ name: "attempted_tool", index: 0 }]);
   });
 });

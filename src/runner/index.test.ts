@@ -741,7 +741,10 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
     fakeSource.seed(SESSION_ID, {
       traceCount: 1,
       costUsd: 0.05,
-      toolCalls: ["search", "read_file"],
+      toolCalls: [
+        { name: "search", index: 0 },
+        { name: "read_file", index: 1 },
+      ],
     });
 
     const result = await runScenario(scenario(), {

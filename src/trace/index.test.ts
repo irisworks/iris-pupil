@@ -47,7 +47,10 @@ describe("applyTraceEnrichment", () => {
         inputTokens: 100,
         outputTokens: 50,
         totalTokens: 150,
-        toolCalls: ["search", "send"],
+        toolCalls: [
+          { name: "search", index: 0 },
+          { name: "send", index: 1 },
+        ],
       },
     };
     const status = applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
@@ -130,6 +133,69 @@ describe("applyTraceEnrichment", () => {
     applyTraceEnrichment(result, "k", { status: "missing" }, "otel");
     expect(result.metadata?.otel).toBeDefined();
     expect(result.metadata?.langfuse).toBeUndefined();
+  });
+
+  it("sets tool_calls from the true call count, preserving duplicates", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: {
+        traceCount: 1,
+        toolCalls: [
+          { name: "search", index: 0 },
+          { name: "search", index: 1 },
+          { name: "calendar.create", index: 2 },
+        ],
+      },
+    };
+
+    applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
+
+    expect(result.metrics.tool_calls).toBe(3);
+  });
+
+  it("records tool call names in metadata for readable history", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: {
+        traceCount: 1,
+        toolCalls: [
+          { name: "search", index: 0 },
+          { name: "calendar.create", index: 1 },
+        ],
+      },
+    };
+
+    applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
+
+    const meta = result.metadata?.langfuse as { toolCalls: string[] };
+    expect(meta.toolCalls).toEqual(["search", "calendar.create"]);
+  });
+
+  it("omits the tool_calls metric when the backend does not report tool calls", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: { traceCount: 1, toolCalls: undefined, costUsd: 0.01 },
+    };
+
+    applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
+
+    expect(result.metrics.tool_calls).toBeUndefined();
+    expect(result.metrics.cost_usd).toBe(0.01);
+  });
+
+  it("sets tool_calls to zero when a trace was found with no tool calls", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: { traceCount: 1, toolCalls: [] },
+    };
+
+    applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
+
+    expect(result.metrics.tool_calls).toBe(0);
   });
 });
 
