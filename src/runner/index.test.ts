@@ -13,7 +13,11 @@ import {
   type RestConversation,
   type RestDriverResponse,
 } from "../driver/index.js";
-import { createIrisMockAgent, type IrisMockAgent } from "../mock/irisMockAgent.js";
+import {
+  createIrisMockAgent,
+  createMockAgentBundle,
+  type IrisMockAgent,
+} from "../mock/irisMockAgent.js";
 import {
   createDrivenTrajectory,
   progressEventTypeForVerdict,
@@ -670,6 +674,47 @@ describe("scenario runner", () => {
 
     expect(result.scores[0]?.verdict).toBe(Verdict.Skip);
     expect(result.verdict).toBe(Verdict.Pass);
+  });
+
+  it("scores tool assertions end to end against the mock agent", async () => {
+    const bundle = createMockAgentBundle({
+      port: 0,
+      rules: [{ match: /book/i, reply: "Booked." }],
+      traceRules: [
+        {
+          match: /book/i,
+          toolCalls: ["search", { name: "calendar.create", args: { title: "Standup" } }],
+        },
+      ],
+    });
+    mock = bundle.agent;
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const result = await runScenario(
+      scenario({
+        turns: [{ user: "book a standup", expect: [] }],
+        driver: { type: "rest", preset: "iris-http", config: { baseUrl } },
+        expect: {
+          assertions: [
+            { type: "tool_called", tool: "calendar.create", times: 1, match: "exact" },
+            { type: "tool_not_called", tool: "email.send", match: "exact" },
+            { type: "tool_order", tools: ["search", "calendar.create"], match: "exact" },
+            {
+              type: "tool_args",
+              tool: "calendar.create",
+              equals: { title: "Standup" },
+              match: "exact",
+            },
+          ],
+          thresholds: [],
+        },
+      }),
+      { traceSource: bundle.traceSource },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metrics.tool_calls).toBe(2);
   });
 
   it("limits scenario concurrency", async () => {

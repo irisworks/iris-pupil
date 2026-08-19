@@ -31,6 +31,11 @@ The read-only commands (`list`, `report`, `baseline`, `score`) need nothing from
 
 `pupil run` enriches each scenario result with Langfuse trace evidence (trace id/url, cost, tokens, tool calls) as soon as the scenario finishes, so cost and token thresholds are scored against the enriched metrics. It is best-effort: lookup failures are recorded in `metadata.langfuse` and never change a run's verdict.
 
+That still holds: a failed lookup produces `Verdict.Skip`, which has the same severity as `Pass`.
+But tool assertions now _depend_ on this evidence and skip without it, so a green run with skipped
+tool assertions means "not checked", not "verified" - see Tool Assertions below and
+`--require-trace`.
+
 Enrichment is pluggable: the runner accepts any `TraceSource` implementation via `traceSource` in `RunScenarioOptions`. Pass `LangfuseTraceSource.fromSettings(config.langfuse)` to use Langfuse, or implement `TraceSource` for another backend. Omitting `traceSource` falls back to Langfuse configured from the environment; `false` disables enrichment entirely.
 
 Configuration comes from `pupil.config.yaml`'s `langfuse` block first, then the environment (`LANGFUSE_HOST` - `LANGFUSE_BASE_URL` is also accepted - plus `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`). Config values win over env values when both are present. `enabled: false` or `pupil run --no-langfuse` disables it. Because Langfuse ingestion is asynchronous, lookups poll for up to `langfuse.waitMs` (default 25s) before recording a skip. Pupil performs one immediate lookup, then uses `langfuse.initialDelayMs` (default 8s, discounted by scenario runtime) before the second lookup and exponential backoff after that. Each individual HTTP lookup is bounded by `langfuse.timeoutMs` (or `LANGFUSE_TIMEOUT_MS`, default 3s), which slower Langfuse Cloud responses may need raised.
@@ -65,6 +70,42 @@ override the config per invocation.
 - `2` - a hard target-identity mismatch (`system`, `mode`, or `fixtureSet` differ, including one side missing the field) was detected between the two runs. The comparison is refused as invalid rather than scored, since diffing a stubbed run against a live one (or vice versa) isn't meaningful. `environment`/`version` mismatches are "soft" and only produce a warning, not exit 2.
 
 Any run recorded before this feature shipped has no `target` at all, which counts as a hard mismatch on `mode`. This means existing users will hit exit code 2 the first time they run `pupil compare` against an old baseline after upgrading. The fix is `pupil baseline <newRunId>` to establish a fresh, tagged baseline going forward.
+
+## Tool Assertions
+
+Scenarios can assert on the agent's trajectory, not just its reply text. Five assertion types
+read `trajectory.toolCalls`, which `pupil run` populates from trace evidence:
+
+- `tool_called` - the tool ran; optional `times` is an exact count.
+- `tool_not_called` - the tool never ran.
+- `tool_call_count` - `min`/`max` bounds; omit `tool` to count every call.
+- `tool_order` - the listed tools appear in that relative order.
+- `tool_args` - some call to the tool had matching arguments.
+
+Matching is deliberately lenient so an assertion goes red only when the thing it names changed:
+tool names match exactly unless `match: glob` is set, `tool_order` matches a **subsequence** (other
+tools may appear in between), and `tool_args` is a **subset** match (extra keys in the actual
+payload are ignored). Arrays inside `tool_args` compare by exact position and length.
+
+Because IRIS returns `{text}` only, tool calls are invisible through the agent's public interface
+and every tool assertion depends on a `TraceSource`. When no evidence is available the assertion
+**skips** rather than failing: `Verdict.Skip` has the same severity as `Pass`, so a tracing outage
+cannot turn a pipeline red. The distinction that matters is `undefined` versus `[]` -
+`undefined` means the backend does not report tool calls at all (skip), while `[]` means a trace
+was found showing zero calls, which is real evidence and scores normally. An agent that silently
+stops calling a tool therefore fails, which is the regression these assertions exist to catch.
+
+Skips are reported loudly - the plain terminal summary (a `WARNING:` line when any tool assertions
+skipped), `--json` (`toolEvidenceSkips`), and the `$GITHUB_STEP_SUMMARY` markdown all say how many
+assertions went unverified. For gates where "we could not check" must fail, set `requireTrace: true`
+in `pupil.config.yaml` (including per-profile, so a `staging` promotion gate can require trace
+evidence while per-PR runs don't) or pass `pupil run --require-trace`; it escalates only those
+skips, leaving unrelated ones untouched. The recommended split is default (skip) on per-PR runs and
+`--require-trace` on a staging-to-production promotion gate.
+
+One honest limit: tool ordering comes from the trace backend's `startTime`, so `tool_order` is
+reliable for sequential tool use and best-effort for parallel or concurrent calls that share a
+millisecond.
 
 ## What Pupil Is
 
