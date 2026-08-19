@@ -205,6 +205,18 @@ export interface Trajectory {
   metrics: Record<string, number>;
   metadata: Record<string, unknown>;
   /**
+   * Observed tool calls in call order, when the producer has evidence.
+   *
+   * Top-level rather than distributed across `steps` because both producers can
+   * populate it: a driven run gets it from trace enrichment, and a trace-derived
+   * run (`pupil observe`) may have tool calls but no conversational steps at all.
+   * Tool assertions must read this field and never `steps`.
+   *
+   * `undefined` means no evidence — tool assertions skip. `[]` means the producer
+   * had evidence and the agent called no tools — tool assertions score normally.
+   */
+  toolCalls?: readonly ToolCall[];
+  /**
    * Backward-compatible producer snapshot for existing `result.*` assertions.
    * New evaluators should prefer explicit trajectory fields.
    */

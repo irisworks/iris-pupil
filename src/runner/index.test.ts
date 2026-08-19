@@ -839,6 +839,34 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
       }),
     ).toBeInstanceOf(LangfuseTraceSource);
   });
+
+  it("copies tool calls from the trace source onto the trajectory", async () => {
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () =>
+        Promise.resolve({
+          traceCount: 1,
+          toolCalls: [
+            { name: "search", index: 0 },
+            { name: "search", index: 1 },
+          ],
+        }),
+    };
+
+    const result = await runScenario(
+      scenario({
+        expect: { assertions: [], thresholds: [{ metric: "tool_calls", max: 5 }] },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: toolSource,
+      },
+    );
+
+    expect(result.metrics.tool_calls).toBe(2);
+    expect(result.verdict).toBe(Verdict.Pass);
+  });
 });
 
 describe("progressEventTypeForVerdict", () => {
