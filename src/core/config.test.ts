@@ -24,6 +24,7 @@ describe("loadPupilConfig", () => {
       langfuse: { enabled: "auto" },
       target: {},
       compare: {},
+      profiles: {},
     });
   });
 
@@ -72,6 +73,103 @@ describe("loadPupilConfig", () => {
       config: { baseUrl: "http://127.0.0.1:3000", token: "" },
     });
     expect(config.history.dir).toBe(".pupil-test");
+  });
+
+  it("applies a selected profile after resolving only the effective config", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "driver:",
+        "  preset: iris-http",
+        "  config:",
+        "    baseUrl: ${LOCAL_URL}",
+        "    originChannel: pupil-local",
+        "profiles:",
+        "  staging:",
+        "    driver:",
+        "      config:",
+        "        baseUrl: ${STAGING_URL}",
+        "        originChannel: pupil-staging",
+        "  prod:",
+        "    driver:",
+        "      config:",
+        "        baseUrl: ${PROD_URL}",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({
+      cwd: tmpRoot,
+      profile: "staging",
+      env: { STAGING_URL: "https://staging.example.test" },
+    });
+
+    expect(config.driver).toMatchObject({
+      preset: "iris-http",
+      config: {
+        baseUrl: "https://staging.example.test",
+        originChannel: "pupil-staging",
+      },
+    });
+  });
+
+  it("fails when a selected profile does not exist", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "profiles:\n  local:\n    history:\n      dir: .pupil-local\n",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot, profile: "missing" })).rejects.toThrow(
+      /Pupil config profile does not exist: missing/,
+    );
+  });
+
+  it("accepts ${VAR} templates for numeric fields inside a profile", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "langfuse:",
+        "  waitMs: 25000",
+        "profiles:",
+        "  staging:",
+        "    langfuse:",
+        "      waitMs: ${STAGING_WAIT_MS:-40000}",
+        "      timeoutMs: ${STAGING_TIMEOUT_MS:-9000}",
+        "      initialDelayMs: ${STAGING_INITIAL_DELAY_MS:-1500}",
+        "    compare:",
+        "      latencyThresholdPct: ${STAGING_LATENCY_PCT:-35}",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, profile: "staging", env: {} });
+
+    expect(config.langfuse).toMatchObject({ waitMs: 40000, timeoutMs: 9000, initialDelayMs: 1500 });
+    expect(config.compare).toMatchObject({ latencyThresholdPct: 35 });
+  });
+
+  it("applies target overrides from a profile", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "target:",
+        "  system: support-agent",
+        "  environment: local",
+        "profiles:",
+        "  staging:",
+        "    target:",
+        "      environment: staging",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, profile: "staging" });
+
+    expect(config.target).toEqual({ system: "support-agent", environment: "staging" });
   });
 
   it("substitutes a set-but-empty value for plain ${VAR}, matching bash", async () => {
@@ -140,6 +238,26 @@ describe("loadPupilConfig", () => {
     );
   });
 
+  it("rejects unknown fields inside a profile with a profiles.<name> path", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "profiles:\n  staging:\n    driver:\n      unknownField: nope\n",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /pupil\.config\.yaml:profiles\.staging\.driver: Unrecognized key\(s\) in object: 'unknownField'/,
+    );
+  });
+
+  it("rejects unknown fields in a profile even when it is not selected", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "profiles:\n  unused:\n    bogus: true\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /pupil\.config\.yaml:profiles\.unused: Unrecognized key\(s\) in object: 'bogus'/,
+    );
+  });
   it("parses a full target block and resolves env refs", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(

@@ -21,6 +21,12 @@ node dist/cli/index.js mock-agent --port 5050
 
 During local development, run the CLI through `node dist/cli/index.js` after `npm run build`. Default project settings live in `pupil.config.yaml`; `src/core/config.ts` resolves `${ENV_VAR}` and `${ENV_VAR:-default}` references before validation, matching bash semantics: plain `${ENV_VAR}` substitutes a set-but-empty value as an empty string and only errors if the variable is genuinely unset, while `${ENV_VAR:-default}` falls back to `default` whenever the variable is unset _or_ empty.
 
+Every command that touches the config accepts `--config <path>` and `--profile <name>`. A profile is deep-merged over the top-level blocks, and only the selected profile is env-resolved, so an unset `${VAR}` in a profile you are not running is not an error. Because profiles are validated before that resolution, their numeric fields also accept `${VAR}` templates - the real numeric check happens after the merge.
+
+Driver precedence for `pupil run` is `config.driver.config` < the scenario's own `driver.config` < CLI flags, so a project default never silently overrides a value a scenario set deliberately. The config's `driver.preset` fills in only for scenarios that name no preset. If no scenario path is given, `run` uses the config's `scenarios` field. Relative `scenarios` and `history.dir` values resolve against the process working directory, not the config file's directory.
+
+The read-only commands (`list`, `report`, `baseline`, `score`) need nothing from the config but `history.dir`, so an unreadable ambient `pupil.config.yaml` degrades to `.pupil` with a warning instead of failing; naming `--config` or `--profile` explicitly still fails loudly.
+
 ## Langfuse Enrichment
 
 `pupil run` enriches each scenario result with Langfuse trace evidence (trace id/url, cost, tokens, tool calls) as soon as the scenario finishes, so cost and token thresholds are scored against the enriched metrics. It is best-effort: lookup failures are recorded in `metadata.langfuse` and never change a run's verdict.

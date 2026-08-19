@@ -1,4 +1,4 @@
-import { isRecord, type JsonRecord } from "../core/json.js";
+import { deepMerge } from "../core/json.js";
 import { PupilError } from "../core/types.js";
 import type { RestDriverConfig, RestRequestTemplate } from "./index.js";
 
@@ -27,19 +27,6 @@ export interface IrisHttpPresetOptions {
 }
 
 export const IRIS_HTTP_PRESET = "iris-http";
-
-function deepMerge<T>(base: T, overrides: unknown): T {
-  if (!isRecord(base) || !isRecord(overrides)) {
-    return overrides === undefined ? base : (overrides as T);
-  }
-
-  const merged: JsonRecord = { ...base };
-  for (const [key, value] of Object.entries(overrides)) {
-    if (value === undefined) continue;
-    merged[key] = deepMerge(merged[key], value);
-  }
-  return merged as T;
-}
 
 function envToken(env: EnvSource): string | undefined {
   const token = env.IRIS_API_TOKEN;

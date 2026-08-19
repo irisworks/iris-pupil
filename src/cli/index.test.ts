@@ -228,6 +228,303 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
+  it("runs scenarios using driver and history settings from --config", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "configured" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-config-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const historyDir = join(dir, "history-from-config");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-config-run",
+          "name: CLI config run",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: configured",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        [
+          `scenarios: ${scenarioPath.replace(/\\/g, "\\\\")}`,
+          "driver:",
+          "  preset: iris-http",
+          "  config:",
+          `    baseUrl: http://${address.host}:${address.port}`,
+          "    originThreadTs: from-config",
+          "history:",
+          `  dir: ${historyDir.replace(/\\/g, "\\\\")}`,
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(process.execPath, [cliPath, "run", "--config", configPath], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toBe("");
+      expect(output.stdout).toContain("PASS cli-config-run");
+      const runId = /Run ([^:]+):/.exec(output.stdout)?.[1];
+      expect(runId).toBeDefined();
+      const runJson = await readFile(join(historyDir, "runs", `${runId}.json`), "utf-8");
+      expect(JSON.parse(runJson)).toMatchObject({ runId, verdict: "pass" });
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("lets CLI driver flags override config file values", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "cli override" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-config-override-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-config-override",
+          "name: CLI config override",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: cli override",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        ["driver:", "  preset: iris-http", "  config:", "    baseUrl: http://127.0.0.1:1", ""].join(
+          "\n",
+        ),
+      );
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--config",
+          configPath,
+          "--base-url",
+          `http://${address.host}:${address.port}`,
+          "--history-dir",
+          historyDir,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toBe("");
+      expect(output.stdout).toContain("PASS cli-config-override");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("selects profile driver config without scenario edits", async () => {
+    const localMock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "local target" }],
+    });
+    const stagingMock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "staging target" }],
+    });
+    const localAddress = await localMock.listen();
+    const stagingAddress = await stagingMock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-profile-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-profile-run",
+          "name: CLI profile run",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: staging target",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        [
+          "driver:",
+          "  preset: iris-http",
+          "  config:",
+          `    baseUrl: http://${localAddress.host}:${localAddress.port}`,
+          "profiles:",
+          "  staging:",
+          "    driver:",
+          "      config:",
+          `        baseUrl: http://${stagingAddress.host}:${stagingAddress.port}`,
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--config",
+          configPath,
+          "--profile",
+          "staging",
+          "--history-dir",
+          historyDir,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toBe("");
+      expect(output.stdout).toContain("PASS cli-profile-run");
+    } finally {
+      await localMock.close();
+      await stagingMock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("applies the config driver preset to a scenario that names none", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "preset from config" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-config-preset-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-config-preset",
+          "name: CLI config preset",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: preset from config",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        [
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "  config:",
+          `    baseUrl: http://${address.host}:${address.port}`,
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(
+        process.execPath,
+        [cliPath, "run", scenarioPath, "--config", configPath, "--history-dir", historyDir],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      expect(output.stderr).toBe("");
+      expect(output.stdout).toContain("PASS cli-config-preset");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("keeps read-only commands usable when the ambient config cannot be loaded", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-config-unreadable-"));
+
+    try {
+      await writeFile(
+        join(dir, "pupil.config.yaml"),
+        ["driver:", "  config:", "    baseUrl: ${PUPIL_TEST_UNSET_BASE_URL}", ""].join("\n"),
+      );
+
+      const list = spawnSync(process.execPath, [cliPath, "list"], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      expect(list.status).toBe(0);
+      expect(list.stderr).toContain("ignoring unreadable Pupil config");
+      expect(list.stdout).toContain("No saved runs found.");
+
+      // Naming the config explicitly is a request about that file, so the
+      // failure must still be reported instead of silently defaulting.
+      const explicit = spawnSync(
+        process.execPath,
+        [cliPath, "list", "--config", "pupil.config.yaml"],
+        { cwd: dir, encoding: "utf-8" },
+      );
+      expect(explicit.status).toBe(1);
+      expect(explicit.stderr).toContain("Missing environment variable PUPIL_TEST_UNSET_BASE_URL");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("fails when an explicit --config path does not exist", () => {
+    const result = spawnSync(
+      process.execPath,
+      [cliPath, "run", "examples/scenarios", "--config", "missing-pupil.config.yaml"],
+      { encoding: "utf-8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Pupil config file does not exist");
+  });
+
   it("fails pupil run when scenario assertions fail and stores the failed run", async () => {
     const mock = createIrisMockAgent({
       port: 0,
@@ -407,6 +704,39 @@ describe("pupil CLI", () => {
       );
       expect(showBaseline.status).toBe(0);
       expect(showBaseline.stdout).toContain("Baseline: run-pass");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("lists and reports using history.dir from --config when --history-dir is omitted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-history-config-"));
+    const configuredHistoryDir = join(dir, "history-from-config");
+    const configPath = join(dir, "pupil.config.yaml");
+    const store = new JsonRunHistoryStore({ dir: configuredHistoryDir });
+
+    try {
+      await store.writeRun(runResult("config-run"));
+      await writeFile(
+        configPath,
+        ["history:", `  dir: ${configuredHistoryDir.replace(/\\/g, "\\\\")}`, ""].join("\n"),
+      );
+
+      const list = spawnSync(process.execPath, [cliPath, "list", "--config", configPath], {
+        encoding: "utf-8",
+      });
+      expect(list.status).toBe(0);
+      expect(list.stderr).toBe("");
+      expect(list.stdout).toContain("config-run pass");
+
+      const report = spawnSync(
+        process.execPath,
+        [cliPath, "report", "config-run", "--config", configPath],
+        { encoding: "utf-8" },
+      );
+      expect(report.status).toBe(0);
+      expect(report.stderr).toBe("");
+      expect(report.stdout).toContain("Run config-run: pass");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

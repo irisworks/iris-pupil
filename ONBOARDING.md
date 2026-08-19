@@ -152,10 +152,11 @@ but a larger increase still produces `metric_regressions=1` and exit code 1. Use
 `--latency-threshold-pct` to tune the percentage band, or `--latency-threshold-ms` when you need
 an absolute millisecond threshold instead.
 
-**`pupil.config.yaml` is not loaded by anything.** `loadPupilConfig()` in `src/core/config.ts`
-is implemented, tested, and exported — and called by no CLI command. `run` takes flags only,
-which is why the `examples/iris/*.yaml` scenarios hardcode `baseUrl: http://127.0.0.1:3000`.
-Don't assume config works because the file exists.
+**`pupil.config.yaml` is loaded by every command that needs it.** `run` reads `scenarios`,
+`driver`, `history`, `langfuse`, `target`, and `compare` from it; `--config` picks a different
+file and `--profile` selects a `profiles.<name>` block to deep-merge over the rest. Driver
+precedence is config < scenario < CLI flag, so the `examples/iris/*.yaml` scenarios no longer
+hardcode `baseUrl` — they inherit it from the config or a profile.
 
 **`RunResult.metadata` is an unpopulated free-form bag.** Nothing writes to it yet. It needs to
 carry target identity (environment, deployed version, mode, fixture set) before baselines across
@@ -263,9 +264,7 @@ service — the suite must pass with no network and no API keys.
 
 1. Fix the `compare` latency default to a percentage band (§5). Small, self-contained, and the
    tool is unusable as a gate without it.
-2. Wire `loadPupilConfig()` into `pupil run` behind `--config`, with flags overriding file
-   values.
-3. Add the repo's own `npm run check` GitHub Actions workflow, and green up `main`.
+2. Add the repo's own `npm run check` GitHub Actions workflow, and green up `main`.
 
 Before starting anything larger, read `docs/product-direction.md` §5–6. The build order there is
 deliberate: the evaluator seam needs reshaping to take a `Trajectory` **before** any trajectory

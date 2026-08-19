@@ -5,8 +5,14 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
-import { loadPupilConfig } from "../core/config.js";
-import { aggregateVerdicts, PupilError, type TargetIdentity, Verdict } from "../core/types.js";
+import { loadPupilConfig, type PupilConfig } from "../core/config.js";
+import {
+  aggregateVerdicts,
+  PupilError,
+  type Scenario,
+  type TargetIdentity,
+  Verdict,
+} from "../core/types.js";
 import {
   compareRuns,
   formatRunComparison,
@@ -23,7 +29,12 @@ import {
   formatJUnitXml,
   isStrictFailure,
 } from "./reporting.js";
-import { loadScenarioFile, loadScenarios } from "../scenario/index.js";
+import {
+  assertUniqueScenarioIds,
+  loadScenarioFile,
+  loadScenarios,
+  sortScenarios,
+} from "../scenario/index.js";
 
 export const program = new Command();
 program.enablePositionalOptions();
@@ -81,6 +92,81 @@ function definedConfig(options: {
       timeoutMs: options.timeoutMs,
     }).filter(([, value]) => value !== undefined),
   );
+}
+
+const DEFAULT_HISTORY_DIR = ".pupil";
+
+interface ConfigOptions {
+  config?: string;
+  profile?: string;
+}
+
+function configLoadOptions(options: ConfigOptions): { configPath?: string; profile?: string } {
+  return {
+    ...(options.config !== undefined && { configPath: options.config }),
+    ...(options.profile !== undefined && { profile: options.profile }),
+  };
+}
+
+/**
+ * History dir for the read-only commands. `--history-dir` wins; otherwise the
+ * config file decides.
+ *
+ * These commands only need a directory name, so a config file that cannot be
+ * loaded (an unset `${VAR}`, say) must not stop someone from reading run
+ * history — unless they named the config or profile themselves, in which case
+ * the failure is about their own request and is reported.
+ */
+async function resolveHistoryDir(
+  options: ConfigOptions & { historyDir?: string },
+): Promise<string> {
+  if (options.historyDir) return options.historyDir;
+  try {
+    const config = await loadPupilConfig(configLoadOptions(options));
+    return config.history.dir;
+  } catch (error) {
+    if (options.config !== undefined || options.profile !== undefined) throw error;
+    console.error(
+      `WARNING: ignoring unreadable Pupil config, falling back to --history-dir ${DEFAULT_HISTORY_DIR}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return DEFAULT_HISTORY_DIR;
+  }
+}
+
+/**
+ * Applies the config file's driver defaults that are *not* part of
+ * `projectDriverConfig` (which the runner layers under each scenario's own
+ * `driver.config`). Only `preset` needs handling here: a scenario that names no
+ * preset would otherwise fall through to the raw REST driver and fail on the
+ * missing request templates, even though the project declared `iris-http`.
+ * `driver.type` is left alone — scenario loading already defaults it to `rest`,
+ * the only type the runner supports, so there is no "unset" to fill in.
+ */
+function applyProjectDriverDefaults(scenarios: Scenario[], config: PupilConfig): Scenario[] {
+  const preset = config.driver.preset;
+  if (preset === undefined) return scenarios;
+  return scenarios.map((scenario) =>
+    scenario.driver.preset === undefined
+      ? { ...scenario, driver: { ...scenario.driver, preset } }
+      : scenario,
+  );
+}
+
+async function loadConfiguredScenarios(
+  path: string | undefined,
+  config: PupilConfig,
+): Promise<Scenario[]> {
+  const paths = path
+    ? [path]
+    : Array.isArray(config.scenarios)
+      ? config.scenarios
+      : [config.scenarios];
+  const groups = await Promise.all(paths.map((scenarioPath) => loadScenarios(scenarioPath)));
+  const scenarios = groups.flat();
+  assertUniqueScenarioIds(scenarios);
+  return applyProjectDriverDefaults(sortScenarios(scenarios), config);
 }
 
 function formatProgressLine(event: RunnerProgressEvent): string {
@@ -159,7 +245,9 @@ program
 program
   .command("run")
   .description("Run one scenario file or a directory of scenarios.")
-  .argument("<path>", "Scenario YAML file or directory")
+  .argument("[path]", "Scenario YAML file or directory; defaults to config.scenarios")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--base-url <url>", "Override driver.config.baseUrl")
   .option("--bearer-token <token>", "Override bearer auth token")
   .option("--origin-thread-ts <value>", "Override IRIS originThreadTs")
@@ -178,7 +266,7 @@ program
     (value) => parsePositiveInteger(value, "concurrency"),
     1,
   )
-  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
   .option("--system <name>", "Agent system name (e.g. support-agent)")
   .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
@@ -192,7 +280,6 @@ program
   .option("--strict", "Also fail (exit 1) when the run verdict is needs_review", false)
   .option("--json", "Print machine-readable JSON run output instead of human-readable lines", false)
   .option("--junit <path>", "Write a JUnit XML report to this path")
-  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
   .option(
     "--latency-threshold-ms <latencyThresholdMs>",
     "Allowed latency increase in milliseconds before flagging a regression",
@@ -205,15 +292,17 @@ program
   )
   .action(
     async (
-      path: string,
+      path: string | undefined,
       options: {
+        config?: string;
+        profile?: string;
         baseUrl?: string;
         bearerToken?: string;
         originThreadTs?: string;
         timeoutMs?: number;
         retries: number;
         concurrency: number;
-        historyDir: string;
+        historyDir?: string;
         langfuse: boolean;
         system?: string;
         environment?: string;
@@ -223,15 +312,12 @@ program
         strict: boolean;
         json: boolean;
         junit?: string;
-        config?: string;
         latencyThresholdMs?: number;
         latencyThresholdPct?: number;
       },
     ) => {
-      const scenarios = await loadScenarios(path);
-      const config = await loadPupilConfig(
-        options.config !== undefined ? { configPath: options.config } : {},
-      );
+      const config = await loadPupilConfig(configLoadOptions(options));
+      const scenarios = await loadConfiguredScenarios(path, config);
       const mergedTarget: TargetIdentity = {
         ...config.target,
         mode: "driven",
@@ -257,7 +343,7 @@ program
         target: mergedTarget,
       });
 
-      const store = new JsonRunHistoryStore({ dir: options.historyDir });
+      const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
       let stored;
       try {
         stored = await store.writeRun(result);
@@ -353,9 +439,11 @@ program
 program
   .command("list")
   .description("List saved Pupil runs from JSON history.")
-  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
-  .action(async (options: { historyDir: string }) => {
-    const store = new JsonRunHistoryStore({ dir: options.historyDir });
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
+  .option("--history-dir <dir>", "Directory for JSON run history")
+  .action(async (options: { config?: string; profile?: string; historyDir?: string }) => {
+    const store = new JsonRunHistoryStore({ dir: await resolveHistoryDir(options) });
     const entries = await store.listRuns();
     if (entries.length === 0) {
       console.log("No saved runs found.");
@@ -373,67 +461,80 @@ program
   .command("report")
   .description("Print a report for one saved Pupil run.")
   .argument("<runId>", "Run id to report")
-  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
-  .action(async (runId: string, options: { historyDir: string }) => {
-    const run = await new JsonRunHistoryStore({ dir: options.historyDir }).readRun(runId);
-    console.log(`Run ${run.runId}: ${run.verdict}`);
-    console.log(`Started: ${run.startedAt}`);
-    console.log(`Completed: ${run.completedAt}`);
-    console.log(`Summary: ${formatSummary(run.summary)}`);
-    if (run.target) {
-      const parts = (
-        [
-          ["system", run.target.system],
-          ["environment", run.target.environment],
-          ["version", run.target.version],
-          ["mode", run.target.mode],
-          ["fixtureSet", run.target.fixtureSet],
-        ] as [string, string | undefined][]
-      )
-        .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(" ");
-      if (parts) {
-        console.log(`Target: ${parts}`);
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
+  .option("--history-dir <dir>", "Directory for JSON run history")
+  .action(
+    async (runId: string, options: { config?: string; profile?: string; historyDir?: string }) => {
+      const run = await new JsonRunHistoryStore({
+        dir: await resolveHistoryDir(options),
+      }).readRun(runId);
+      console.log(`Run ${run.runId}: ${run.verdict}`);
+      console.log(`Started: ${run.startedAt}`);
+      console.log(`Completed: ${run.completedAt}`);
+      console.log(`Summary: ${formatSummary(run.summary)}`);
+      if (run.target) {
+        const parts = (
+          [
+            ["system", run.target.system],
+            ["environment", run.target.environment],
+            ["version", run.target.version],
+            ["mode", run.target.mode],
+            ["fixtureSet", run.target.fixtureSet],
+          ] as [string, string | undefined][]
+        )
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(" ");
+        if (parts) {
+          console.log(`Target: ${parts}`);
+        }
       }
-    }
 
-    for (const result of [...run.results].sort((a, b) =>
-      a.scenarioId.localeCompare(b.scenarioId),
-    )) {
-      console.log(
-        `- ${result.scenarioId}: ${result.verdict} (${result.metrics.turns ?? 0} turns, ${result.metrics.latency_ms ?? 0}ms)`,
-      );
-      for (const score of result.scores) {
+      for (const result of [...run.results].sort((a, b) =>
+        a.scenarioId.localeCompare(b.scenarioId),
+      )) {
         console.log(
-          `  score ${score.name}: ${score.verdict}${score.reason ? ` - ${score.reason}` : ""}`,
+          `- ${result.scenarioId}: ${result.verdict} (${result.metrics.turns ?? 0} turns, ${result.metrics.latency_ms ?? 0}ms)`,
         );
+        for (const score of result.scores) {
+          console.log(
+            `  score ${score.name}: ${score.verdict}${score.reason ? ` - ${score.reason}` : ""}`,
+          );
+        }
       }
-    }
-  });
+    },
+  );
 
 program
   .command("baseline")
   .description("Show or set the baseline run id.")
   .argument("[runId]", "Run id to set as baseline")
-  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
-  .action(async (runId: string | undefined, options: { historyDir: string }) => {
-    const store = new JsonRunHistoryStore({ dir: options.historyDir });
-    if (runId) {
-      await store.readRun(runId);
-      await store.setBaseline(runId);
-      console.log(`Baseline set to ${runId}`);
-      return;
-    }
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
+  .option("--history-dir <dir>", "Directory for JSON run history")
+  .action(
+    async (
+      runId: string | undefined,
+      options: { config?: string; profile?: string; historyDir?: string },
+    ) => {
+      const store = new JsonRunHistoryStore({ dir: await resolveHistoryDir(options) });
+      if (runId) {
+        await store.readRun(runId);
+        await store.setBaseline(runId);
+        console.log(`Baseline set to ${runId}`);
+        return;
+      }
 
-    const baselineRunId = await store.getBaselineRunId();
-    if (!baselineRunId) {
-      console.log("No baseline set.");
-      process.exitCode = 1;
-      return;
-    }
-    console.log(`Baseline: ${baselineRunId}`);
-  });
+      const baselineRunId = await store.getBaselineRunId();
+      if (!baselineRunId) {
+        console.log("No baseline set.");
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Baseline: ${baselineRunId}`);
+    },
+  );
 
 program
   .command("score")
@@ -442,7 +543,9 @@ program
   .argument("<scenario>", "Scenario id to score")
   .argument("<criterion>", "Manual criterion name")
   .argument("<verdict>", "Manual verdict: pass or fail", parseManualVerdict)
-  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
+  .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--note <note>", "Reviewer note for the manual score")
   .action(
     async (
@@ -450,9 +553,9 @@ program
       scenarioId: string,
       criterion: string,
       verdict: Verdict.Pass | Verdict.Fail,
-      options: { historyDir: string; note?: string },
+      options: { config?: string; profile?: string; historyDir?: string; note?: string },
     ) => {
-      const store = new JsonRunHistoryStore({ dir: options.historyDir });
+      const store = new JsonRunHistoryStore({ dir: await resolveHistoryDir(options) });
       const run = await store.readRun(runId);
       const scenario = run.results.find((result) => result.scenarioId === scenarioId);
       if (!scenario) {
@@ -504,8 +607,9 @@ program
   .description("Compare two stored Pupil runs for regressions.")
   .argument("<baseRunId>", "Baseline or previous run id")
   .argument("<currentRunId>", "Current run id")
-  .option("--history-dir <dir>", "Directory for JSON run history", ".pupil")
+  .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option(
     "--latency-threshold-ms <latencyThresholdMs>",
     "Allowed latency increase in milliseconds before flagging a regression",
@@ -521,16 +625,18 @@ program
       baseRunId: string,
       currentRunId: string,
       options: {
-        historyDir: string;
+        historyDir?: string;
         config?: string;
+        profile?: string;
         latencyThresholdMs?: number;
         latencyThresholdPct?: number;
       },
     ) => {
-      const config = await loadPupilConfig(
-        options.config !== undefined ? { configPath: options.config } : {},
-      );
-      const store = new JsonRunHistoryStore({ dir: options.historyDir });
+      // `compare` needs the config for its threshold block anyway, so it loads
+      // once and takes the history dir from the same config rather than going
+      // through resolveHistoryDir() a second time.
+      const config = await loadPupilConfig(configLoadOptions(options));
+      const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
       const [base, current] = await Promise.all([
         store.readRun(baseRunId),
         store.readRun(currentRunId),
