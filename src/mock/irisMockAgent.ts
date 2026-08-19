@@ -11,9 +11,17 @@ export interface IrisMockRule {
   status?: number;
 }
 
+/** A tool call the mock agent should record, beyond just its name. */
+export interface ToolCallFixture {
+  name: string;
+  args?: unknown;
+  error?: string;
+}
+
 export interface MockTraceRule {
   match: string | RegExp;
-  toolCalls: string[];
+  /** Plain strings are shorthand for `{ name }`. */
+  toolCalls: Array<string | ToolCallFixture>;
 }
 
 export interface IrisMockOptions {
@@ -23,7 +31,7 @@ export interface IrisMockOptions {
   rules?: IrisMockRule[];
   apiToken?: string | false;
   traceRules?: MockTraceRule[];
-  defaultToolCalls?: string[];
+  defaultToolCalls?: Array<string | ToolCallFixture>;
 }
 
 export interface RecordedMockRequest {
@@ -103,6 +111,16 @@ function findTraceRule(text: string, rules: MockTraceRule[]): MockTraceRule | un
     if (typeof rule.match === "string") return text.includes(rule.match);
     return rule.match.test(text);
   });
+}
+
+function toToolCall(fixture: string | ToolCallFixture, index: number): ToolCall {
+  if (typeof fixture === "string") return { name: fixture, index };
+  return {
+    name: fixture.name,
+    index,
+    ...(fixture.args !== undefined && { args: fixture.args }),
+    ...(fixture.error !== undefined && { error: fixture.error }),
+  };
 }
 
 export function createIrisMockAgent(
@@ -224,7 +242,9 @@ export function createIrisMockAgent(
           const existing = spanStore.get(sessionIdDecoded) ?? [];
           spanStore.set(sessionIdDecoded, [
             ...existing,
-            ...spansToAppend.map((name, offset) => ({ name, index: existing.length + offset })),
+            ...spansToAppend.map((fixture, offset) =>
+              toToolCall(fixture, existing.length + offset),
+            ),
           ]);
         }
 

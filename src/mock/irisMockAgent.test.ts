@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createIrisMockAgent, type IrisMockAgent } from "./irisMockAgent.js";
+import { createIrisMockAgent, createMockAgentBundle, type IrisMockAgent } from "./irisMockAgent.js";
 import type { ToolCall } from "../core/types.js";
 
 let mock: IrisMockAgent | undefined;
@@ -466,5 +466,39 @@ describe("span store — trace pass on message", () => {
 
     expect(response.status).toBe(expectedStatus);
     expect(spanStore.get(session.sessionId)).toEqual([{ name: "attempted_tool", index: 0 }]);
+  });
+
+  it("serves tool call fixtures with arguments through the trace source", async () => {
+    const bundle = createMockAgentBundle({
+      port: 0,
+      traceRules: [
+        {
+          match: /book/i,
+          toolCalls: [
+            "search",
+            { name: "calendar.create", args: { title: "Standup" } },
+            { name: "email.send", error: "smtp down" },
+          ],
+        },
+      ],
+    });
+    mock = bundle.agent;
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const session = await createSession(baseUrl);
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "book a meeting" }),
+    });
+
+    const record = await bundle.traceSource.resolve(session.sessionId);
+
+    expect(record?.toolCalls).toEqual([
+      { name: "search", index: 0 },
+      { name: "calendar.create", index: 1, args: { title: "Standup" } },
+      { name: "email.send", index: 2, error: "smtp down" },
+    ]);
   });
 });
