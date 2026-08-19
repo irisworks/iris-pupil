@@ -30,6 +30,7 @@ import {
   evaluateThresholds,
 } from "../eval/index.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
+import { applyTraceRequirement } from "../eval/toolAssertions.js";
 import {
   applyTraceEnrichment,
   NO_CORRELATION_KEY_REASON,
@@ -82,6 +83,12 @@ export interface RunScenarioOptions {
    * A `TraceSource`: that backend is used and no fallback is consulted.
    */
   traceSource?: TraceSource | false;
+  /**
+   * When true, tool assertions that skipped for missing trace evidence are
+   * escalated to failures. Default false, so a trace backend outage cannot
+   * block a pipeline that did not ask for that.
+   */
+  requireTrace?: boolean;
 }
 
 export interface RunScenariosOptions extends RunScenarioOptions {
@@ -479,13 +486,10 @@ export async function runScenario(
       const manualScores = evaluateManualScoring(scenario.expect.manual);
       const judgeScores = evaluateJudge(scenario.expect.judge);
       const turnScores = turns.flatMap((turn) => turn.assertions);
-      const scores = [
-        ...turnScores,
-        ...scenarioScores,
-        ...thresholdScores,
-        ...manualScores,
-        ...judgeScores,
-      ];
+      const scores = applyTraceRequirement(
+        [...turnScores, ...scenarioScores, ...thresholdScores, ...manualScores, ...judgeScores],
+        options.requireTrace ?? false,
+      );
       const verdict = aggregateScores(scores);
       const result: ScenarioResult = { ...baseResult, verdict, scores };
       options.progress?.({

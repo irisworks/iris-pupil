@@ -19,12 +19,49 @@ describe("loadPupilConfig", () => {
 
     await expect(loadPupilConfig({ cwd: tmpRoot })).resolves.toEqual({
       scenarios: "examples/scenarios",
+      requireTrace: false,
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
       target: {},
       compare: {},
       profiles: {},
+    });
+  });
+
+  it("reads requireTrace from the config file", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "scenarios: examples/scenarios\nrequireTrace: true\n",
+      "utf8",
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.requireTrace).toBe(true);
+  });
+
+  it("lets an environment profile turn requireTrace on", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "scenarios: examples/scenarios",
+        "requireTrace: false",
+        "profiles:",
+        "  staging:",
+        "    requireTrace: true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).resolves.toMatchObject({
+      requireTrace: false,
+    });
+    await expect(loadPupilConfig({ cwd: tmpRoot, profile: "staging" })).resolves.toMatchObject({
+      requireTrace: true,
     });
   });
 

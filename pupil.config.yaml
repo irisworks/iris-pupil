@@ -12,6 +12,18 @@ driver:
 history:
   dir: .pupil
 
+# Tool assertions skip (and stay green) when no trace evidence is available, so a
+# tracing outage cannot block a pipeline. Set this to true — or pass
+# `pupil run --require-trace` — on gates where "we could not check" must fail,
+# such as a staging-to-production promotion. Environment profiles can override
+# it, which is the intended way to be lenient per-PR and strict on a promotion
+# gate:
+#
+#   profiles:
+#     staging:
+#       requireTrace: true
+requireTrace: ${PUPIL_REQUIRE_TRACE:-false}
+
 # Best-effort trace enrichment. `auto` enables it only when a host and both keys
 # resolve; `false` disables it (so does `pupil run --no-langfuse`).
 langfuse:

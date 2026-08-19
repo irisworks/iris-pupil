@@ -125,6 +125,7 @@ const profileCompareConfigSchema = z
 const profileConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).optional(),
+    requireTrace: z.boolean().optional(),
     driver: profileDriverConfigSchema.optional(),
     history: profileHistoryConfigSchema.optional(),
     langfuse: profileLangfuseConfigSchema.optional(),
@@ -136,6 +137,8 @@ const profileConfigSchema = z
 const pupilConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).default("examples/scenarios"),
+    /** When true, tool assertions that skip for missing trace evidence fail instead. */
+    requireTrace: z.coerce.boolean().default(false),
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,

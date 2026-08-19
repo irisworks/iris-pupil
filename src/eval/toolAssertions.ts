@@ -232,3 +232,26 @@ export function evaluateToolAssertion(
       return evaluateToolArgs(assertion, calls);
   }
 }
+
+/**
+ * Opt-in policy pass: turns "we could not check" into a failure.
+ *
+ * Only escalates skips carrying the no-tool-evidence marker, so unrelated skips
+ * (an unconfigured judge, a missing cost metric) are untouched. Runs after
+ * evaluation and before verdict aggregation.
+ */
+export function applyTraceRequirement(scores: readonly Score[], requireTrace: boolean): Score[] {
+  if (!requireTrace) return [...scores];
+  // Parameter is named `entry`, not `score`, to avoid shadowing the module-level
+  // `score()` helper defined above.
+  return scores.map((entry) => {
+    if (entry.verdict !== Verdict.Skip || entry.metadata.skipped !== NO_TOOL_EVIDENCE_MARKER) {
+      return entry;
+    }
+    return {
+      ...entry,
+      verdict: Verdict.Fail,
+      reason: `${NO_TOOL_EVIDENCE_REASON} (failing because --require-trace is set)`,
+    };
+  });
+}

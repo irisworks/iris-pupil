@@ -268,6 +268,11 @@ program
   )
   .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
+  .option(
+    "--require-trace",
+    "Fail (instead of skip) tool assertions when no trace evidence is available",
+    false,
+  )
   .option("--system <name>", "Agent system name (e.g. support-agent)")
   .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
   .option("--target-version <version>", "Deployed version or commit SHA")
@@ -304,6 +309,7 @@ program
         concurrency: number;
         historyDir?: string;
         langfuse: boolean;
+        requireTrace?: boolean;
         system?: string;
         environment?: string;
         targetVersion?: string;
@@ -341,6 +347,7 @@ program
             ? false
             : (LangfuseTraceSource.fromSettings(config.langfuse) ?? false),
         target: mergedTarget,
+        requireTrace: Boolean(options.requireTrace) || config.requireTrace,
       });
 
       const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });

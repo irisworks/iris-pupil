@@ -615,6 +615,63 @@ describe("scenario runner", () => {
     expect(attempts).toBe(2);
   });
 
+  it("skips tool assertions without evidence and stays green by default", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [{ type: "tool_called", tool: "calendar.create", match: "exact" }],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores[0]?.verdict).toBe(Verdict.Skip);
+  });
+
+  it("fails tool assertions without evidence when requireTrace is set", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [{ type: "tool_called", tool: "calendar.create", match: "exact" }],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+        requireTrace: true,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Fail);
+    expect(result.scores[0]?.verdict).toBe(Verdict.Fail);
+    expect(result.scores[0]?.reason).toContain("--require-trace");
+  });
+
+  it("does not escalate skips that are unrelated to tool evidence", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: { assertions: [], thresholds: [{ metric: "cost_usd", max: 1 }] },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+        requireTrace: true,
+      },
+    );
+
+    expect(result.scores[0]?.verdict).toBe(Verdict.Skip);
+    expect(result.verdict).toBe(Verdict.Pass);
+  });
+
   it("limits scenario concurrency", async () => {
     let active = 0;
     let maxActive = 0;
