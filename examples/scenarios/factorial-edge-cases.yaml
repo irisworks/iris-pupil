@@ -1,0 +1,36 @@
+id: factorial-edge-cases
+name: Agent handles factorial edge-case questions
+description: Multi-turn conversation probing edge-case understanding (0!, 1!, negative inputs).
+tags:
+  - code-gen
+  - factorial
+  - edge-cases
+
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    timeoutMs: 120000
+
+turns:
+  - user: What is the factorial of 0?
+    expect:
+      - type: contains
+        target: response.text
+        value: "1"
+  - user: What is the factorial of 1?
+    expect:
+      - type: contains
+        target: response.text
+        value: "1"
+  - user: What should a factorial function return for a negative number?
+    expect:
+      - type: regex
+        target: response.text
+        value: "error|raise|exception|undefined|invalid|not defined"
+        caseSensitive: false
+
+expect:
+  thresholds:
+    - metric: latency_ms
+      max: 20000

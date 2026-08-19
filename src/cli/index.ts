@@ -13,6 +13,7 @@ import {
   resolveCompareOptions,
   type RunComparison,
 } from "../history/index.js";
+import { LangfuseTraceSource } from "../langfuse/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import {
@@ -225,9 +226,16 @@ program
         timeoutMs: options.timeoutMs,
         retries: options.retries,
         concurrency: options.concurrency,
+        projectDriverConfig: config.driver.config,
         driverConfig: definedConfig(options),
         progress: options.json ? logProgressToStderr : logProgress,
-        langfuse: options.langfuse === false ? false : { settings: config.langfuse },
+        // `?? false` matters: the CLI has already consulted config *and* env, so an
+        // unresolved source means enrichment is off. Passing undefined would instead
+        // let the runner re-resolve from env and override `langfuse.enabled: false`.
+        traceSource:
+          options.langfuse === false
+            ? false
+            : (LangfuseTraceSource.fromSettings(config.langfuse) ?? false),
       });
 
       const store = new JsonRunHistoryStore({ dir: options.historyDir });

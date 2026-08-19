@@ -6,3 +6,5 @@ coverage/
 docs/superpowers/
 .superpowers/
 .env
+.claude-octopus/
+CLAUDE_tmp.html

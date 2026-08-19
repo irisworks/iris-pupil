@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { firstString, isRecord } from "../core/json.js";
 import {
   aggregateVerdicts,
   PupilError,
@@ -26,11 +27,14 @@ import {
   evaluateManualScoring,
   evaluateThresholds,
 } from "../eval/index.js";
+import { LangfuseTraceSource } from "../langfuse/index.js";
 import {
-  enrichScenarioWithLangfuse,
-  summarizeLangfuseRun,
-  type LangfuseEnrichmentOptions,
-} from "../langfuse/index.js";
+  applyTraceEnrichment,
+  NO_CORRELATION_KEY_REASON,
+  summarizeTraceRun,
+  type TraceSource,
+  type TraceLookupResult,
+} from "../trace/index.js";
 
 export interface RunnerDriver {
   createConversation(
@@ -60,11 +64,22 @@ export interface RunScenarioOptions {
   runId?: string;
   timeoutMs?: number;
   retries?: number;
+  /** Project-wide defaults (e.g. from pupil.config.yaml); overridden by the scenario's own driver.config. */
+  projectDriverConfig?: Record<string, unknown>;
+  /** Most-specific overrides (e.g. CLI flags); win over both the scenario and project defaults. */
   driverConfig?: Record<string, unknown>;
   driverFactory?: (scenario: Scenario, context: RunnerDriverContext) => RunnerDriver;
   progress?: (event: RunnerProgressEvent) => void;
-  /** Langfuse enrichment options, or `false` to skip enrichment entirely. */
-  langfuse?: LangfuseEnrichmentOptions | false;
+  /**
+   * Trace backend used to enrich results with observability evidence.
+   *
+   * Omitted: falls back to Langfuse configured from the environment, matching the
+   * behaviour callers had before enrichment moved behind `TraceSource`. The fallback
+   * yields nothing when Langfuse is unconfigured, so it is inert by default.
+   * `false`: no enrichment at all.
+   * A `TraceSource`: that backend is used and no fallback is consulted.
+   */
+  traceSource?: TraceSource | false;
 }
 
 export interface RunScenariosOptions extends RunScenarioOptions {
@@ -105,8 +120,53 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+function extractCorrelationKey(result: ScenarioResult): string | undefined {
+  const fromMetadata = isRecord(result.metadata) ? result.metadata.sessionId : undefined;
+  if (typeof fromMetadata === "string" && fromMetadata.length > 0) return fromMetadata;
+  for (const turn of result.turns) {
+    const raw = turn.response?.raw;
+    if (!isRecord(raw)) continue;
+    const id = firstString(raw.sessionId, raw.session_id, raw.id);
+    if (id) return id;
+  }
+  return undefined;
+}
+
+/**
+ * `false` disables enrichment; an explicit source is used as given. Omitting the
+ * option falls back to environment-configured Langfuse, which is what callers got
+ * before enrichment moved behind `TraceSource`. The fallback is the only place core
+ * names a concrete backend, and it resolves to undefined when Langfuse is unset.
+ */
+function resolveTraceSource(option: TraceSource | false | undefined): TraceSource | undefined {
+  if (option === false) return undefined;
+  return option ?? LangfuseTraceSource.fromSettings();
+}
+
+/**
+ * Best-effort: a lookup failure is recorded in metadata and never reaches the verdict.
+ * `startedAt` lets a backend discount scenario runtime from any ingestion-delay wait.
+ */
+async function enrichWithTraceSource(
+  result: ScenarioResult,
+  source: TraceSource,
+  startedAt: number,
+): Promise<void> {
+  const key = extractCorrelationKey(result);
+  let lookup: TraceLookupResult;
+
+  if (key === undefined) {
+    lookup = { status: "missing", reason: NO_CORRELATION_KEY_REASON };
+  } else {
+    try {
+      const record = await source.resolve(key, { startedAt });
+      lookup = record ? { status: "found", record } : { status: "missing" };
+    } catch (error) {
+      lookup = { status: "error", reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  applyTraceEnrichment(result, key, lookup, source.metadataKey);
 }
 
 function stringOption(value: unknown, name: string): string | undefined {
@@ -123,9 +183,10 @@ function numberOption(value: unknown, name: string): number | undefined {
 
 function mergedDriverConfig(
   scenario: Scenario,
+  projectConfig: Record<string, unknown> | undefined,
   overrides: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  return { ...scenario.driver.config, ...(overrides ?? {}) };
+  return { ...(projectConfig ?? {}), ...scenario.driver.config, ...(overrides ?? {}) };
 }
 
 export function createDriverForScenario(
@@ -267,7 +328,7 @@ function createErrorResult(
       latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
       retries,
     },
-    ...(sessionId !== undefined && { metadata: { sessionId } }),
+    ...(sessionId !== undefined && sessionId.length > 0 && { metadata: { sessionId } }),
     ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
   };
 }
@@ -346,6 +407,7 @@ export async function runScenario(
   const runId = options.runId ?? randomUUID();
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
+  const traceSource = resolveTraceSource(options.traceSource);
   const maxAttempts = (options.retries ?? 0) + 1;
   const timeoutMs =
     options.timeoutMs ??
@@ -363,7 +425,7 @@ export async function runScenario(
     attemptsUsed = attempt;
     const attemptStartedAtMs = Date.now();
     lastAttemptStartedAtMs = attemptStartedAtMs;
-    const config = mergedDriverConfig(scenario, options.driverConfig);
+    const config = mergedDriverConfig(scenario, options.projectDriverConfig, options.driverConfig);
     const context = { runId, scenarioId: scenario.id, attempt, config };
     const driver =
       options.driverFactory?.(scenario, context) ?? createDriverForScenario(scenario, context);
@@ -385,17 +447,15 @@ export async function runScenario(
           latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
           retries: attempt - 1,
         },
-        ...(attemptResult.sessionId !== undefined && {
-          metadata: { sessionId: attemptResult.sessionId },
-        }),
+        ...(attemptResult.sessionId !== undefined &&
+          attemptResult.sessionId.length > 0 && {
+            metadata: { sessionId: attemptResult.sessionId },
+          }),
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
-      // Enrich before scoring so cost/token thresholds see the Langfuse metrics.
-      if (options.langfuse !== false) {
-        await enrichScenarioWithLangfuse(baseResult, {
-          ...(options.langfuse ?? {}),
-          startedAt: attemptStartedAtMs,
-        });
+      // Enrich before scoring so cost/token thresholds see the trace metrics.
+      if (traceSource) {
+        await enrichWithTraceSource(baseResult, traceSource, attemptStartedAtMs);
       }
       const trajectory = createDrivenTrajectory({
         turns,
@@ -451,11 +511,8 @@ export async function runScenario(
     lastSessionId,
   );
   // Failed scenarios are exactly where a trace URL is most useful.
-  if (options.langfuse !== false) {
-    await enrichScenarioWithLangfuse(result, {
-      ...(options.langfuse ?? {}),
-      startedAt: lastAttemptStartedAtMs,
-    });
+  if (traceSource) {
+    await enrichWithTraceSource(result, traceSource, lastAttemptStartedAtMs);
   }
   options.progress?.({
     type: "scenario:error",
@@ -488,6 +545,10 @@ export async function runScenarios(
     throw new PupilError("runner concurrency must be a positive integer");
   }
 
+  // Resolved once so every scenario shares one instance and the roll-up below
+  // uses the same metadataKey the scenarios were written with.
+  const traceSource = resolveTraceSource(options.traceSource);
+
   const results = new Array<ScenarioResult>(scenarios.length);
   let cursor = 0;
 
@@ -495,7 +556,11 @@ export async function runScenarios(
     while (cursor < scenarios.length) {
       const index = cursor;
       cursor += 1;
-      results[index] = await runScenario(scenarios[index], { ...options, runId });
+      results[index] = await runScenario(scenarios[index], {
+        ...options,
+        runId,
+        traceSource: traceSource ?? false,
+      });
     }
   }
 
@@ -515,5 +580,6 @@ export async function runScenarios(
   };
 
   // Scenarios are enriched as they finish; this only rolls the statuses up.
-  return summarizeLangfuseRun(run);
+  if (traceSource) return summarizeTraceRun(run, traceSource.metadataKey);
+  return run;
 }
