@@ -1,0 +1,46 @@
+id: factorial-write
+name: Agent writes a factorial function
+description: Ask the agent to write a factorial function and verify the response contains a correct implementation.
+tags:
+  - code-gen
+  - factorial
+  - smoke
+metadata:
+  owner: dev
+
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    timeoutMs: 120000
+
+input: Write a factorial function in Python that handles n=0.
+
+expect:
+  assertions:
+    - type: contains
+      target: response.text
+      value: "def factorial"
+    - type: regex
+      target: response.text
+      value: "factorial\\(0\\)|n == 0|n <= 1|n < 1"
+      caseSensitive: false
+    - type: contains
+      target: response.text
+      value: "return"
+  thresholds:
+    - metric: latency_ms
+      max: 1000000
+    - metric: cost_usd
+      max: 0.05
+  judge:
+    enabled: true
+    prompt: >
+      The agent was asked to write a Python factorial function that handles n=0.
+      Evaluate whether the response includes: a correct recursive or iterative
+      implementation, a base case for 0 (returning 1), and runnable Python syntax.
+    rubric:
+      - Returns 1 for n=0
+      - Handles positive integers correctly
+      - Uses valid Python syntax
+      - No obvious off-by-one errors

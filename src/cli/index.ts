@@ -1,12 +1,34 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig, type PupilConfig } from "../core/config.js";
-import { aggregateVerdicts, PupilError, Verdict } from "../core/types.js";
-import { compareRuns, formatRunComparison, JsonRunHistoryStore } from "../history/index.js";
+import {
+  aggregateVerdicts,
+  PupilError,
+  type Scenario,
+  type TargetIdentity,
+  Verdict,
+} from "../core/types.js";
+import {
+  compareRuns,
+  formatRunComparison,
+  JsonRunHistoryStore,
+  resolveCompareOptions,
+  type RunComparison,
+} from "../history/index.js";
+import { LangfuseTraceSource } from "../langfuse/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
+import {
+  buildRunJson,
+  buildStepSummaryMarkdown,
+  formatJUnitXml,
+  isStrictFailure,
+} from "./reporting.js";
 import {
   assertUniqueScenarioIds,
   loadScenarioFile,
@@ -14,7 +36,8 @@ import {
   sortScenarios,
 } from "../scenario/index.js";
 
-const program = new Command();
+export const program = new Command();
+program.enablePositionalOptions();
 const packageManifest = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
 ) as { version: string };
@@ -42,9 +65,6 @@ function parseNonNegativeNumber(value: string, name: string): number {
   return parsed;
 }
 
-function parseNonNegativePercent(value: string, name: string): number {
-  return parseNonNegativeNumber(value, name) / 100;
-}
 function parsePositiveInteger(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -74,24 +94,70 @@ function definedConfig(options: {
   );
 }
 
-async function resolveHistoryDir(options: {
+const DEFAULT_HISTORY_DIR = ".pupil";
+
+interface ConfigOptions {
   config?: string;
   profile?: string;
-  historyDir?: string;
-}): Promise<string> {
+}
+
+function configLoadOptions(options: ConfigOptions): { configPath?: string; profile?: string } {
+  return {
+    ...(options.config !== undefined && { configPath: options.config }),
+    ...(options.profile !== undefined && { profile: options.profile }),
+  };
+}
+
+/**
+ * History dir for the read-only commands. `--history-dir` wins; otherwise the
+ * config file decides.
+ *
+ * These commands only need a directory name, so a config file that cannot be
+ * loaded (an unset `${VAR}`, say) must not stop someone from reading run
+ * history — unless they named the config or profile themselves, in which case
+ * the failure is about their own request and is reported.
+ */
+async function resolveHistoryDir(
+  options: ConfigOptions & { historyDir?: string },
+): Promise<string> {
   if (options.historyDir) return options.historyDir;
-  const config = await loadPupilConfig({ configPath: options.config, profile: options.profile });
-  return config.history.dir;
+  try {
+    const config = await loadPupilConfig(configLoadOptions(options));
+    return config.history.dir;
+  } catch (error) {
+    if (options.config !== undefined || options.profile !== undefined) throw error;
+    console.error(
+      `WARNING: ignoring unreadable Pupil config, falling back to --history-dir ${DEFAULT_HISTORY_DIR}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return DEFAULT_HISTORY_DIR;
+  }
 }
 
-function runDriverConfig(
+/**
+ * Applies the config file's driver defaults that are *not* part of
+ * `projectDriverConfig` (which the runner layers under each scenario's own
+ * `driver.config`). Only `preset` needs handling here: a scenario that names no
+ * preset would otherwise fall through to the raw REST driver and fail on the
+ * missing request templates, even though the project declared `iris-http`.
+ * `driver.type` is left alone — scenario loading already defaults it to `rest`,
+ * the only type the runner supports, so there is no "unset" to fill in.
+ */
+function applyProjectDriverDefaults(scenarios: Scenario[], config: PupilConfig): Scenario[] {
+  const preset = config.driver.preset;
+  if (preset === undefined) return scenarios;
+  return scenarios.map((scenario) =>
+    scenario.driver.preset === undefined
+      ? { ...scenario, driver: { ...scenario.driver, preset } }
+      : scenario,
+  );
+}
+
+async function loadConfiguredScenarios(
+  path: string | undefined,
   config: PupilConfig,
-  options: { baseUrl?: string; bearerToken?: string; originThreadTs?: string; timeoutMs?: number },
-): Record<string, unknown> {
-  return { ...config.driver.config, ...definedConfig(options) };
-}
-
-async function loadConfiguredScenarios(path: string | undefined, config: PupilConfig) {
+): Promise<Scenario[]> {
   const paths = path
     ? [path]
     : Array.isArray(config.scenarios)
@@ -100,27 +166,28 @@ async function loadConfiguredScenarios(path: string | undefined, config: PupilCo
   const groups = await Promise.all(paths.map((scenarioPath) => loadScenarios(scenarioPath)));
   const scenarios = groups.flat();
   assertUniqueScenarioIds(scenarios);
-  return sortScenarios(scenarios);
+  return applyProjectDriverDefaults(sortScenarios(scenarios), config);
+}
+
+function formatProgressLine(event: RunnerProgressEvent): string {
+  if (event.type === "scenario:start") return `START ${event.scenarioId}`;
+  if (event.type === "scenario:retry") {
+    return `RETRY ${event.scenarioId} attempt ${event.attempt}/${event.maxAttempts}`;
+  }
+  if (event.type === "scenario:pass") return `PASS ${event.scenarioId}`;
+  if (event.type === "scenario:skip") return `SKIP ${event.scenarioId}`;
+  if (event.type === "scenario:needs_review") return `REVIEW ${event.scenarioId}`;
+  if (event.type === "scenario:fail") return `FAIL ${event.scenarioId}`;
+  return `ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`;
 }
 
 function logProgress(event: RunnerProgressEvent): void {
-  if (event.type === "scenario:start") {
-    console.log(`START ${event.scenarioId}`);
-    return;
-  }
-  if (event.type === "scenario:retry") {
-    console.log(`RETRY ${event.scenarioId} attempt ${event.attempt}/${event.maxAttempts}`);
-    return;
-  }
-  if (event.type === "scenario:pass") {
-    console.log(`PASS ${event.scenarioId}`);
-    return;
-  }
-  if (event.type === "scenario:fail") {
-    console.log(`FAIL ${event.scenarioId}`);
-    return;
-  }
-  console.log(`ERROR ${event.scenarioId}${event.message ? `: ${event.message}` : ""}`);
+  console.log(formatProgressLine(event));
+}
+
+/** Used under `--json` so stdout stays a single parseable JSON payload. */
+function logProgressToStderr(event: RunnerProgressEvent): void {
+  console.error(formatProgressLine(event));
 }
 
 function formatSummary(summary: {
@@ -179,7 +246,7 @@ program
   .command("run")
   .description("Run one scenario file or a directory of scenarios.")
   .argument("[path]", "Scenario YAML file or directory; defaults to config.scenarios")
-  .option("--config <path>", "Path to pupil.config.yaml")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
   .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--base-url <url>", "Override driver.config.baseUrl")
   .option("--bearer-token <token>", "Override bearer auth token")
@@ -201,6 +268,28 @@ program
   )
   .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
+  .option("--system <name>", "Agent system name (e.g. support-agent)")
+  .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
+  .option("--target-version <version>", "Deployed version or commit SHA")
+  .option("--fixture-set <name>", "Active fixture/stub set name")
+  .option(
+    "--baseline",
+    "Auto-compare against the stored baseline run and exit 1 on regression",
+    false,
+  )
+  .option("--strict", "Also fail (exit 1) when the run verdict is needs_review", false)
+  .option("--json", "Print machine-readable JSON run output instead of human-readable lines", false)
+  .option("--junit <path>", "Write a JUnit XML report to this path")
+  .option(
+    "--latency-threshold-ms <latencyThresholdMs>",
+    "Allowed latency increase in milliseconds before flagging a regression",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-ms"),
+  )
+  .option(
+    "--latency-threshold-pct <latencyThresholdPct>",
+    "Allowed latency increase as a percent before flagging a regression (default: 20)",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-pct"),
+  )
   .action(
     async (
       path: string | undefined,
@@ -215,39 +304,133 @@ program
         concurrency: number;
         historyDir?: string;
         langfuse: boolean;
+        system?: string;
+        environment?: string;
+        targetVersion?: string;
+        fixtureSet?: string;
+        baseline: boolean;
+        strict: boolean;
+        json: boolean;
+        junit?: string;
+        latencyThresholdMs?: number;
+        latencyThresholdPct?: number;
       },
     ) => {
-      const config = await loadPupilConfig({
-        configPath: options.config,
-        profile: options.profile,
-      });
+      const config = await loadPupilConfig(configLoadOptions(options));
       const scenarios = await loadConfiguredScenarios(path, config);
+      const mergedTarget: TargetIdentity = {
+        ...config.target,
+        mode: "driven",
+        ...(options.system ? { system: options.system } : {}),
+        ...(options.environment ? { environment: options.environment } : {}),
+        ...(options.targetVersion ? { version: options.targetVersion } : {}),
+        ...(options.fixtureSet ? { fixtureSet: options.fixtureSet } : {}),
+      };
       const result = await runScenarios(scenarios, {
         timeoutMs: options.timeoutMs,
         retries: options.retries,
         concurrency: options.concurrency,
-        driverConfig: runDriverConfig(config, options),
-        progress: logProgress,
-        langfuse: options.langfuse === false ? false : { settings: config.langfuse },
+        projectDriverConfig: config.driver.config,
+        driverConfig: definedConfig(options),
+        progress: options.json ? logProgressToStderr : logProgress,
+        // `?? false` matters: the CLI has already consulted config *and* env, so an
+        // unresolved source means enrichment is off. Passing undefined would instead
+        // let the runner re-resolve from env and override `langfuse.enabled: false`.
+        traceSource:
+          options.langfuse === false
+            ? false
+            : (LangfuseTraceSource.fromSettings(config.langfuse) ?? false),
+        target: mergedTarget,
       });
 
+      const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
       let stored;
       try {
-        stored = await new JsonRunHistoryStore({
-          dir: options.historyDir ?? config.history.dir,
-        }).writeRun(result);
+        stored = await store.writeRun(result);
       } catch (error) {
         throw new PupilError(
           `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
 
-      console.log(`Saved run: ${stored.runPath}`);
-      console.log(
-        `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
-      );
+      let comparison: RunComparison | undefined;
+      if (options.baseline) {
+        const baselineRunId = await store.getBaselineRunId();
+        if (!baselineRunId) {
+          console.error(
+            "WARNING: --baseline was requested but no baseline run is set, so no regression comparison ran. Set one with `pupil baseline <runId>`.",
+          );
+        } else {
+          const baselineRun = await store.readRun(baselineRunId);
+          comparison = compareRuns(
+            baselineRun,
+            result,
+            resolveCompareOptions(config.compare, {
+              latencyThresholdMs: options.latencyThresholdMs,
+              latencyThresholdPct: options.latencyThresholdPct,
+            }),
+          );
+        }
+      }
 
-      if (result.verdict === Verdict.Error || result.verdict === Verdict.Fail) {
+      if (options.junit) {
+        try {
+          await mkdir(dirname(options.junit), { recursive: true });
+          await writeFile(
+            options.junit,
+            formatJUnitXml(result, { strict: options.strict }),
+            "utf-8",
+          );
+        } catch (error) {
+          throw new PupilError(
+            `Failed to write JUnit report to ${options.junit}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
+      if (stepSummaryPath) {
+        try {
+          await appendFile(
+            stepSummaryPath,
+            buildStepSummaryMarkdown(result, { comparison }),
+            "utf-8",
+          );
+        } catch (error) {
+          console.error(
+            `WARNING: failed to write the GitHub step summary to ${stepSummaryPath}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            buildRunJson(result, {
+              strict: options.strict,
+              historyPath: stored.runPath,
+              comparison,
+              baselineRequested: options.baseline,
+            }),
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.log(`Saved run: ${stored.runPath}`);
+        console.log(
+          `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
+        );
+        if (comparison) {
+          process.stdout.write(formatRunComparison(comparison));
+        }
+      }
+
+      if (isStrictFailure(result.verdict, options.strict) || comparison?.hasRegressions === true) {
         process.exitCode = 1;
       }
     },
@@ -256,7 +439,7 @@ program
 program
   .command("list")
   .description("List saved Pupil runs from JSON history.")
-  .option("--config <path>", "Path to pupil.config.yaml")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
   .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--history-dir <dir>", "Directory for JSON run history")
   .action(async (options: { config?: string; profile?: string; historyDir?: string }) => {
@@ -278,7 +461,7 @@ program
   .command("report")
   .description("Print a report for one saved Pupil run.")
   .argument("<runId>", "Run id to report")
-  .option("--config <path>", "Path to pupil.config.yaml")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
   .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--history-dir <dir>", "Directory for JSON run history")
   .action(
@@ -290,6 +473,23 @@ program
       console.log(`Started: ${run.startedAt}`);
       console.log(`Completed: ${run.completedAt}`);
       console.log(`Summary: ${formatSummary(run.summary)}`);
+      if (run.target) {
+        const parts = (
+          [
+            ["system", run.target.system],
+            ["environment", run.target.environment],
+            ["version", run.target.version],
+            ["mode", run.target.mode],
+            ["fixtureSet", run.target.fixtureSet],
+          ] as [string, string | undefined][]
+        )
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(" ");
+        if (parts) {
+          console.log(`Target: ${parts}`);
+        }
+      }
 
       for (const result of [...run.results].sort((a, b) =>
         a.scenarioId.localeCompare(b.scenarioId),
@@ -310,7 +510,7 @@ program
   .command("baseline")
   .description("Show or set the baseline run id.")
   .argument("[runId]", "Run id to set as baseline")
-  .option("--config <path>", "Path to pupil.config.yaml")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
   .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--history-dir <dir>", "Directory for JSON run history")
   .action(
@@ -343,7 +543,7 @@ program
   .argument("<scenario>", "Scenario id to score")
   .argument("<criterion>", "Manual criterion name")
   .argument("<verdict>", "Manual verdict: pass or fail", parseManualVerdict)
-  .option("--config <path>", "Path to pupil.config.yaml")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
   .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--note <note>", "Reviewer note for the manual score")
@@ -407,9 +607,9 @@ program
   .description("Compare two stored Pupil runs for regressions.")
   .argument("<baseRunId>", "Baseline or previous run id")
   .argument("<currentRunId>", "Current run id")
-  .option("--config <path>", "Path to pupil.config.yaml")
-  .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option("--history-dir <dir>", "Directory for JSON run history")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
   .option(
     "--latency-threshold-ms <latencyThresholdMs>",
     "Allowed latency increase in milliseconds before flagging a regression",
@@ -417,33 +617,50 @@ program
   )
   .option(
     "--latency-threshold-pct <latencyThresholdPct>",
-    "Allowed latency increase as a percent before flagging a regression (default: 20%)",
-    (value) => parseNonNegativePercent(value, "latency-threshold-pct"),
+    "Allowed latency increase as a percent before flagging a regression (default: 20)",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-pct"),
   )
   .action(
     async (
       baseRunId: string,
       currentRunId: string,
       options: {
+        historyDir?: string;
         config?: string;
         profile?: string;
-        historyDir?: string;
         latencyThresholdMs?: number;
         latencyThresholdPct?: number;
       },
     ) => {
-      const store = new JsonRunHistoryStore({ dir: await resolveHistoryDir(options) });
+      // `compare` needs the config for its threshold block anyway, so it loads
+      // once and takes the history dir from the same config rather than going
+      // through resolveHistoryDir() a second time.
+      const config = await loadPupilConfig(configLoadOptions(options));
+      const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
       const [base, current] = await Promise.all([
         store.readRun(baseRunId),
         store.readRun(currentRunId),
       ]);
-      const comparison = compareRuns(base, current, {
-        latencyRegressionThresholdMs: options.latencyThresholdMs,
-        latencyRegressionThresholdPct: options.latencyThresholdPct,
-      });
+      const comparison = compareRuns(
+        base,
+        current,
+        resolveCompareOptions(config.compare, {
+          latencyThresholdMs: options.latencyThresholdMs,
+          latencyThresholdPct: options.latencyThresholdPct,
+        }),
+      );
 
       process.stdout.write(formatRunComparison(comparison));
-      if (comparison.hasRegressions) {
+      const hasHardTargetMismatch = comparison.targetMismatch.some(
+        (mismatch) => mismatch.severity === "hard",
+      );
+      if (hasHardTargetMismatch) {
+        // A hard mismatch (e.g. stubbed vs. live) means the comparison isn't
+        // meaningful, so it must never surface as exit code 1 (a real
+        // regression) — use a distinct code so CI can tell "refused" apart
+        // from "regressed".
+        process.exitCode = 2;
+      } else if (comparison.hasRegressions) {
         process.exitCode = 1;
       }
     },
@@ -483,4 +700,11 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// process.argv[1] keeps whatever path invoked this script (e.g. a symlinked
+// global bin), while import.meta.url is Node's fully resolved real path.
+// Comparing raw strings breaks for any symlinked/linked install; resolving
+// both through the filesystem first makes the comparison symlink-proof while
+// still skipping this when the module is merely imported (e.g. by tests).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void main();
+}

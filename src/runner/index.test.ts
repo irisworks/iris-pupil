@@ -1,5 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LangfuseTraceSource } from "../langfuse/index.js";
+import {
+  NO_CORRELATION_KEY_REASON,
+  type TraceLookupContext,
+  type TraceRecord,
+  type TraceSource,
+} from "../trace/index.js";
 import { PupilError, type Scenario, type TurnRecord, Verdict } from "../core/types.js";
 import {
   RestDriverError,
@@ -7,7 +14,13 @@ import {
   type RestDriverResponse,
 } from "../driver/index.js";
 import { createIrisMockAgent, type IrisMockAgent } from "../mock/irisMockAgent.js";
-import { createDrivenTrajectory, runScenario, runScenarios, type RunnerDriver } from "./index.js";
+import {
+  createDrivenTrajectory,
+  progressEventTypeForVerdict,
+  runScenario,
+  runScenarios,
+  type RunnerDriver,
+} from "./index.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -131,6 +144,59 @@ describe("driven trajectory producer", () => {
 });
 
 describe("scenario runner", () => {
+  it("lets a scenario's own driver.config override project-wide driverConfig defaults", async () => {
+    const seenConfigs: Record<string, unknown>[] = [];
+
+    await runScenario(
+      scenario({ driver: { type: "rest", preset: "iris-http", config: { timeoutMs: 42 } } }),
+      {
+        projectDriverConfig: { timeoutMs: 1000, retries: 3 },
+        driverFactory: (_scenario, context) => {
+          seenConfigs.push(context.config);
+          return {
+            async createConversation() {
+              return { id: crypto.randomUUID(), raw: {} };
+            },
+            async send() {
+              return { text: "ok", raw: {} };
+            },
+            async closeConversation() {},
+          };
+        },
+      },
+    );
+
+    // Scenario-level config must win over project-wide defaults on key collision,
+    // while non-conflicting project defaults still apply.
+    expect(seenConfigs[0]).toMatchObject({ timeoutMs: 42, retries: 3 });
+  });
+
+  it("lets explicit driverConfig overrides win over both scenario and project config", async () => {
+    const seenConfigs: Record<string, unknown>[] = [];
+
+    await runScenario(
+      scenario({ driver: { type: "rest", preset: "iris-http", config: { timeoutMs: 42 } } }),
+      {
+        projectDriverConfig: { timeoutMs: 1000 },
+        driverConfig: { timeoutMs: 7 },
+        driverFactory: (_scenario, context) => {
+          seenConfigs.push(context.config);
+          return {
+            async createConversation() {
+              return { id: crypto.randomUUID(), raw: {} };
+            },
+            async send() {
+              return { text: "ok", raw: {} };
+            },
+            async closeConversation() {},
+          };
+        },
+      },
+    );
+
+    expect(seenConfigs[0]).toMatchObject({ timeoutMs: 7 });
+  });
+
   it("binds each turn's assertions to that turn's own response", async () => {
     const baseUrl = await mockBaseUrl({
       rules: [
@@ -338,10 +404,9 @@ describe("scenario runner", () => {
       {
         driverFactory: () =>
           new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
-        langfuse: {
-          config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
-          waitMs: 0,
-          fetchImpl: (async (url: string) => {
+        traceSource: new LangfuseTraceSource(
+          { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+          (async (url: string) => {
             calls.push(String(url));
             return {
               ok: true,
@@ -352,7 +417,8 @@ describe("scenario runner", () => {
                   : { id: "trace-1", totalCost: 0.02 },
             };
           }) as unknown as typeof fetch,
-        },
+          { waitMs: 0 },
+        ),
       },
     );
 
@@ -368,10 +434,9 @@ describe("scenario runner", () => {
     const result = await runScenario(scenario(), {
       driverFactory: () =>
         new FakeDriver(new RestDriverError(400, { error: "bad request" }), [], { count: 0 }),
-      langfuse: {
-        config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
-        waitMs: 0,
-        fetchImpl: (async (url: string) => ({
+      traceSource: new LangfuseTraceSource(
+        { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+        (async (url: string) => ({
           ok: true,
           status: 200,
           json: async () =>
@@ -379,7 +444,8 @@ describe("scenario runner", () => {
               ? { id: "trace-err", url: "http://langfuse.local/t/trace-err" }
               : { data: [{ id: "trace-err" }] },
         })) as unknown as typeof fetch,
-      },
+        { waitMs: 0 },
+      ),
     });
 
     expect(result.verdict).toBe(Verdict.Error);
@@ -408,12 +474,9 @@ describe("scenario runner", () => {
         },
         async closeConversation() {},
       }),
-      langfuse: {
-        config: { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
-        initialDelayMs: 8000,
-        waitMs: 15000,
-        pollIntervalMs: 1000,
-        fetchImpl: (async (url: string) => {
+      traceSource: new LangfuseTraceSource(
+        { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
+        (async (url: string) => {
           calls.push(Date.now());
           return {
             ok: true,
@@ -424,7 +487,8 @@ describe("scenario runner", () => {
                 : { data: [{ id: "trace-1" }] },
           };
         }) as unknown as typeof fetch,
-      },
+        { initialDelayMs: 8000, waitMs: 15000, initialBackoffMs: 1000 },
+      ),
     });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -438,7 +502,7 @@ describe("scenario runner", () => {
     const result = await runScenarios([scenario()], {
       driverFactory: () =>
         new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
-      langfuse: false,
+      traceSource: false,
     });
 
     expect(result.metadata.langfuse).toBeUndefined();
@@ -577,5 +641,209 @@ describe("scenario runner", () => {
     expect(result.verdict).toBe(Verdict.Pass);
     expect(result.summary.passed).toBe(4);
     expect(maxActive).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("runScenarios target identity", () => {
+  it("writes target onto the RunResult when provided", async () => {
+    const closes: string[] = [];
+    const disposals = { count: 0 };
+    const fakeDriver = new FakeDriver({ text: "ok", raw: {} }, closes, disposals);
+
+    const result = await runScenarios([scenario()], {
+      traceSource: false,
+      target: { mode: "driven", system: "support-agent", environment: "staging" },
+      driverFactory: () => fakeDriver,
+    });
+
+    expect(result.target).toEqual({
+      mode: "driven",
+      system: "support-agent",
+      environment: "staging",
+    });
+  });
+
+  it("leaves target undefined when not provided", async () => {
+    const closes: string[] = [];
+    const disposals = { count: 0 };
+    const fakeDriver = new FakeDriver({ text: "ok", raw: {} }, closes, disposals);
+
+    const result = await runScenarios([scenario()], {
+      traceSource: false,
+      driverFactory: () => fakeDriver,
+    });
+
+    expect(result.target).toBeUndefined();
+  });
+});
+
+describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
+  class FakeTraceSource implements TraceSource {
+    readonly metadataKey = "fake";
+    private readonly records = new Map<string, TraceRecord>();
+    private shouldThrow = false;
+
+    seed(sessionId: string, record: TraceRecord): void {
+      this.records.set(sessionId, record);
+    }
+
+    failNext(): void {
+      this.shouldThrow = true;
+    }
+
+    readonly seen: { key: string; startedAt?: number }[] = [];
+
+    async resolve(
+      sessionId: string,
+      context?: TraceLookupContext,
+    ): Promise<TraceRecord | undefined> {
+      this.seen.push({ key: sessionId, startedAt: context?.startedAt });
+      await new Promise((r) => setTimeout(r, 0));
+      if (this.shouldThrow) {
+        this.shouldThrow = false;
+        throw new Error("backend unavailable");
+      }
+      return this.records.get(sessionId);
+    }
+  }
+
+  const SESSION_ID = "fake-session-abc123";
+
+  function driverWithSession(response: {
+    text: string;
+    raw: Record<string, unknown>;
+  }): RunnerDriver {
+    return {
+      async createConversation() {
+        return { id: SESSION_ID, raw: {} };
+      },
+      async send() {
+        return response;
+      },
+      async closeConversation() {},
+    };
+  }
+
+  it("records skipped status when no trace record is seeded", async () => {
+    const fakeSource = new FakeTraceSource();
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.fake).toMatchObject({ status: "skipped" });
+  });
+
+  it("enriches metrics when a record is seeded for the session", async () => {
+    const fakeSource = new FakeTraceSource();
+    fakeSource.seed(SESSION_ID, {
+      traceCount: 1,
+      costUsd: 0.05,
+      toolCalls: ["search", "read_file"],
+    });
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.fake).toMatchObject({ status: "enriched" });
+    expect(result.metrics.cost_usd).toBe(0.05);
+    expect(result.metrics.tool_calls).toBe(2);
+  });
+
+  it("records error status when resolve() throws, verdict unchanged", async () => {
+    const fakeSource = new FakeTraceSource();
+    fakeSource.failNext();
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.fake).toMatchObject({
+      status: "error",
+      reason: "backend unavailable",
+    });
+  });
+
+  it("passes the attempt start time so backends can discount scenario runtime", async () => {
+    const fakeSource = new FakeTraceSource();
+    const before = Date.now();
+
+    await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: fakeSource,
+    });
+
+    expect(fakeSource.seen).toHaveLength(1);
+    expect(fakeSource.seen[0]?.key).toBe(SESSION_ID);
+    expect(fakeSource.seen[0]?.startedAt).toBeGreaterThanOrEqual(before);
+    expect(fakeSource.seen[0]?.startedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("distinguishes a missing correlation key from a trace that was not found", async () => {
+    const fakeSource = new FakeTraceSource();
+
+    const result = await runScenario(scenario(), {
+      driverFactory: () => ({
+        async createConversation() {
+          return { id: "", raw: {} };
+        },
+        async send() {
+          return { text: "ok", raw: {} };
+        },
+        async closeConversation() {},
+      }),
+      traceSource: fakeSource,
+    });
+
+    // No key existed, so no lookup was attempted and no empty sessionId is persisted.
+    expect(fakeSource.seen).toHaveLength(0);
+    expect(result.metadata?.sessionId).toBeUndefined();
+    expect(result.metadata?.fake).toEqual({
+      status: "skipped",
+      reason: NO_CORRELATION_KEY_REASON,
+    });
+  });
+
+  it("skips enrichment entirely when traceSource is false", async () => {
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+      traceSource: false,
+    });
+
+    expect(result.metadata).toEqual({ sessionId: SESSION_ID });
+  });
+
+  it("falls back to environment Langfuse when traceSource is omitted", async () => {
+    // Unconfigured environment resolves to no source, so results stay untouched.
+    const result = await runScenario(scenario(), {
+      driverFactory: () => driverWithSession({ text: "ok", raw: {} }),
+    });
+
+    expect(result.metadata).toEqual({ sessionId: SESSION_ID });
+    expect(LangfuseTraceSource.fromSettings(undefined, {})).toBeUndefined();
+    expect(
+      LangfuseTraceSource.fromSettings(undefined, {
+        LANGFUSE_HOST: "http://langfuse.local",
+        LANGFUSE_PUBLIC_KEY: "pk",
+        LANGFUSE_SECRET_KEY: "sk",
+      }),
+    ).toBeInstanceOf(LangfuseTraceSource);
+  });
+});
+
+describe("progressEventTypeForVerdict", () => {
+  it("maps every verdict to its own progress event type", () => {
+    expect(progressEventTypeForVerdict(Verdict.Pass)).toBe("scenario:pass");
+    expect(progressEventTypeForVerdict(Verdict.Skip)).toBe("scenario:skip");
+    expect(progressEventTypeForVerdict(Verdict.NeedsReview)).toBe("scenario:needs_review");
+    expect(progressEventTypeForVerdict(Verdict.Fail)).toBe("scenario:fail");
+    expect(progressEventTypeForVerdict(Verdict.Error)).toBe("scenario:error");
   });
 });

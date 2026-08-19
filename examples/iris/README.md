@@ -4,13 +4,13 @@ This directory contains live examples for running Pupil against a local IRIS run
 
 ## Local Setup
 
-Start IRIS locally so the runtime exposes the REST API on localhost. The examples default to:
+Start IRIS locally so the runtime exposes the REST API on localhost. These scenarios set no `baseUrl` of their own: it comes from `driver.config.baseUrl` in `pupil.config.yaml`, which defaults to
 
 ```bash
 http://127.0.0.1:3000
 ```
 
-If your local IRIS uses a different URL, override it with `--base-url`. If IRIS requires auth, set `IRIS_API_TOKEN` or pass `--bearer-token`.
+If your local IRIS uses a different URL, set `IRIS_BASE_URL`, run with `--profile staging`, or override it per run with `--base-url`. If IRIS requires auth, set `IRIS_API_TOKEN` or pass `--bearer-token`.
 
 ```bash
 export IRIS_API_TOKEN=...

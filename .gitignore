@@ -3,3 +3,8 @@ dist/
 coverage/
 .pupil/
 .tmp/
+docs/superpowers/
+.superpowers/
+.env
+.claude-octopus/
+CLAUDE_tmp.html

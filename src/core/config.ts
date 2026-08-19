@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { z, type ZodError } from "zod";
-import { deepMerge, isRecord } from "./deepMerge.js";
-import { PupilError } from "./types.js";
+import { deepMerge, isRecord } from "./json.js";
+import { PupilError, type TargetIdentity } from "./types.js";
 
 const DEFAULT_CONFIG_FILE = "pupil.config.yaml";
 
@@ -60,14 +60,65 @@ const langfuseConfigSchema = z
   .strict()
   .default({ enabled: "auto" });
 
+const optionalTargetString = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
+const targetConfigSchema = z
+  .object({
+    system: optionalTargetString,
+    environment: optionalTargetString,
+    version: optionalTargetString,
+    fixtureSet: optionalTargetString,
+  })
+  .strict()
+  .default({});
+
+const compareConfigSchema = z
+  .object({
+    latencyThresholdMs: z.coerce.number().nonnegative().optional(),
+    latencyThresholdPct: z.coerce.number().nonnegative().optional(),
+    metricThresholds: z.record(z.coerce.number().nonnegative()).optional(),
+  })
+  .strict()
+  .default({});
+
+// Profiles are validated *before* `${VAR}` references are resolved (see
+// loadPupilConfig), so a numeric field may still hold a template string here.
+// The real numeric validation happens in the top-level schema, after the
+// selected profile has been merged in and resolved.
+const templatableNumber = z.union([z.number(), z.string()]);
+
+// The profile schemas below mirror the top-level ones with every field optional.
+// Keep them in sync when a top-level field is added, or that field becomes
+// unsettable per profile (strict objects reject it as an unknown key).
 const profileLangfuseConfigSchema = z
   .object({
     enabled: z.union([z.boolean(), z.literal("auto")]).optional(),
     host: z.string().optional(),
     publicKey: z.string().optional(),
     secretKey: z.string().optional(),
-    waitMs: z.number().int().nonnegative().optional(),
-    timeoutMs: z.number().int().positive().optional(),
+    waitMs: templatableNumber.optional(),
+    timeoutMs: templatableNumber.optional(),
+    initialDelayMs: templatableNumber.optional(),
+  })
+  .strict();
+
+const profileTargetConfigSchema = z
+  .object({
+    system: z.string().optional(),
+    environment: z.string().optional(),
+    version: z.string().optional(),
+    fixtureSet: z.string().optional(),
+  })
+  .strict();
+
+const profileCompareConfigSchema = z
+  .object({
+    latencyThresholdMs: templatableNumber.optional(),
+    latencyThresholdPct: templatableNumber.optional(),
+    metricThresholds: z.record(templatableNumber).optional(),
   })
   .strict();
 
@@ -77,6 +128,8 @@ const profileConfigSchema = z
     driver: profileDriverConfigSchema.optional(),
     history: profileHistoryConfigSchema.optional(),
     langfuse: profileLangfuseConfigSchema.optional(),
+    target: profileTargetConfigSchema.optional(),
+    compare: profileCompareConfigSchema.optional(),
   })
   .strict();
 
@@ -86,6 +139,8 @@ const pupilConfigSchema = z
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,
+    target: targetConfigSchema,
+    compare: compareConfigSchema,
     profiles: z.record(profileConfigSchema).default({}),
   })
   .strict();

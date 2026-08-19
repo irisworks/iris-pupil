@@ -63,9 +63,10 @@ Phase 1 is roughly 80% built. `main` = `281a12c`; 4,600 lines of TypeScript, 102
    `CLAUDE.md`. Verified against a clean tree at `281a12c` — pre-existing, and it reached
    `main` because no workflow enforces the gate.
 
-5. **`pupil.config.yaml` is dead config.** `loadPupilConfig()` is implemented, tested, and
-   exported — and called by no CLI command. The `examples/iris/*.yaml` scenarios hardcode
-   `baseUrl: http://127.0.0.1:3000`.
+5. **`pupil.config.yaml` is wired in.** Every command that needs it loads it, `--config` points
+   at another file, and `--profile` deep-merges a `profiles.<name>` block over the top-level
+   blocks. Driver precedence is config < scenario < CLI flag; the `examples/iris/*.yaml`
+   scenarios inherit `baseUrl` instead of hardcoding it.
 6. **`RunResult.metadata` is an unpopulated free-form bag.** Section 4 needs target identity
    (environment, deployed version, mode, fixture set) in there for baselines to mean anything.
 7. **Driver abstraction is REST-shaped and not pluggable.** `Driver` is `{ readonly type }`;

@@ -22,6 +22,8 @@ describe("loadPupilConfig", () => {
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
+      target: {},
+      compare: {},
       profiles: {},
     });
   });
@@ -124,6 +126,52 @@ describe("loadPupilConfig", () => {
     );
   });
 
+  it("accepts ${VAR} templates for numeric fields inside a profile", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "langfuse:",
+        "  waitMs: 25000",
+        "profiles:",
+        "  staging:",
+        "    langfuse:",
+        "      waitMs: ${STAGING_WAIT_MS:-40000}",
+        "      timeoutMs: ${STAGING_TIMEOUT_MS:-9000}",
+        "      initialDelayMs: ${STAGING_INITIAL_DELAY_MS:-1500}",
+        "    compare:",
+        "      latencyThresholdPct: ${STAGING_LATENCY_PCT:-35}",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, profile: "staging", env: {} });
+
+    expect(config.langfuse).toMatchObject({ waitMs: 40000, timeoutMs: 9000, initialDelayMs: 1500 });
+    expect(config.compare).toMatchObject({ latencyThresholdPct: 35 });
+  });
+
+  it("applies target overrides from a profile", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "target:",
+        "  system: support-agent",
+        "  environment: local",
+        "profiles:",
+        "  staging:",
+        "    target:",
+        "      environment: staging",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, profile: "staging" });
+
+    expect(config.target).toEqual({ system: "support-agent", environment: "staging" });
+  });
+
   it("substitutes a set-but-empty value for plain ${VAR}, matching bash", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
@@ -209,5 +257,99 @@ describe("loadPupilConfig", () => {
     await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
       /pupil\.config\.yaml:profiles\.unused: Unrecognized key\(s\) in object: 'bogus'/,
     );
+  });
+  it("parses a full target block and resolves env refs", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "target:",
+        "  system: support-agent",
+        "  environment: ${DEPLOY_ENV:-staging}",
+        "  version: ${DEPLOY_SHA:-}",
+        "  fixtureSet: live",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({
+      cwd: tmpRoot,
+      env: { DEPLOY_ENV: "production", DEPLOY_SHA: "abc1234" },
+    });
+
+    expect(config.target).toEqual({
+      system: "support-agent",
+      environment: "production",
+      version: "abc1234",
+      fixtureSet: "live",
+    });
+  });
+
+  it("target defaults to an empty block when absent", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.target).toEqual({});
+  });
+
+  it("coerces an empty string in target fields to absent", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      'target:\n  system: ""\n  environment: ""\n  version: ""\n  fixtureSet: ""\n',
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.target).toEqual({});
+  });
+
+  it("rejects unknown fields in target block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "target:\n  commit: abc123\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/Unrecognized key/);
+  });
+
+  it("rejects a mode field in target block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "target:\n  mode: observed\n");
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
+      /Unrecognized key\(s\) in object: 'mode'/,
+    );
+  });
+
+  it("parses a compare block with latency and per-metric thresholds", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "scenarios: examples/scenarios",
+        "compare:",
+        "  latencyThresholdMs: 500",
+        "  latencyThresholdPct: 20",
+        "  metricThresholds:",
+        "    cost_usd: 0.01",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.compare).toEqual({
+      latencyThresholdMs: 500,
+      latencyThresholdPct: 20,
+      metricThresholds: { cost_usd: 0.01 },
+    });
+  });
+
+  it("defaults the compare block to an empty object", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "scenarios: examples/scenarios\n");
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.compare).toEqual({});
   });
 });

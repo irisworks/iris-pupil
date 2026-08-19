@@ -5,9 +5,9 @@ driver:
   preset: iris-http
   config:
     baseUrl: ${IRIS_BASE_URL:-http://127.0.0.1:3000}
-    auth:
-      type: bearer
-      token: ${IRIS_API_TOKEN:-}
+    # Auth for the iris-http preset comes from the IRIS_API_TOKEN environment
+    # variable or `pupil run --bearer-token`. Setting `bearerToken` here works
+    # too, but only with a non-empty value.
 
 history:
   dir: .pupil
@@ -25,14 +25,33 @@ langfuse:
   # Total trace lookup window, measured from scenario start when available.
   waitMs: ${LANGFUSE_WAIT_MS:-25000}
 
+# target:
+#   system: my-agent             # which agent (optional; namespaces a shared history store)
+#   environment: ${DEPLOY_ENV:-} # staging | production | pr-123 (optional)
+#   version: ${DEPLOY_SHA:-}     # git SHA, semver tag, or build ID — never a mutable label
+#   fixtureSet: live             # live | stubbed-<name> (optional; guards against fixture contamination)
+
+# Regression thresholds for `pupil compare` and `pupil run --baseline`. Both
+# commands read this block, so they always agree. `latencyThresholdPct` is a
+# percent (20 means 20%) and defaults to 20 when unset. CLI flags override it.
+compare:
+  latencyThresholdPct: ${PUPIL_LATENCY_THRESHOLD_PCT:-20}
+
+# Environment profiles: `pupil run --profile staging` deep-merges the named
+# block over the blocks above. Only the selected profile is env-resolved, so an
+# unset variable in a profile you are not running is not an error.
 profiles:
   staging:
     driver:
       config:
         baseUrl: ${IRIS_STAGING_BASE_URL:-http://127.0.0.1:3000}
+    target:
+      environment: staging
   prod:
     driver:
       config:
         # No localhost fallback: an unset IRIS_PROD_BASE_URL should fail loudly
         # rather than silently pointing a "prod" run at localhost.
         baseUrl: ${IRIS_PROD_BASE_URL}
+    target:
+      environment: production

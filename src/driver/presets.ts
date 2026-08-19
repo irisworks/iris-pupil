@@ -1,4 +1,4 @@
-import { deepMerge } from "../core/deepMerge.js";
+import { deepMerge } from "../core/json.js";
 import { PupilError } from "../core/types.js";
 import type { RestDriverConfig, RestRequestTemplate } from "./index.js";
 

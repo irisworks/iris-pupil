@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { MockTraceSource } from "./mockTraceSource.js";
+import type { TraceSource } from "../trace/index.js";
 
 export interface IrisMockRule {
   match: string | RegExp;
@@ -8,12 +10,19 @@ export interface IrisMockRule {
   status?: number;
 }
 
+export interface MockTraceRule {
+  match: string | RegExp;
+  toolCalls: string[];
+}
+
 export interface IrisMockOptions {
   port?: number;
   host?: string;
   defaultDelayMs?: number;
   rules?: IrisMockRule[];
   apiToken?: string | false;
+  traceRules?: MockTraceRule[];
+  defaultToolCalls?: string[];
 }
 
 export interface RecordedMockRequest {
@@ -88,11 +97,23 @@ function findRule(text: string, rules: IrisMockRule[]): IrisMockRule | undefined
   });
 }
 
-export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgent {
+function findTraceRule(text: string, rules: MockTraceRule[]): MockTraceRule | undefined {
+  return rules.find((rule) => {
+    if (typeof rule.match === "string") return text.includes(rule.match);
+    return rule.match.test(text);
+  });
+}
+
+export function createIrisMockAgent(
+  options: IrisMockOptions = {},
+  spanStore: Map<string, string[]> = new Map(),
+): IrisMockAgent {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 5050;
   const defaultDelayMs = options.defaultDelayMs ?? 0;
   const rules = options.rules ?? [];
+  const traceRules = options.traceRules ?? [];
+  const defaultToolCalls = options.defaultToolCalls;
   const apiToken =
     options.apiToken === false ? undefined : (options.apiToken ?? process.env.IRIS_API_TOKEN);
   const requests: RecordedMockRequest[] = [];
@@ -169,6 +190,7 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
           history: [],
         };
         sessions.set(sessionId, session);
+        spanStore.set(sessionId, []);
         json(res, 201, session);
         return;
       }
@@ -188,6 +210,18 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
         }
         if (text.includes("__hang__")) {
           return;
+        }
+
+        // Trace pass — runs unconditionally, independent of HTTP status (500, 504, 200).
+        // Uses !== null so an explicit toolCalls: [] trace rule appends nothing — configuring
+        // a matched rule with an empty toolCalls signals the agent ran but called no tools.
+        const traceRule = findTraceRule(text, traceRules);
+        const spansToAppend =
+          traceRule !== undefined ? traceRule.toolCalls : (defaultToolCalls ?? null);
+        if (spansToAppend !== null) {
+          const sessionIdDecoded = decodeURIComponent(messageMatch[1]);
+          const existing = spanStore.get(sessionIdDecoded) ?? [];
+          spanStore.set(sessionIdDecoded, [...existing, ...spansToAppend]);
         }
 
         const delayMs = getDelayFromText(text, defaultDelayMs);
@@ -254,5 +288,18 @@ export function createIrisMockAgent(options: IrisMockOptions = {}): IrisMockAgen
         server.close((error) => (error ? reject(error) : resolve()));
       });
     },
+  };
+}
+
+export interface MockAgentBundle {
+  agent: IrisMockAgent;
+  traceSource: TraceSource;
+}
+
+export function createMockAgentBundle(options?: IrisMockOptions): MockAgentBundle {
+  const spanStore = new Map<string, string[]>();
+  return {
+    agent: createIrisMockAgent(options, spanStore),
+    traceSource: new MockTraceSource(spanStore),
   };
 }

@@ -118,6 +118,58 @@ scores:
 
 ---
 
+## CI gating
+
+A single command gates a pipeline:
+
+```bash
+pupil run evals/flows --baseline --strict --junit reports/junit.xml
+```
+
+| Flag               | Effect                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `--baseline`       | Compares the run against the stored baseline and exits 1 on regression. Warns and skips if no baseline is set. |
+| `--strict`         | Also exits 1 when the verdict is `needs_review`. Without it, only `fail` and `error` exit 1.                   |
+| `--json`           | Prints a machine-readable payload to stdout; progress lines move to stderr.                                    |
+| `--junit <path>`   | Writes a JUnit XML report, creating parent directories as needed.                                              |
+| `--config <path>`  | Uses a config file other than `./pupil.config.yaml`.                                                           |
+| `--profile <name>` | Deep-merges the `profiles.<name>` block of the config over the top-level blocks (e.g. a staging base URL).     |
+
+When `$GITHUB_STEP_SUMMARY` is set, Pupil appends a markdown verdict table to it automatically — no
+flag required. Failing to write it warns but never fails the run.
+
+Regression sensitivity comes from the `compare` block in `pupil.config.yaml`, shared with
+`pupil compare` so both commands agree:
+
+```yaml
+compare:
+  latencyThresholdPct: 20 # percent; 20 is the default
+  latencyThresholdMs: 500 # optional absolute ceiling
+  metricThresholds: # optional, any metric Pupil records
+    cost_usd: 0.01
+    total_tokens: 500
+```
+
+`--latency-threshold-ms` and `--latency-threshold-pct` override the config values for one
+invocation.
+
+### `--json` output shape
+
+| Field         | Type                                          | Notes                                                                                                                                                                                      |
+| ------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `runId`       | string                                        |                                                                                                                                                                                            |
+| `verdict`     | `pass` \| `needs_review` \| `fail` \| `error` | Aggregate run verdict.                                                                                                                                                                     |
+| `strict`      | boolean                                       | Echoes whether `--strict` was set.                                                                                                                                                         |
+| `summary`     | object                                        | `total`, `passed`, `failed`, `needsReview`, `errors`.                                                                                                                                      |
+| `historyPath` | string                                        | Where the run JSON was saved.                                                                                                                                                              |
+| `scenarios[]` | array                                         | Sorted by `scenarioId`. Each has `scenarioId`, `scenarioName`, `verdict`, `metrics`, `scores[]`.                                                                                           |
+| `baseline`    | object                                        | Absent unless `--baseline` was passed. `{ "status": "not_set" }` when no baseline exists, otherwise `{ "status": "compared", "baseRunId", "hasRegressions", "summary", "regressions[]" }`. |
+
+Turn transcripts and raw driver payloads are deliberately excluded so the shape stays stable as
+drivers and evaluators change. Read the full run JSON at `historyPath` when you need them.
+
+---
+
 ## Integrations
 
 Planned integrations include:
