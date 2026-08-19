@@ -6,16 +6,19 @@ import {
   type ManualScoringConfig,
   type Score,
   type ThresholdCheck,
+  type ToolAssertionCheck,
   type Trajectory,
   type TrajectoryStep,
   Verdict,
 } from "../core/types.js";
 import { extractJsonPath } from "../driver/index.js";
+import { evaluateToolAssertion, isToolAssertion, toolAssertionName } from "./toolAssertions.js";
 
 export type AssertionEvaluationContext = Trajectory;
 export type ThresholdEvaluationContext = Trajectory;
 
 function assertionName(assertion: AssertionCheck): string {
+  if (isToolAssertion(assertion)) return toolAssertionName(assertion);
   if (assertion.type === "jsonpath") {
     return `assertion:${assertion.type}:${assertion.target}:${assertion.path}`;
   }
@@ -118,7 +121,7 @@ function failScore(assertion: AssertionCheck, value: unknown, reason: string): S
 }
 
 function evaluateTextAssertion(
-  assertion: Exclude<AssertionCheck, { type: "jsonpath" }>,
+  assertion: Exclude<AssertionCheck, { type: "jsonpath" } | ToolAssertionCheck>,
   context: AssertionEvaluationContext,
 ): Score {
   const value = resolveTarget(assertion.target, context);
@@ -192,6 +195,9 @@ export function evaluateAssertion(
   context: AssertionEvaluationContext,
 ): Score {
   try {
+    if (isToolAssertion(assertion)) {
+      return evaluateToolAssertion(assertion, context);
+    }
     if (assertion.type === "jsonpath") {
       return evaluateJsonPathAssertion(assertion, context);
     }

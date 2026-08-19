@@ -90,8 +90,56 @@ export interface JsonPathAssertionCheck {
   exists?: boolean;
 }
 
-/** Assertion Pupil can evaluate against an agent response. */
-export type AssertionCheck = TextAssertionCheck | JsonPathAssertionCheck;
+/** How a tool name in an assertion is compared against an observed call. */
+export type ToolNameMatch = "exact" | "glob";
+
+export interface ToolCalledAssertionCheck {
+  type: "tool_called";
+  tool: string;
+  match?: ToolNameMatch;
+  /** Exact call count. Omitted means "at least once". */
+  times?: number;
+}
+
+export interface ToolNotCalledAssertionCheck {
+  type: "tool_not_called";
+  tool: string;
+  match?: ToolNameMatch;
+}
+
+export interface ToolCallCountAssertionCheck {
+  type: "tool_call_count";
+  /** Omitted counts every tool call in the trajectory. */
+  tool?: string;
+  match?: ToolNameMatch;
+  min?: number;
+  max?: number;
+}
+
+export interface ToolOrderAssertionCheck {
+  type: "tool_order";
+  /** Matched as a subsequence: unrelated calls may appear in between. */
+  tools: string[];
+  match?: ToolNameMatch;
+}
+
+export interface ToolArgsAssertionCheck {
+  type: "tool_args";
+  tool: string;
+  match?: ToolNameMatch;
+  /** Subset match: listed keys must match, extra keys are ignored. */
+  equals: Record<string, unknown>;
+}
+
+export type ToolAssertionCheck =
+  | ToolCalledAssertionCheck
+  | ToolNotCalledAssertionCheck
+  | ToolCallCountAssertionCheck
+  | ToolOrderAssertionCheck
+  | ToolArgsAssertionCheck;
+
+/** Assertion Pupil can evaluate against an agent response or trajectory. */
+export type AssertionCheck = TextAssertionCheck | JsonPathAssertionCheck | ToolAssertionCheck;
 
 export interface ThresholdCheck {
   metric: string;
