@@ -22,6 +22,7 @@ describe("loadPupilConfig", () => {
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
+      compare: {},
     });
   });
 
@@ -136,5 +137,38 @@ describe("loadPupilConfig", () => {
     await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(
       /pupil\.config\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/,
     );
+  });
+
+  it("parses a compare block with latency and per-metric thresholds", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "scenarios: examples/scenarios",
+        "compare:",
+        "  latencyThresholdMs: 500",
+        "  latencyThresholdPct: 20",
+        "  metricThresholds:",
+        "    cost_usd: 0.01",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.compare).toEqual({
+      latencyThresholdMs: 500,
+      latencyThresholdPct: 20,
+      metricThresholds: { cost_usd: 0.01 },
+    });
+  });
+
+  it("defaults the compare block to an empty object", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(join(tmpRoot, "pupil.config.yaml"), "scenarios: examples/scenarios\n");
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.compare).toEqual({});
   });
 });

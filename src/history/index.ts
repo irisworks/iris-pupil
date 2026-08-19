@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { PupilError, type RunResult, type Verdict } from "../core/types.js";
 
 export * from "./compare.js";
+export * from "./compareOptions.js";
 
 export interface RunIndexEntry {
   runId: string;

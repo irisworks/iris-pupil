@@ -24,3 +24,9 @@ langfuse:
   initialDelayMs: ${LANGFUSE_INITIAL_DELAY_MS:-8000}
   # Total trace lookup window, measured from scenario start when available.
   waitMs: ${LANGFUSE_WAIT_MS:-25000}
+
+# Regression thresholds for `pupil compare` and `pupil run --baseline`. Both
+# commands read this block, so they always agree. `latencyThresholdPct` is a
+# percent (20 means 20%) and defaults to 20 when unset. CLI flags override it.
+compare:
+  latencyThresholdPct: ${PUPIL_LATENCY_THRESHOLD_PCT:-20}

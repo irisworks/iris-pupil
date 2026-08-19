@@ -14,7 +14,13 @@ import {
   type RestDriverResponse,
 } from "../driver/index.js";
 import { createIrisMockAgent, type IrisMockAgent } from "../mock/irisMockAgent.js";
-import { createDrivenTrajectory, runScenario, runScenarios, type RunnerDriver } from "./index.js";
+import {
+  createDrivenTrajectory,
+  progressEventTypeForVerdict,
+  runScenario,
+  runScenarios,
+  type RunnerDriver,
+} from "./index.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -796,5 +802,15 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
         LANGFUSE_SECRET_KEY: "sk",
       }),
     ).toBeInstanceOf(LangfuseTraceSource);
+  });
+});
+
+describe("progressEventTypeForVerdict", () => {
+  it("maps every verdict to its own progress event type", () => {
+    expect(progressEventTypeForVerdict(Verdict.Pass)).toBe("scenario:pass");
+    expect(progressEventTypeForVerdict(Verdict.Skip)).toBe("scenario:skip");
+    expect(progressEventTypeForVerdict(Verdict.NeedsReview)).toBe("scenario:needs_review");
+    expect(progressEventTypeForVerdict(Verdict.Fail)).toBe("scenario:fail");
+    expect(progressEventTypeForVerdict(Verdict.Error)).toBe("scenario:error");
   });
 });
