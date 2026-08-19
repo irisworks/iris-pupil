@@ -185,7 +185,7 @@ function evaluateToolOrder(assertion: ToolOrderLocal, calls: readonly ToolCall[]
   let cursor = 0;
   for (const call of calls) {
     if (cursor >= assertion.tools.length) break;
-    if (toolMatcher(assertion.tools[cursor] as string, assertion.match)(call.name)) cursor += 1;
+    if (toolMatcher(assertion.tools[cursor], assertion.match)(call.name)) cursor += 1;
   }
   const observed = calls.map((call) => call.name);
   return score(

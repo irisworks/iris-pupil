@@ -137,7 +137,14 @@ const profileCompareConfigSchema = z
 const profileConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).optional(),
-    requireTrace: z.boolean().optional(),
+    // Mirrors templatableNumber above, not templatableBoolean: profiles are
+    // validated before ${VAR} resolution, so this may still hold a raw
+    // template string like "${PUPIL_REQUIRE_TRACE:-false}" - not yet the
+    // literal "true"/"false" that templatableBoolean's preprocess expects.
+    // The real boolean coercion happens via templatableBoolean in the
+    // top-level schema, after the selected profile has been merged in and
+    // resolved.
+    requireTrace: z.union([z.boolean(), z.string()]).optional(),
     driver: profileDriverConfigSchema.optional(),
     history: profileHistoryConfigSchema.optional(),
     langfuse: profileLangfuseConfigSchema.optional(),

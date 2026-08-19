@@ -97,29 +97,27 @@ const toolArgsSchema = z
   })
   .strict();
 
-/**
- * A single flat `z.discriminatedUnion` over all ten `type` literals (the
- * seven assertion shapes, with the four text-assertion types counted once
- * each). Zod resolves a discriminated union by reading `type` and parsing
- * only the matching branch, so a malformed assertion produces exactly the
- * issues from the branch the author meant - never noise from unrelated
- * branches, and never the opaque `invalid_union` wrapper a plain `z.union`
- * (or a discriminated union nested inside one) would produce instead.
- */
-const assertionSchema = z
-  .discriminatedUnion("type", [
-    containsSchema,
-    notContainsSchema,
-    equalsSchema,
-    regexSchema,
-    jsonPathAssertionSchema,
-    toolCalledSchema,
-    toolNotCalledSchema,
-    toolCallCountSchema,
-    toolOrderSchema,
-    toolArgsSchema,
-  ])
-  .superRefine((value, ctx) => {
+// Shared branch lists, reused by both the scenario-level and turn-level
+// discriminated unions below so the individual branch schemas are defined
+// exactly once.
+const nonToolAssertionBranches = [
+  containsSchema,
+  notContainsSchema,
+  equalsSchema,
+  regexSchema,
+  jsonPathAssertionSchema,
+] as const;
+
+const toolAssertionBranches = [
+  toolCalledSchema,
+  toolNotCalledSchema,
+  toolCallCountSchema,
+  toolOrderSchema,
+  toolArgsSchema,
+] as const;
+
+function withAssertionRefinements<T extends z.ZodDiscriminatedUnion<"type", any>>(union: T) {
+  return union.superRefine((value, ctx) => {
     if (value.type === "jsonpath" && value.equals === undefined && value.exists === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -133,11 +131,40 @@ const assertionSchema = z
       });
     }
   });
+}
+
+/**
+ * A single flat `z.discriminatedUnion` over all ten `type` literals (the
+ * seven assertion shapes, with the four text-assertion types counted once
+ * each). Zod resolves a discriminated union by reading `type` and parsing
+ * only the matching branch, so a malformed assertion produces exactly the
+ * issues from the branch the author meant - never noise from unrelated
+ * branches, and never the opaque `invalid_union` wrapper a plain `z.union`
+ * (or a discriminated union nested inside one) would produce instead.
+ *
+ * Scenario-scoped only. Used at the top-level `expect:`/`assertions:`.
+ */
+const assertionSchema = withAssertionRefinements(
+  z.discriminatedUnion("type", [...nonToolAssertionBranches, ...toolAssertionBranches]),
+);
+
+/**
+ * Same branches minus the five tool-assertion types. Enrichment that
+ * populates `trajectory.toolCalls` runs once per scenario after all turns
+ * finish (see design decision 2), so there is no reliable way to attribute a
+ * tool call to a specific turn. A per-turn tool assertion would otherwise
+ * silently skip forever - or, under `--require-trace`, falsely fail with a
+ * misleading "no trace evidence" reason even though scenario-level trace
+ * evidence exists. Reject it at schema validation time instead.
+ */
+const turnAssertionSchema = withAssertionRefinements(
+  z.discriminatedUnion("type", [...nonToolAssertionBranches]),
+);
 
 const turnSchema = z
   .object({
     user: z.string().min(1, "turn.user is required"),
-    expect: z.array(assertionSchema).default([]),
+    expect: z.array(turnAssertionSchema).default([]),
   })
   .strict();
 

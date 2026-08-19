@@ -57,14 +57,12 @@ incl.), 288 tests across 20 files.
 
 ### Gaps, in order of how much they hurt
 
-1. **Tool calls are read but not assertable.** This is now a narrower gap than it reads in
-   earlier revisions. `TraceRecord.toolCalls` exists, `src/trace/index.ts` writes
-   `metrics.tool_calls` and `metadata.<source>.toolCalls` onto every enriched run, and
-   `MockTraceSource` can emit configurable spans for tests. What is still absent is any
-   **assertion** over that data: no `tool_called`, `tool_not_called`, `tool_call_count`,
-   `tool_order`, or `tool_args`. So a scenario can budget on how many tools ran but cannot say
-   _which_ — IRIS-161. Until then, deterministic assertions are still text-only, which is the
-   one thing the vision rules out.
+1. **~~Tool calls are read but not assertable.~~ RESOLVED (IRIS-161).** `TraceRecord.toolCalls`
+   exists, `src/trace/index.ts` writes `metrics.tool_calls` and `metadata.<source>.toolCalls`
+   onto every enriched run, and `MockTraceSource` can emit configurable spans for tests. Five
+   assertion types now read that data: `tool_called`, `tool_not_called`, `tool_call_count`,
+   `tool_order`, and `tool_args`, scenario-scoped (`src/eval/toolAssertions.ts`), with
+   `--require-trace` to fail instead of skip when trace evidence is missing.
 2. **Trace reading is swappable, but there is still only one implementation.** IRIS-158 landed
    the seam: `TraceSource` in `src/trace/index.ts`, with the Langfuse reader
    (`src/langfuse/index.ts`, 504 lines, IRIS-97) as one implementation behind it and
@@ -473,11 +471,10 @@ makes observe mode and the continuity claim possible.
    The interface extraction (IRIS-158, PR #54) and a mock agent that emits tool spans plus a
    `MockTraceSource` (IRIS-160, PR #60) have both landed. `traceparent` correlation itself
    (IRIS-159) is not started, so correlation is still the `sessionId` echo — strategy 2.
-7. **⬜ Todo (IRIS-161) — Tool assertions** — `tool_called`, `tool_not_called`,
+7. **✅ Done (IRIS-161) — Tool assertions** — `tool_called`, `tool_not_called`,
    `tool_call_count`, `tool_order`, `tool_args` over the `toolCalls` the `TraceSource` already
    returns. The trace-derived metrics themselves (`tool_calls`, `cost_usd`, `input_tokens`,
    `output_tokens`, `total_tokens`) shipped with IRIS-97/158 and are **not** part of this step.
-   Unblocked by step 6.
 8. **⬜ Not started (IRIS-163) — Invariants** — the `invariants:` block, `maxViolationRate`,
    repo-level policy files (section 4.1).
 9. **⬜ Not started (IRIS-164) — `pupil observe`** — the second `Trajectory` producer. Trace

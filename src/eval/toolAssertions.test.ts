@@ -222,4 +222,32 @@ describe("tool_args", () => {
     };
     expect(evaluateToolAssertion(assertion, trajectoryWith(undefined)).verdict).toBe(Verdict.Skip);
   });
+
+  it("fails when an array value has the same elements in a different order", () => {
+    const reordered: ToolCall[] = [
+      {
+        name: "calendar.create",
+        index: 0,
+        args: { attendees: ["b@example.com", "a@example.com"] },
+      },
+    ];
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { attendees: ["a@example.com", "b@example.com"] },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(reordered)).verdict).toBe(Verdict.Fail);
+  });
+
+  it("fails when an array value is only a prefix of the expected array", () => {
+    const shorter: ToolCall[] = [
+      { name: "calendar.create", index: 0, args: { attendees: ["a@example.com"] } },
+    ];
+    const assertion: ToolAssertionCheck = {
+      type: "tool_args",
+      tool: "calendar.create",
+      equals: { attendees: ["a@example.com", "b@example.com"] },
+    };
+    expect(evaluateToolAssertion(assertion, trajectoryWith(shorter)).verdict).toBe(Verdict.Fail);
+  });
 });

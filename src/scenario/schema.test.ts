@@ -266,4 +266,28 @@ describe("normalizeScenario", () => {
     expect(message).not.toMatch(/tool_called/);
     expect(message).not.toMatch(/discriminator/i);
   });
+
+  it("rejects tool assertions inside turns[].expect with file and path context", () => {
+    expect(() =>
+      normalizeScenario(
+        {
+          id: "turn-tool-assertion",
+          turns: [{ user: "book a meeting", expect: [{ type: "tool_called", tool: "x" }] }],
+        },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:turns\.0\.expect\.0\.type:/);
+  });
+
+  it("still accepts scenario-level tool assertions in expect:", () => {
+    const scenario = normalizeScenario({
+      id: "scenario-level-tools",
+      input: "book a meeting",
+      expect: { assertions: [{ type: "tool_called", tool: "calendar.create" }] },
+    });
+
+    expect(scenario.expect.assertions).toEqual([
+      { type: "tool_called", tool: "calendar.create", match: "exact" },
+    ]);
+  });
 });

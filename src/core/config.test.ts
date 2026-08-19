@@ -65,6 +65,28 @@ describe("loadPupilConfig", () => {
     });
   });
 
+  it("lets a profile's requireTrace be a ${VAR:-default} template", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "scenarios: examples/scenarios",
+        "profiles:",
+        "  ci:",
+        "    requireTrace: ${PUPIL_REQUIRE_TRACE:-false}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot, profile: "ci", env: {} })).resolves.toMatchObject({
+      requireTrace: false,
+    });
+    await expect(
+      loadPupilConfig({ cwd: tmpRoot, profile: "ci", env: { PUPIL_REQUIRE_TRACE: "true" } }),
+    ).resolves.toMatchObject({ requireTrace: true });
+  });
+
   it("resolves an unresolved ${VAR:-false} template for requireTrace to false, not true", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
