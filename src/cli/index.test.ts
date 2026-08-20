@@ -146,6 +146,17 @@ describe("pupil CLI", () => {
     expect(result.stderr.trim()).toBe("");
   });
 
+  it("validates the tool efficiency example scenario", () => {
+    const result = spawnSync(
+      process.execPath,
+      [cliPath, "validate", "examples/scenarios/iris-tool-efficiency.yaml"],
+      { encoding: "utf-8" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("iris-tool-efficiency");
+  });
+
   it("does not duplicate Commander parse errors", () => {
     const result = spawnSync(process.execPath, [cliPath, "unknown-command"], { encoding: "utf-8" });
 

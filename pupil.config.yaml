@@ -48,6 +48,12 @@ langfuse:
 # percent (20 means 20%) and defaults to 20 when unset. CLI flags override it.
 compare:
   latencyThresholdPct: ${PUPIL_LATENCY_THRESHOLD_PCT:-20}
+  metricThresholds:
+    # Allowed increase over the baseline before a run counts as a regression.
+    # Any metric Pupil records can be gated here; these two are trace-derived.
+    tool_calls: 3
+    # 1 means the agent started using a tool it never used at baseline.
+    distinct_tools: 1
 
 # Environment profiles: `pupil run --profile staging` deep-merges the named
 # block over the blocks above. Only the selected profile is env-resolved, so an

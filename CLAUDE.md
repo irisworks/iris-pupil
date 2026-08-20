@@ -107,6 +107,27 @@ One honest limit: tool ordering comes from the trace backend's `startTime`, so `
 reliable for sequential tool use and best-effort for parallel or concurrent calls that share a
 millisecond.
 
+### Tool metrics
+
+Trace enrichment records two tool metrics, which catch different regressions:
+
+- `tool_calls` — total invocations. Rising means the agent got less efficient:
+  retry loops, redundant lookups.
+- `distinct_tools` — unique tool names. Rising means the agent's scope changed:
+  it reached for a tool it never used at baseline. `tool_calls` structurally
+  cannot detect this, since N calls to one tool and N calls across N tools are
+  indistinguishable under it.
+
+Gate them per scenario under `expect.thresholds`, or across runs via
+`compare.metricThresholds` in `pupil.config.yaml` — `pupil compare` diffs every
+recorded metric, so both are regression-tracked with no extra wiring. Both come
+only from trace evidence: without it the threshold **skips** rather than fails,
+matching the tool-assertion rule above. `--require-trace` escalates those skips
+too. `examples/scenarios/iris-tool-efficiency.yaml` shows both in use.
+
+Note `tool_calls` changed meaning in this release: it previously counted
+distinct tools. `distinct_tools` is now the metric for that.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.

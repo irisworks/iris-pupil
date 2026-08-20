@@ -1,0 +1,35 @@
+id: iris-tool-efficiency
+name: Booking stays within its tool budget and tool scope
+description: >
+  Demonstrates the two trace-derived tool metrics. `tool_calls` is the total
+  number of invocations and catches an agent that got less efficient — retry
+  loops, redundant lookups. `distinct_tools` is the number of unique tools and
+  catches an agent whose scope changed, reaching for a tool it never used
+  before. Total count cannot detect that second case: ten calls to one tool and
+  ten calls across ten tools are identical under `tool_calls`.
+
+  Both metrics come from trace evidence. Without a trace source these thresholds
+  skip rather than fail, so this scenario stays green in an untraced run.
+tags:
+  - trajectory
+  - tools
+  - efficiency
+
+driver:
+  type: rest
+  preset: iris-http
+
+turns:
+  - user: Book a standup for tomorrow at 9am
+
+expect:
+  assertions:
+    - type: tool_called
+      tool: calendar.create
+  thresholds:
+    # Efficiency ceiling: more calls than this means the agent is thrashing.
+    - metric: tool_calls
+      max: 12
+    # Scope ceiling: booking should not need more than a handful of tools.
+    - metric: distinct_tools
+      max: 4
