@@ -303,8 +303,15 @@ function extractToolCalls(records: JsonRecord[]): ToolCall[] {
 
   for (const record of records) {
     const type = firstString(record.type, record.observationType, record.kind)?.toLowerCase() ?? "";
+    // Also check the OTel attribute Langfuse echoes back in metadata.attributes —
+    // this is the reliable path for iris-core's OTel-ingested tool observations,
+    // which may land as type SPAN in Langfuse's internal model but always carry
+    // the original 'tool' value in the raw OTel attribute.
+    const otelType = isRecord(record.metadata) && isRecord(record.metadata["attributes"])
+      ? firstString(record.metadata["attributes"]["langfuse.observation.type"])?.toLowerCase()
+      : undefined;
     const name = firstString(record.name, record.toolName, record.tool_name);
-    if (type.includes("tool") && name) {
+    if ((type.includes("tool") || otelType === "tool") && name) {
       collected.push({
         name,
         args: parseArgs(record.input ?? record.args ?? record.arguments),
