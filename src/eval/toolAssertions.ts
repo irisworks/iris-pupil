@@ -14,6 +14,15 @@ export const NO_TOOL_EVIDENCE_REASON = "No tool call evidence available";
 /** Marker read by the --require-trace policy pass in the runner. */
 export const NO_TOOL_EVIDENCE_MARKER = "no_tool_evidence";
 
+/**
+ * Marker for a threshold skipped because the trace never supplied its metric.
+ *
+ * Lives here beside NO_TOOL_EVIDENCE_MARKER because applyTraceRequirement is the
+ * single consumer of both, and src/eval/index.ts already imports from this
+ * module (never the reverse), so this placement introduces no import cycle.
+ */
+export const NO_TRACE_METRIC_MARKER = "no_trace_metric";
+
 const TOOL_ASSERTION_TYPES = new Set([
   "tool_called",
   "tool_not_called",
@@ -233,19 +242,23 @@ export function evaluateToolAssertion(
   }
 }
 
+const ESCALATABLE_MARKERS = new Set<unknown>([NO_TOOL_EVIDENCE_MARKER, NO_TRACE_METRIC_MARKER]);
+
 /**
  * Opt-in policy pass: turns "we could not check" into a failure.
  *
- * Only escalates skips carrying the no-tool-evidence marker, so unrelated skips
- * (an unconfigured judge, a missing cost metric) are untouched. Runs after
- * evaluation and before verdict aggregation.
+ * Escalates skips caused by absent trace evidence — both tool assertions and
+ * thresholds on trace-derived metrics. A judge skip is deliberately excluded:
+ * "LLM judge not configured" is a configuration gap, not a tracing gap, so
+ * --require-trace would be the wrong flag to fail it. Runs after evaluation and
+ * before verdict aggregation.
  */
 export function applyTraceRequirement(scores: readonly Score[], requireTrace: boolean): Score[] {
   if (!requireTrace) return [...scores];
   // Parameter is named `entry`, not `score`, to avoid shadowing the module-level
   // `score()` helper defined above.
   return scores.map((entry) => {
-    if (entry.verdict !== Verdict.Skip || entry.metadata.skipped !== NO_TOOL_EVIDENCE_MARKER) {
+    if (entry.verdict !== Verdict.Skip || !ESCALATABLE_MARKERS.has(entry.metadata.skipped)) {
       return entry;
     }
     // Drop the marker: this is now a failure, not an unverified skip. Leaving it

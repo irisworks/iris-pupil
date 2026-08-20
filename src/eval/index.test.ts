@@ -365,8 +365,25 @@ describe("threshold evaluator", () => {
     const score = evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, trajectory({}));
 
     expect(score.verdict).toBe(Verdict.Skip);
-    expect(score.reason).toMatch(/Cost metric is missing/);
+    expect(score.reason).toMatch(/cost_usd is missing/);
     expect(aggregateScores([score])).toBe(Verdict.Pass);
+  });
+
+  it("skips trace-derived metrics that are missing instead of failing", () => {
+    for (const metric of ["tool_calls", "distinct_tools", "total_tokens"]) {
+      const score = evaluateThreshold({ metric, max: 5 }, trajectory({}));
+
+      expect(score.verdict).toBe(Verdict.Skip);
+      expect(score.metadata.skipped).toBe("no_trace_metric");
+      expect(aggregateScores([score])).toBe(Verdict.Pass);
+    }
+  });
+
+  it("still fails on a missing metric that trace evidence never supplies", () => {
+    const score = evaluateThreshold({ metric: "turns", max: 5 }, trajectory({}));
+
+    expect(score.verdict).toBe(Verdict.Fail);
+    expect(score.reason).toMatch(/Metric turns is missing/);
   });
 });
 

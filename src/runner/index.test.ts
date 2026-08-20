@@ -659,10 +659,14 @@ describe("scenario runner", () => {
     expect(result.scores[0]?.reason).toContain("--require-trace");
   });
 
-  it("does not escalate skips that are unrelated to tool evidence", async () => {
+  it("does not escalate skips that are unrelated to trace evidence", async () => {
     const result = await runScenario(
       scenario({
-        expect: { assertions: [], thresholds: [{ metric: "cost_usd", max: 1 }] },
+        expect: {
+          assertions: [],
+          thresholds: [],
+          judge: { enabled: true },
+        },
       }),
       {
         driverFactory: () =>

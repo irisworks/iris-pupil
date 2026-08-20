@@ -5,6 +5,7 @@ import {
   evaluateToolAssertion,
   NO_TOOL_EVIDENCE_MARKER,
   NO_TOOL_EVIDENCE_REASON,
+  NO_TRACE_METRIC_MARKER,
 } from "./toolAssertions.js";
 
 function trajectoryWith(toolCalls?: readonly ToolCall[]): Trajectory {
@@ -286,5 +287,32 @@ describe("applyTraceRequirement", () => {
 
     expect(untouched?.verdict).toBe(Verdict.Skip);
     expect(untouched?.metadata.skipped).toBe(NO_TOOL_EVIDENCE_MARKER);
+  });
+
+  it("escalates a trace-derived metric skip as well as a tool assertion skip", () => {
+    const metricSkip = {
+      name: "threshold:tool_calls",
+      verdict: Verdict.Skip,
+      reason: "Metric tool_calls is missing; skipping (no trace evidence)",
+      metadata: { threshold: { metric: "tool_calls", max: 5 }, skipped: NO_TRACE_METRIC_MARKER },
+    };
+
+    const [escalated] = applyTraceRequirement([metricSkip], true);
+
+    expect(escalated?.verdict).toBe(Verdict.Fail);
+    expect(escalated?.metadata.skipped).toBeUndefined();
+  });
+
+  it("never escalates a judge skip, which is a config gap rather than a trace gap", () => {
+    const judgeSkip = {
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "LLM judge not configured",
+      metadata: { judge: { enabled: true } },
+    };
+
+    const [untouched] = applyTraceRequirement([judgeSkip], true);
+
+    expect(untouched?.verdict).toBe(Verdict.Skip);
   });
 });

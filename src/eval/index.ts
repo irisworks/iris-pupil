@@ -12,7 +12,12 @@ import {
   Verdict,
 } from "../core/types.js";
 import { extractJsonPath } from "../driver/index.js";
-import { evaluateToolAssertion, isToolAssertion, toolAssertionName } from "./toolAssertions.js";
+import {
+  evaluateToolAssertion,
+  isToolAssertion,
+  toolAssertionName,
+  NO_TRACE_METRIC_MARKER,
+} from "./toolAssertions.js";
 
 export type AssertionEvaluationContext = Trajectory;
 export type ThresholdEvaluationContext = Trajectory;
@@ -281,14 +286,20 @@ function metricKey(metric: string): string {
   return metric;
 }
 
-function skippedThresholdScore(threshold: ThresholdCheck, reason: string): Score {
-  return {
-    name: thresholdName(threshold),
-    verdict: Verdict.Skip,
-    reason,
-    metadata: { threshold },
-  };
-}
+/**
+ * Metrics that only ever arrive from trace enrichment. When one is absent the
+ * honest reading is "no evidence", not "the agent failed" — the same rule tool
+ * assertions follow. Metrics the runner always computes itself (turns,
+ * latency_ms) are deliberately absent: those really are missing if unset.
+ */
+const TRACE_DERIVED_METRICS = new Set([
+  "cost_usd",
+  "input_tokens",
+  "output_tokens",
+  "total_tokens",
+  "tool_calls",
+  "distinct_tools",
+]);
 
 function thresholdScore(
   threshold: ThresholdCheck,
@@ -313,8 +324,13 @@ export function evaluateThreshold(
   const value = context.metrics[key];
 
   if (value === undefined) {
-    if (key === "cost_usd") {
-      return skippedThresholdScore(threshold, "Cost metric is missing; skipping cost threshold");
+    if (TRACE_DERIVED_METRICS.has(key)) {
+      return {
+        name: thresholdName(threshold),
+        verdict: Verdict.Skip,
+        reason: `Metric ${key} is missing; skipping (no trace evidence)`,
+        metadata: { threshold, skipped: NO_TRACE_METRIC_MARKER },
+      };
     }
     return {
       name: thresholdName(threshold),
