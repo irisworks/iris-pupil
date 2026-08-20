@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { Verdict, type ToolAssertionCheck, type ToolCall, type Trajectory } from "../core/types.js";
-import { evaluateToolAssertion, NO_TOOL_EVIDENCE_REASON } from "./toolAssertions.js";
+import {
+  applyTraceRequirement,
+  evaluateToolAssertion,
+  NO_TOOL_EVIDENCE_MARKER,
+  NO_TOOL_EVIDENCE_REASON,
+} from "./toolAssertions.js";
 
 function trajectoryWith(toolCalls?: readonly ToolCall[]): Trajectory {
   return {
@@ -249,5 +254,37 @@ describe("tool_args", () => {
       equals: { attendees: ["a@example.com", "b@example.com"] },
     };
     expect(evaluateToolAssertion(assertion, trajectoryWith(shorter)).verdict).toBe(Verdict.Fail);
+  });
+});
+
+describe("applyTraceRequirement", () => {
+  const skipped = {
+    name: "assertion:tool_called:calendar.create",
+    verdict: Verdict.Skip,
+    reason: NO_TOOL_EVIDENCE_REASON,
+    metadata: {
+      assertion: { type: "tool_called", tool: "calendar.create" },
+      skipped: NO_TOOL_EVIDENCE_MARKER,
+    },
+  };
+
+  it("clears the skip marker when it escalates a skip to a failure", () => {
+    const [escalated] = applyTraceRequirement([skipped], true);
+
+    expect(escalated?.verdict).toBe(Verdict.Fail);
+    expect(escalated?.metadata.skipped).toBeUndefined();
+  });
+
+  it("keeps the assertion metadata intact while escalating", () => {
+    const [escalated] = applyTraceRequirement([skipped], true);
+
+    expect(escalated?.metadata.assertion).toEqual({ type: "tool_called", tool: "calendar.create" });
+  });
+
+  it("leaves the marker in place when requireTrace is off", () => {
+    const [untouched] = applyTraceRequirement([skipped], false);
+
+    expect(untouched?.verdict).toBe(Verdict.Skip);
+    expect(untouched?.metadata.skipped).toBe(NO_TOOL_EVIDENCE_MARKER);
   });
 });

@@ -248,10 +248,15 @@ export function applyTraceRequirement(scores: readonly Score[], requireTrace: bo
     if (entry.verdict !== Verdict.Skip || entry.metadata.skipped !== NO_TOOL_EVIDENCE_MARKER) {
       return entry;
     }
+    // Drop the marker: this is now a failure, not an unverified skip. Leaving it
+    // set makes the reporter count it in countToolEvidenceSkips and print a
+    // warning telling the user to enable the flag that just caused this failure.
+    const { skipped: _skipped, ...metadata } = entry.metadata;
     return {
       ...entry,
       verdict: Verdict.Fail,
       reason: `${NO_TOOL_EVIDENCE_REASON} (failing because --require-trace is set)`,
+      metadata,
     };
   });
 }
