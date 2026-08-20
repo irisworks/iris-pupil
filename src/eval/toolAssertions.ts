@@ -191,15 +191,18 @@ type ToolArgsLocal = Extract<ToolAssertionCheck, { type: "tool_args" }>;
  * per observed call.
  */
 function evaluateToolOrder(assertion: ToolOrderLocal, calls: readonly ToolCall[]): Score {
+  // Compile once per expected tool rather than once per observed call: the old
+  // shape rebuilt the same RegExp for every call in the trajectory.
+  const matchers = assertion.tools.map((tool) => toolMatcher(tool, assertion.match));
   let cursor = 0;
   for (const call of calls) {
-    if (cursor >= assertion.tools.length) break;
-    if (toolMatcher(assertion.tools[cursor], assertion.match)(call.name)) cursor += 1;
+    if (cursor >= matchers.length) break;
+    if (matchers[cursor]!(call.name)) cursor += 1;
   }
   const observed = calls.map((call) => call.name);
   return score(
     assertion,
-    verdictFor(cursor === assertion.tools.length),
+    verdictFor(cursor === matchers.length),
     observed,
     `Expected tools in order ${assertion.tools.join(" > ")}, saw ${observed.join(" > ") || "(none)"}`,
   );

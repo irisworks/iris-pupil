@@ -258,6 +258,32 @@ describe("tool_args", () => {
   });
 });
 
+describe("evaluateToolOrder glob matching", () => {
+  const calls = [
+    { name: "calendar.create", index: 0 },
+    { name: "search.web", index: 1 },
+    { name: "calendar.delete", index: 2 },
+  ];
+
+  it("matches an ordered subsequence using glob patterns", () => {
+    const score = evaluateToolAssertion(
+      { type: "tool_order", tools: ["calendar.*", "search.*"], match: "glob" },
+      { source: "driven", steps: [], metrics: {}, metadata: {}, toolCalls: calls },
+    );
+
+    expect(score.verdict).toBe(Verdict.Pass);
+  });
+
+  it("fails when the glob-matched tools appear out of order", () => {
+    const score = evaluateToolAssertion(
+      { type: "tool_order", tools: ["search.*", "calendar.create"], match: "glob" },
+      { source: "driven", steps: [], metrics: {}, metadata: {}, toolCalls: calls },
+    );
+
+    expect(score.verdict).toBe(Verdict.Fail);
+  });
+});
+
 describe("applyTraceRequirement", () => {
   const skipped = {
     name: "assertion:tool_called:calendar.create",
