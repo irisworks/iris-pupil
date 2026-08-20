@@ -442,6 +442,74 @@ describe("extractToolCalls via extractLangfuseEnrichment", () => {
 
     expect(enrichment?.toolCalls[0]?.error).toBe("smtp down");
   });
+
+  it("detects a tool observation from the OTel attribute when the type says SPAN", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        {
+          id: "o1",
+          type: "SPAN",
+          name: "bash",
+          metadata: { attributes: { "langfuse.observation.type": "tool" } },
+          input: { command: "ls" },
+          startTime: "2026-08-19T10:00:01.000Z",
+        },
+      ],
+    };
+
+    const enrichment = extractLangfuseEnrichment(payload);
+
+    expect(enrichment?.toolCalls.map((c) => c.name)).toEqual(["bash"]);
+    expect(enrichment?.toolCalls[0]?.args).toEqual({ command: "ls" });
+  });
+
+  it("matches the OTel attribute case-insensitively", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        {
+          id: "o1",
+          type: "SPAN",
+          name: "write",
+          metadata: { attributes: { "langfuse.observation.type": "TOOL" } },
+        },
+      ],
+    };
+
+    expect(extractLangfuseEnrichment(payload)?.toolCalls.map((c) => c.name)).toEqual(["write"]);
+  });
+
+  it("ignores a SPAN whose OTel attribute is not a tool", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        {
+          id: "o1",
+          type: "SPAN",
+          name: "internal-step",
+          metadata: { attributes: { "langfuse.observation.type": "span" } },
+        },
+      ],
+    };
+
+    expect(extractLangfuseEnrichment(payload)?.toolCalls).toEqual([]);
+  });
+
+  it("ignores a tool-typed observation that has no name", () => {
+    const payload = {
+      id: "trace-1",
+      observations: [
+        {
+          id: "o1",
+          type: "SPAN",
+          metadata: { attributes: { "langfuse.observation.type": "tool" } },
+        },
+      ],
+    };
+
+    expect(extractLangfuseEnrichment(payload)?.toolCalls).toEqual([]);
+  });
 });
 
 describe("LangfuseTraceSource lookup", () => {
