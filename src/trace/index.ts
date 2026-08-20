@@ -110,7 +110,15 @@ export function applyTraceEnrichment(
   if (record.inputTokens !== undefined) result.metrics.input_tokens = record.inputTokens;
   if (record.outputTokens !== undefined) result.metrics.output_tokens = record.outputTokens;
   if (record.totalTokens !== undefined) result.metrics.total_tokens = record.totalTokens;
-  if (record.toolCalls !== undefined) result.metrics.tool_calls = record.toolCalls.length;
+  if (record.toolCalls !== undefined) {
+    // Two different regression signals, deliberately both recorded:
+    // tool_calls rising means the agent got less efficient (retries, redundant
+    // lookups); distinct_tools rising means its scope changed — it reached for a
+    // tool it never used at baseline. Total count cannot detect the second,
+    // since N calls to one tool and N calls across N tools are indistinguishable.
+    result.metrics.tool_calls = record.toolCalls.length;
+    result.metrics.distinct_tools = new Set(record.toolCalls.map((call) => call.name)).size;
+  }
 
   result.metadata = {
     ...(result.metadata ?? {}),

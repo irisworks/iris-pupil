@@ -351,6 +351,16 @@ describe("threshold evaluator", () => {
     ).toBe(Verdict.Fail);
   });
 
+  it("normalizes camelCase aliases for the trace-derived tool metrics", () => {
+    expect(
+      evaluateThreshold({ metric: "toolCalls", max: 3 }, trajectory({ tool_calls: 3 })).verdict,
+    ).toBe(Verdict.Pass);
+    expect(
+      evaluateThreshold({ metric: "distinctTools", max: 2 }, trajectory({ distinct_tools: 3 }))
+        .verdict,
+    ).toBe(Verdict.Fail);
+  });
+
   it("skips maxCostUsd cleanly when cost data is missing", () => {
     const score = evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, trajectory({}));
 

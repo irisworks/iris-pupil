@@ -272,6 +272,12 @@ function metricKey(metric: string): string {
   if (normalized === "maxcostusd" || normalized === "costusd") {
     return "cost_usd";
   }
+  if (normalized === "toolcalls" || normalized === "maxtoolcalls") {
+    return "tool_calls";
+  }
+  if (normalized === "distincttools" || normalized === "maxdistincttools") {
+    return "distinct_tools";
+  }
   return metric;
 }
 

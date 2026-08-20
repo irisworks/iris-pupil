@@ -197,6 +197,50 @@ describe("applyTraceEnrichment", () => {
 
     expect(result.metrics.tool_calls).toBe(0);
   });
+
+  it("sets distinct_tools from unique tool names, ignoring repeats", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: {
+        traceCount: 1,
+        toolCalls: [
+          { name: "search", index: 0 },
+          { name: "search", index: 1 },
+          { name: "calendar.create", index: 2 },
+        ],
+      },
+    };
+
+    applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
+
+    expect(result.metrics.tool_calls).toBe(3);
+    expect(result.metrics.distinct_tools).toBe(2);
+  });
+
+  it("omits distinct_tools when the backend does not report tool calls", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: { traceCount: 1, toolCalls: undefined, costUsd: 0.01 },
+    };
+
+    applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
+
+    expect(result.metrics.distinct_tools).toBeUndefined();
+  });
+
+  it("sets distinct_tools to zero when a trace was found with no tool calls", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: { traceCount: 1, toolCalls: [] },
+    };
+
+    applyTraceEnrichment(result, "sess-1", lookup, "langfuse");
+
+    expect(result.metrics.distinct_tools).toBe(0);
+  });
 });
 
 describe("summarizeTraceRun", () => {
