@@ -12,6 +12,7 @@ import {
   Verdict,
 } from "../core/types.js";
 import { extractJsonPath } from "../driver/index.js";
+import { formatBounds } from "../core/bounds.js";
 import {
   evaluateToolAssertion,
   isToolAssertion,
@@ -347,12 +348,7 @@ export function evaluateThreshold(
     return thresholdScore(threshold, Verdict.Fail, value, `Expected ${key} >= ${threshold.min}`);
   }
 
-  const bounds = [
-    threshold.min !== undefined ? `>= ${threshold.min}` : undefined,
-    threshold.max !== undefined ? `<= ${threshold.max}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(" and ");
+  const bounds = formatBounds(threshold.min, threshold.max);
   return thresholdScore(threshold, Verdict.Pass, value, `Expected ${key} ${bounds}`);
 }
 

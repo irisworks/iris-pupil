@@ -8,6 +8,7 @@ import {
   type Trajectory,
 } from "../core/types.js";
 import { isRecord } from "../core/json.js";
+import { formatBounds } from "../core/bounds.js";
 
 export const NO_TOOL_EVIDENCE_REASON = "No tool call evidence available";
 
@@ -172,12 +173,7 @@ function evaluateToolCallCount(assertion: ToolCallCountLocal, calls: readonly To
     );
   }
 
-  const bounds = [
-    assertion.min !== undefined ? `>= ${assertion.min}` : undefined,
-    assertion.max !== undefined ? `<= ${assertion.max}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(" and ");
+  const bounds = formatBounds(assertion.min, assertion.max);
   return score(assertion, Verdict.Pass, count, `Expected ${label} count ${bounds}, saw ${count}`);
 }
 
