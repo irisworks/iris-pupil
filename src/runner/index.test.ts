@@ -49,6 +49,7 @@ function scenario(overrides: Partial<Scenario> = {}): Scenario {
     },
     turns: [{ user: "please schedule", expect: [] }],
     expect: { assertions: [], thresholds: [] },
+    invariants: [],
     ...overrides,
   };
 }
