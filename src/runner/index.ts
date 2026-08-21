@@ -3,6 +3,7 @@ import { firstString, isRecord } from "../core/json.js";
 import {
   aggregateVerdicts,
   PupilError,
+  type LoadedInvariant,
   type RunResult,
   type Scenario,
   type ScenarioResult,
@@ -29,6 +30,7 @@ import {
   evaluateManualScoring,
   evaluateThresholds,
 } from "../eval/index.js";
+import { evaluateInvariants } from "../eval/invariants.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
 import { applyTraceRequirement } from "../eval/toolAssertions.js";
 import {
@@ -89,6 +91,15 @@ export interface RunScenarioOptions {
    * block a pipeline that did not ask for that.
    */
   requireTrace?: boolean;
+  /**
+   * Repo-level policy invariants, loaded once by the caller (loadInvariantFile
+   * does file IO) and composed with the scenario's own `invariants:` block as
+   * a pure union -- neither layer can suppress the other. See
+   * docs/superpowers/specs/2026-08-21-invariants-design.md.
+   */
+  invariants?: LoadedInvariant[];
+  /** From config.invariants.defaultMaxViolationRate; used only when a check sets no maxViolationRate of its own. */
+  defaultMaxViolationRate?: number;
 }
 
 export interface RunScenariosOptions extends RunScenarioOptions {
@@ -485,9 +496,23 @@ export async function runScenario(
       const thresholdScores = evaluateThresholds(scenario.expect.thresholds, trajectory);
       const manualScores = evaluateManualScoring(scenario.expect.manual);
       const judgeScores = evaluateJudge(scenario.expect.judge);
+      const composedInvariants: LoadedInvariant[] = [
+        ...(options.invariants ?? []),
+        ...(scenario.invariants ?? []).map((check) => ({ check, source: "scenario" as const })),
+      ];
+      const invariantScores = evaluateInvariants(composedInvariants, [trajectory], {
+        defaultMaxViolationRate: options.defaultMaxViolationRate,
+      });
       const turnScores = turns.flatMap((turn) => turn.assertions);
       const scores = applyTraceRequirement(
-        [...turnScores, ...scenarioScores, ...thresholdScores, ...manualScores, ...judgeScores],
+        [
+          ...turnScores,
+          ...scenarioScores,
+          ...thresholdScores,
+          ...manualScores,
+          ...judgeScores,
+          ...invariantScores,
+        ],
         options.requireTrace ?? false,
       );
       const verdict = aggregateScores(scores);

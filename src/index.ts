@@ -1,6 +1,7 @@
 export * from "./core/config.js";
 export * from "./core/types.js";
 export * from "./scenario/index.js";
+export * from "./invariants/index.js";
 export * from "./mock/irisMockAgent.js";
 export { MockTraceSource } from "./mock/mockTraceSource.js";
 export * from "./driver/index.js";
@@ -15,6 +16,12 @@ export {
   NO_TOOL_EVIDENCE_REASON,
   NO_TOOL_EVIDENCE_MARKER,
 } from "./eval/toolAssertions.js";
+
+export {
+  evaluateInvariant,
+  evaluateInvariants,
+  type InvariantEvaluationOptions,
+} from "./eval/invariants.js";
 
 export {
   applyTraceEnrichment,

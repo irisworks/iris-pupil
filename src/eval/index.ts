@@ -23,7 +23,7 @@ import {
 export type AssertionEvaluationContext = Trajectory;
 export type ThresholdEvaluationContext = Trajectory;
 
-function assertionName(assertion: AssertionCheck): string {
+export function assertionName(assertion: AssertionCheck): string {
   if (isToolAssertion(assertion)) return toolAssertionName(assertion);
   if (assertion.type === "jsonpath") {
     return `assertion:${assertion.type}:${assertion.target}:${assertion.path}`;
@@ -263,7 +263,7 @@ export function evaluateJudge(judge: JudgeConfig | undefined): Score[] {
   ];
 }
 
-function thresholdName(threshold: ThresholdCheck): string {
+export function thresholdName(threshold: ThresholdCheck): string {
   return `threshold:${threshold.metric}`;
 }
 

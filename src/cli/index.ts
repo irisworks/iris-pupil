@@ -20,6 +20,7 @@ import {
   resolveCompareOptions,
   type RunComparison,
 } from "../history/index.js";
+import { loadInvariantFile } from "../invariants/index.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
@@ -324,6 +325,9 @@ program
       },
     ) => {
       const config = await loadPupilConfig(configLoadOptions(options));
+      const invariants = config.invariants?.file
+        ? await loadInvariantFile(config.invariants.file)
+        : [];
       const scenarios = await loadConfiguredScenarios(path, config);
       const mergedTarget: TargetIdentity = {
         ...config.target,
@@ -349,6 +353,8 @@ program
             : (LangfuseTraceSource.fromSettings(config.langfuse) ?? false),
         target: mergedTarget,
         requireTrace: Boolean(options.requireTrace) || config.requireTrace,
+        invariants,
+        defaultMaxViolationRate: config.invariants?.defaultMaxViolationRate,
       });
 
       const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
