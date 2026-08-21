@@ -131,6 +131,36 @@ earlier draft of this feature considered changing it to total invocations;
 no existing `tool_calls` threshold or baseline can silently start scoring
 something different.
 
+## Invariants
+
+Scenarios and the project as a whole can declare input-free checks that hold for _any_
+conversation - `invariants:` in a scenario, plus an optional repo-wide policy file at
+`config.invariants.file` (path resolves relative to the config file). Both layers compose as a
+pure union: every check from both is always evaluated, and neither layer can suppress or
+override the other. Each entry is exactly one existing `assertion` (any of the five tool
+assertion types) or `threshold` (any metric, including the trace-derived `tool_calls` and
+`tool_invocations`), plus an optional `maxViolationRate` in `[0, 1]`.
+
+`pupil run` evaluates every composed invariant against the single trajectory the scenario just
+produced (one sample). The evaluator itself has no "drive mode" special case: strictness falls
+out of the arithmetic - a single sample's violation rate is always 0 or 1, so any
+`maxViolationRate` below 1 rejects a single violation. Setting `maxViolationRate: 1` is therefore
+a deliberate way to exempt a check from `pupil run` enforcement while still declaring it for
+population evaluation later. `config.invariants.defaultMaxViolationRate` is a fallback used only
+when a check sets no `maxViolationRate` of its own; it has no effect on today's one-sample
+evaluation beyond that same arithmetic, and becomes materially useful once `pupil observe`
+(IRIS-164) evaluates invariants over a population of production traces.
+
+Skip semantics follow the same rule as tool assertions and trace-derived thresholds elsewhere:
+a sample that cannot be checked (missing tool-call evidence, a trace-only metric absent) is
+excluded from the violation count rather than treated as compliant. If every sample skips, the
+invariant itself skips - and `--require-trace` escalates that skip to a failure exactly like it
+does for tool assertions and thresholds today.
+
+Invariant scores are named `invariant:<repo|scenario>:<inner assertion/threshold name>` and flow
+through the same `scores` array, verdict aggregation, `--require-trace` policy, JSON output, and
+JUnit report as every other score - there is no separate invariant verdict type.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.
