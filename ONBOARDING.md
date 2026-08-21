@@ -138,16 +138,16 @@ CLI today: `validate`, `discover`, `run`, `compare`, `mock-agent`, `list`, `repo
 
 Still missing, despite appearing in the type model or the vision:
 
-| Thing                                 | State                                                                                                                                                                                                                                                 |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tool-call **assertions**              | **absent.** Tool calls are now _read_ — `metadata.langfuse.toolCalls` and `metrics.tool_calls` come from trace enrichment (`src/trace/index.ts`) — but no assertion type consumes them. `tool_called`/`tool_order`/`tool_args` are IRIS-161, next up. |
-| Trajectory from traces                | `Trajectory.source` allows `"trace"`, but only the driven producer exists. Needs IRIS-164 (`pupil observe`).                                                                                                                                          |
-| `traceparent` correlation             | not started (IRIS-159) — correlation today is the `sessionId` echo, see §5                                                                                                                                                                            |
-| LLM judge                             | config parses; `evaluateJudge` returns a `skip` score reading `LLM judge not configured`                                                                                                                                                              |
-| Driver registry / 2nd driver          | not started — the runner hardcodes `if (scenario.driver.type !== "rest") throw`                                                                                                                                                                       |
-| Invariants, seeding, 2nd trace source | not started (IRIS-163, IRIS-165, IRIS-167)                                                                                                                                                                                                            |
-| Manual scoring (`pupil score`)        | **shipped** (IRIS-96)                                                                                                                                                                                                                                 |
-| CI workflows                          | `.github/workflows/check.yml` runs `npm run check` on Node 20 + 22 (IRIS-152)                                                                                                                                                                         |
+| Thing                                 | State                                                                                                                                                         |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool-call **assertions**              | **shipped** (IRIS-161) — adds `tool_called`, `tool_not_called`, `tool_call_count`, `tool_order`, and `tool_args` assertions evaluated against trace evidence. |
+| Trajectory from traces                | `Trajectory.source` allows `"trace"`, but only the driven producer exists. Needs IRIS-164 (`pupil observe`).                                                  |
+| `traceparent` correlation             | not started (IRIS-159) — correlation today is the `sessionId` echo, see §5                                                                                    |
+| LLM judge                             | config parses; `evaluateJudge` returns a `skip` score reading `LLM judge not configured`                                                                      |
+| Driver registry / 2nd driver          | not started — the runner hardcodes `if (scenario.driver.type !== "rest") throw`                                                                               |
+| Invariants, seeding, 2nd trace source | not started (IRIS-163, IRIS-165, IRIS-167)                                                                                                                    |
+| Manual scoring (`pupil score`)        | **shipped** (IRIS-96)                                                                                                                                         |
+| CI workflows                          | `.github/workflows/check.yml` runs `npm run check` on Node 20 + 22 (IRIS-152)                                                                                 |
 
 ---
 
@@ -280,14 +280,7 @@ service — the suite must pass with no network and no API keys.
 
 ### Good first contributions
 
-1. **Treat missing trace-derived metrics as `skip`, not `fail`.** `metricKey()` in
-   `src/eval/index.ts` normalizes aliases for `turns`, `latency_ms`, and `cost_usd` only, and
-   `evaluateThreshold` special-cases just `cost_usd` when the metric is absent. So a threshold on
-   `tool_calls` or `total_tokens` — both written by trace enrichment — hard-**fails** a scenario
-   whenever Langfuse is unreachable or disabled, instead of skipping like cost does. Extend the
-   alias table and the skip branch to every trace-derived metric. Small, well-covered by
-   `src/eval/index.test.ts`, and it removes a real false-red.
-2. **Give the driver registry a seam.** `src/runner/index.ts` throws on any
+1. **Give the driver registry a seam.** `src/runner/index.ts` throws on any
    `scenario.driver.type !== "rest"`. Replacing that hardcode with a small registry lookup is
    self-contained and unblocks every future driver.
 
