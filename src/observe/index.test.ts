@@ -96,4 +96,45 @@ describe("buildObserveResult", () => {
       traceCount: 0,
     });
   });
+
+  it("records evaluatedCount as the max evaluatedCount across scores", () => {
+    const trajectories = [
+      trajectory({ metrics: { tool_calls: 1 } }),
+      trajectory({ metrics: { tool_calls: 2 } }),
+    ];
+    const run = buildObserveResult({
+      populationName: "checkout-prod",
+      query: { since: "24h" },
+      trajectories,
+      invariants: [passingInvariant],
+      requireTrace: false,
+      target: { mode: "observed" },
+    });
+    expect(run.results[0]?.metrics).toMatchObject({ traceCount: 2, evaluatedCount: 2 });
+  });
+
+  it("stamps metadata under sourceMetadataKey when provided", () => {
+    const run = buildObserveResult({
+      populationName: "checkout-prod",
+      query: { since: "24h" },
+      trajectories: [],
+      invariants: [passingInvariant],
+      requireTrace: false,
+      target: { mode: "observed" },
+      sourceMetadataKey: "langfuse",
+    });
+    expect(run.metadata).toEqual({ langfuse: { populationSource: true } });
+  });
+
+  it("leaves metadata empty when sourceMetadataKey is omitted", () => {
+    const run = buildObserveResult({
+      populationName: "checkout-prod",
+      query: { since: "24h" },
+      trajectories: [],
+      invariants: [passingInvariant],
+      requireTrace: false,
+      target: { mode: "observed" },
+    });
+    expect(run.metadata).toEqual({});
+  });
 });

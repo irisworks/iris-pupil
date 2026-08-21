@@ -659,7 +659,9 @@ export class LangfuseTracePopulationSource implements TracePopulationSource {
       this.config.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
     );
     if (!response.ok) {
-      throw new Error(`Langfuse population fetch failed with status ${response.status}`);
+      throw new Error(
+        `Langfuse population fetch failed with status ${response.status} (${url.host})`,
+      );
     }
     const payload = await response.json();
     const enrichments = extractLangfuseEnrichmentsPerTrace(payload, {

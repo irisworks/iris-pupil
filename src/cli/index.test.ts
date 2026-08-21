@@ -2288,6 +2288,107 @@ describe("pupil observe", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 15000);
+
+  it("exits 1 under --require-trace when the population is empty (checked nothing)", async () => {
+    const langfuseUrl = await startLangfuseStub({ data: [] });
+    const dir = await mkdtemp(join(tmpdir(), "pupil-observe-"));
+    const historyDir = join(dir, "history");
+    const policyPath = join(dir, "repo-policy.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(
+        policyPath,
+        ["invariants:", "  - threshold:", "      metric: tool_calls", "      max: 5", ""].join(
+          "\n",
+        ),
+      );
+      await writeFile(
+        configPath,
+        [
+          "invariants:",
+          "  file: repo-policy.yaml",
+          "langfuse:",
+          `  host: "${langfuseUrl}"`,
+          '  publicKey: "pk"',
+          '  secretKey: "sk"',
+          "observe:",
+          "  populations:",
+          "    checkout-prod:",
+          '      since: "24h"',
+          "",
+        ].join("\n"),
+      );
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "observe",
+            "checkout-prod",
+            "--config",
+            configPath,
+            "--history-dir",
+            historyDir,
+            "--require-trace",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(run.code).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("fails fast with a clear error when since is not before until", async () => {
+    const langfuseUrl = await startLangfuseStub({ data: [] });
+    const dir = await mkdtemp(join(tmpdir(), "pupil-observe-"));
+    const historyDir = join(dir, "history");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(
+        configPath,
+        [
+          "langfuse:",
+          `  host: "${langfuseUrl}"`,
+          '  publicKey: "pk"',
+          '  secretKey: "sk"',
+          "observe:",
+          "  populations:",
+          "    checkout-prod:",
+          '      since: "1h"',
+          '      until: "24h"',
+          "",
+        ].join("\n"),
+      );
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "observe",
+            "checkout-prod",
+            "--config",
+            configPath,
+            "--history-dir",
+            historyDir,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("invalid time window");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
 });
 
 describe("run command target flags", () => {
