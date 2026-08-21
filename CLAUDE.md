@@ -183,7 +183,9 @@ defined under `observe.populations.<name>` in `pupil.config.yaml` (`name`, `tags
 `since`, `until`, `limit`); every field except `since` is optional, and CLI flags
 (`--since`, `--until`, `--name`, `--tag`, `--user-id`, `--limit`) override the configured
 values the same way `pupil run` flags override scenario driver config. `since`/`until`
-accept `"now"`, a relative duration (`24h`, `7d`, `30m`), or an ISO 8601 timestamp.
+accept `"now"`, a relative duration (`24h`, `7d`, `30m`), or an ISO 8601 timestamp. A
+population name that isn't in `observe.populations` still works as long as `--since` is
+supplied via CLI flags - the config entry is optional scaffolding, not a required registry.
 
 The fetch goes through Langfuse's `v2/observations` endpoint rather than the `v1 traces`
 endpoint `pupil run`'s single-trace lookups use - Langfuse's own migration guidance
@@ -200,7 +202,11 @@ driven baseline. A config or fetch failure (bad Langfuse credentials, unknown po
 name, network error) fails the command outright with no history write, since there is no
 partial result to fall back to; an empty population still evaluates through the existing
 zero-samples branch, which returns `Verdict.Skip` for every check — the same severity as `Pass`,
-so an empty population reports green rather than failing the pipeline.
+so an empty population reports green by default. That skip carries the same escalatable
+marker as a missing trace, so `--require-trace` turns a checked-nothing population run into a
+failure instead of a silent green. `pupil observe` also warns on stderr when no repo-level
+invariants are configured at all, and rejects a resolved time window where `since` is not
+strictly before `until`.
 
 ## What Pupil Is
 
