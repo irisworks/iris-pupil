@@ -174,6 +174,33 @@ examples/invariants/pupil.config.yaml`) that composes a repo-level policy file
 (`repo-policy.yaml`) with that same scenario, to show the pure-union composition rule without
 touching the project's own `pupil.config.yaml`.
 
+### `pupil observe`
+
+`pupil observe <population>` evaluates only the repo-level invariant policy (never a
+scenario's own `invariants:` block — production traffic isn't tied to one scenario id)
+against a named population of production traces fetched from Langfuse. Populations are
+defined under `observe.populations.<name>` in `pupil.config.yaml` (`name`, `tags`, `userId`,
+`since`, `until`, `limit`); every field except `since` is optional, and CLI flags
+(`--since`, `--until`, `--name`, `--tag`, `--user-id`, `--limit`) override the configured
+values the same way `pupil run` flags override scenario driver config. `since`/`until`
+accept `"now"`, a relative duration (`24h`, `7d`, `30m`), or an ISO 8601 timestamp.
+
+The fetch goes through Langfuse's `v2/observations` endpoint rather than the `v1 traces`
+endpoint `pupil run`'s single-trace lookups use - Langfuse's own migration guidance
+documents a full-table-scan risk for `v1` queries with no bounded time filter, which only
+matters at population scale. Each distinct trace becomes one sample fed to
+`evaluateInvariants`, exactly as `pupil run` feeds it a single sample - the evaluator has no
+mode-specific code path.
+
+`pupil observe` shares `pupil run`'s full CI-gating surface (`--json`, `--junit`, `--strict`,
+`--baseline`, `--require-trace`) and writes to the same `.pupil` history via
+`JsonRunHistoryStore`, stamped `target.mode: "observed"`. The existing hard target-identity
+mismatch rule (exit code 2) already guarantees an observed run is never diffed against a
+driven baseline. A config or fetch failure (bad Langfuse credentials, unknown population
+name, network error) fails the command outright with no history write, since there is no
+partial result to fall back to; an empty population still evaluates and skips every check,
+matching `evaluateInvariant`'s existing zero-samples behavior.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.
