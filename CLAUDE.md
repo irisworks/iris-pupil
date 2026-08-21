@@ -166,6 +166,14 @@ Invariant scores are named `invariant:<repo|scenario>:<inner assertion/threshold
 through the same `scores` array, verdict aggregation, `--require-trace` policy, JSON output, and
 JUnit report as every other score - there is no separate invariant verdict type.
 
+`examples/scenarios/iris-invariants.yaml` shows a scenario-level `invariants:` block covering a
+tool-scope assertion, a tool-presence assertion, runner-computed thresholds, a trace-derived
+threshold with an explicit `maxViolationRate`, and the `maxViolationRate: 1` opt-out edge case.
+`examples/invariants/` adds a standalone demo config (`pupil run --config
+examples/invariants/pupil.config.yaml`) that composes a repo-level policy file
+(`repo-policy.yaml`) with that same scenario, to show the pure-union composition rule without
+touching the project's own `pupil.config.yaml`.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.
