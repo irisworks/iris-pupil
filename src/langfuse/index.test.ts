@@ -1,8 +1,11 @@
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildV2ObservationsUrl,
   extractLangfuseEnrichment,
+  extractLangfuseEnrichmentsPerTrace,
   langfuseConfigFromEnv,
+  LangfuseTracePopulationSource,
   LangfuseTraceSource,
   resolveLangfuseConfig,
 } from "./index.js";
@@ -822,5 +825,333 @@ describe("LangfuseTraceSource lookup", () => {
     await expect(
       new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 }).resolve("session-1"),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("extractLangfuseEnrichmentsPerTrace", () => {
+  it("returns one enrichment per distinct traceId in a v2 observations payload", () => {
+    const payload = {
+      data: [
+        {
+          traceId: "trace-a",
+          type: "TOOL",
+          name: "search",
+          input: { query: "x" },
+          startTime: "2026-08-21T00:00:00.000Z",
+          usage: { input: 10, output: 5 },
+        },
+        {
+          traceId: "trace-b",
+          type: "TOOL",
+          name: "book",
+          startTime: "2026-08-21T00:00:01.000Z",
+          usage: { input: 20, output: 8 },
+        },
+      ],
+    };
+
+    const enrichments = extractLangfuseEnrichmentsPerTrace(payload);
+    expect(enrichments).toHaveLength(2);
+
+    const byTrace = new Map(enrichments.map((e) => [e.traceId, e]));
+    expect(byTrace.get("trace-a")?.toolCalls.map((c) => c.name)).toEqual(["search"]);
+    expect(byTrace.get("trace-a")?.inputTokens).toBe(10);
+    expect(byTrace.get("trace-b")?.toolCalls.map((c) => c.name)).toEqual(["book"]);
+    expect(byTrace.get("trace-b")?.inputTokens).toBe(20);
+    expect(byTrace.get("trace-a")?.traceCount).toBe(1);
+  });
+
+  it("returns an empty array for a payload with no traces", () => {
+    expect(extractLangfuseEnrichmentsPerTrace({ data: [] })).toEqual([]);
+  });
+});
+
+async function stubObservations(payload: unknown): Promise<StubbedServer> {
+  const requests: StubbedServer["requests"] = [];
+  server = createServer((req, res) => {
+    requests.push({ url: req.url, authorization: req.headers.authorization });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+  const address = server!.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return { baseUrl: `http://127.0.0.1:${port}`, requests };
+}
+
+describe("LangfuseTracePopulationSource", () => {
+  it("fetches and converts each trace into a Trajectory", async () => {
+    const { baseUrl, requests } = await stubObservations({
+      data: [
+        {
+          traceId: "trace-a",
+          type: "TOOL",
+          name: "search",
+          startTime: "2026-08-21T00:00:00.000Z",
+        },
+        {
+          traceId: "trace-b",
+          type: "TOOL",
+          name: "book",
+          startTime: "2026-08-21T00:00:01.000Z",
+        },
+      ],
+    });
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(trajectories).toHaveLength(2);
+    expect(trajectories.every((t) => t.source === "trace")).toBe(true);
+    expect(trajectories.map((t) => t.toolCalls?.[0]?.name).sort()).toEqual(["book", "search"]);
+    expect(requests[0]?.url).toContain("/api/public/v2/observations");
+    expect(requests[0]?.authorization).toMatch(/^Basic /);
+  });
+
+  it("throws when the response is not ok", async () => {
+    server = createServer((_req, res) => {
+      res.writeHead(500);
+      res.end("boom");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server!.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl: `http://127.0.0.1:${port}`,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    await expect(source.fetch({ since: "24h" })).rejects.toThrow(
+      new RegExp(`status 500 \\(127\\.0\\.0\\.1:${port}\\)`),
+    );
+  });
+
+  it("follows meta.cursor across pages until the cursor is exhausted", async () => {
+    const { baseUrl, requests } = await stubSession(
+      {
+        data: [
+          { traceId: "trace-1", type: "TOOL", name: "a", startTime: "2026-08-21T00:00:03.000Z" },
+          { traceId: "trace-1", type: "TOOL", name: "b", startTime: "2026-08-21T00:00:02.000Z" },
+        ],
+        meta: { cursor: "cursor-1" },
+      },
+      {
+        data: [
+          { traceId: "trace-2", type: "TOOL", name: "c", startTime: "2026-08-21T00:00:01.000Z" },
+        ],
+        // No meta.cursor at all: the cursor is genuinely exhausted here.
+      },
+    );
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.url).toContain("limit=100");
+    // Page 1 already returned 2 rows toward the default limit of 100, so
+    // page 2 should only ask for the remaining 98.
+    expect(requests[1]?.url).toContain("limit=98");
+    expect(requests[1]?.url).toContain("cursor=cursor-1");
+    expect(trajectories).toHaveLength(2);
+    const byTraceToolCount = trajectories.map((t) => t.toolCalls?.length ?? 0).sort();
+    expect(byTraceToolCount).toEqual([1, 2]);
+  });
+
+  it("merges a single trace's observations when they straddle a page boundary, dropping nothing once the cursor exhausts naturally", async () => {
+    const { baseUrl, requests } = await stubSession(
+      {
+        data: [
+          {
+            traceId: "trace-1",
+            type: "TOOL",
+            name: "search",
+            startTime: "2026-08-21T00:00:02.000Z",
+          },
+        ],
+        meta: { cursor: "cursor-1" },
+      },
+      {
+        data: [
+          {
+            traceId: "trace-1",
+            type: "TOOL",
+            name: "book",
+            startTime: "2026-08-21T00:00:01.000Z",
+          },
+        ],
+        // No meta.cursor: the cursor genuinely exhausts on page 2, so nothing
+        // should be dropped even though every row belongs to trace-1.
+      },
+    );
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(2);
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]?.toolCalls?.map((c) => c.name).sort()).toEqual(["book", "search"]);
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("drops the last, potentially-partial trace when the requested limit is reached before the cursor is exhausted", async () => {
+    const { baseUrl, requests } = await stubSession({
+      data: [
+        { traceId: "trace-a", type: "TOOL", name: "a1", startTime: "2026-08-21T00:00:03.000Z" },
+        { traceId: "trace-a", type: "TOOL", name: "a2", startTime: "2026-08-21T00:00:02.000Z" },
+        // trace-b is last in the (startTime-descending) page, so it is the
+        // one at risk of continuing into an unfetched page and must be
+        // dropped once the requested limit is reached.
+        { traceId: "trace-b", type: "TOOL", name: "b1", startTime: "2026-08-21T00:00:01.000Z" },
+      ],
+      meta: { cursor: "cursor-1" },
+    });
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h", limit: 3 });
+
+    expect(requests).toHaveLength(1);
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]?.toolCalls?.map((c) => c.name)).toEqual(["a2", "a1"]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/^WARNING:.*trace-b/);
+    errorSpy.mockRestore();
+  });
+
+  it("drops the last, potentially-partial trace when the safety cap of requests is reached", async () => {
+    const pages = Array.from({ length: 25 }, (_, i) => ({
+      data: [
+        {
+          traceId: `trace-${i}`,
+          type: "TOOL",
+          name: `tool-${i}`,
+          startTime: `2026-08-21T00:${String(59 - i).padStart(2, "0")}:00.000Z`,
+        },
+      ],
+      meta: { cursor: `cursor-${i}` },
+    }));
+    const { baseUrl, requests } = await stubSession(...pages);
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    // Default limit (100) is never reached because each page only contributes
+    // one row, so the loop only stops via the 20-request safety cap.
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(20);
+    // 20 distinct traces fetched, minus the last (potentially-partial) one dropped.
+    expect(trajectories).toHaveLength(19);
+    expect(trajectories.some((t) => t.toolCalls?.[0]?.name === "tool-19")).toBe(false);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/^WARNING:/);
+    errorSpy.mockRestore();
+  });
+
+  it("drops the ambiguous trailing record itself when it carries no traceId to group by", async () => {
+    const { baseUrl } = await stubSession({
+      data: [
+        { traceId: "trace-a", type: "TOOL", name: "a1", startTime: "2026-08-21T00:00:02.000Z" },
+        // Last row in the page has no traceId at all: fail safe by dropping
+        // this record instead of the less-safe default of keeping it.
+        { type: "TOOL", name: "untraced", startTime: "2026-08-21T00:00:01.000Z" },
+      ],
+      meta: { cursor: "cursor-1" },
+    });
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h", limit: 2 });
+
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]?.toolCalls?.map((c) => c.name)).toEqual(["a1"]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+
+  it("stops immediately when a page returns an empty data array with a cursor, instead of burning the full safety cap", async () => {
+    const { baseUrl, requests } = await stubSession({
+      data: [],
+      meta: { cursor: "cursor-1" },
+    });
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(1);
+    expect(trajectories).toEqual([]);
+  });
+});
+
+describe("buildV2ObservationsUrl", () => {
+  const config = { baseUrl: "https://cloud.langfuse.com", publicKey: "pk", secretKey: "sk" };
+  const now = new Date("2026-08-21T12:00:00.000Z");
+
+  it("always sets fromStartTime/toStartTime, fields, and limit", () => {
+    const url = buildV2ObservationsUrl(config, { since: "24h" }, now);
+    expect(url.pathname).toBe("/api/public/v2/observations");
+    expect(url.searchParams.get("fromStartTime")).toBe("2026-08-20T12:00:00.000Z");
+    expect(url.searchParams.get("toStartTime")).toBe("2026-08-21T12:00:00.000Z");
+    expect(url.searchParams.get("fields")).toBe("core,basic,io,trace_context,metadata");
+    expect(url.searchParams.get("limit")).toBe("100");
+  });
+
+  it("respects an explicit until and limit", () => {
+    const url = buildV2ObservationsUrl(
+      config,
+      { since: "7d", until: "2026-08-21T00:00:00.000Z", limit: 25 },
+      now,
+    );
+    expect(url.searchParams.get("toStartTime")).toBe("2026-08-21T00:00:00.000Z");
+    expect(url.searchParams.get("limit")).toBe("25");
+  });
+
+  it("adds userId directly and name/tags as filter conditions", () => {
+    const url = buildV2ObservationsUrl(
+      config,
+      { since: "24h", name: "checkout-agent", tags: ["prod", "canary"], userId: "user-1" },
+      now,
+    );
+    expect(url.searchParams.get("userId")).toBe("user-1");
+    const filter = JSON.parse(url.searchParams.get("filter")!);
+    expect(filter).toEqual([
+      { type: "string", column: "traceName", operator: "=", value: "checkout-agent" },
+      { type: "arrayOptions", column: "tags", operator: "any of", value: ["prod", "canary"] },
+    ]);
+  });
+
+  it("omits the filter param entirely when neither name nor tags are set", () => {
+    const url = buildV2ObservationsUrl(config, { since: "24h" }, now);
+    expect(url.searchParams.has("filter")).toBe(false);
   });
 });

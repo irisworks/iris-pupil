@@ -1,7 +1,15 @@
 import { Buffer } from "node:buffer";
 import { firstString, isRecord, type JsonRecord } from "../core/json.js";
-import type { ToolCall } from "../core/types.js";
-import type { TraceLookupContext, TraceRecord, TraceSource } from "../trace/index.js";
+import type { ToolCall, Trajectory } from "../core/types.js";
+import type {
+  TraceLookupContext,
+  TracePopulationQuery,
+  TracePopulationSource,
+  TraceRecord,
+  TraceSource,
+} from "../trace/index.js";
+import { trajectoryFromTraceRecord } from "../trace/index.js";
+import { resolveTimeBound } from "../observe/time.js";
 
 export interface LangfuseEnrichment {
   readonly traceId?: string;
@@ -307,6 +315,12 @@ function extractToolCalls(records: JsonRecord[]): ToolCall[] {
     // this is the reliable path for iris-core's OTel-ingested tool observations,
     // which may land as type SPAN in Langfuse's internal model but always carry
     // the original 'tool' value in the raw OTel attribute.
+    // `fields` on the v2/observations request explicitly asks for the
+    // `metadata` field group (see buildV2ObservationsUrl) so this path has
+    // data to read, but that inclusion is NOT verified against a live
+    // Langfuse instance — see buildV2ObservationsUrl's comment for the same
+    // caveat. If `metadata` turns out to live under a different field group
+    // name, this path silently falls back to the `type`-based check above.
     const otelType =
       isRecord(record.metadata) && isRecord(record.metadata["attributes"])
         ? firstString(record.metadata["attributes"]["langfuse.observation.type"])?.toLowerCase()
@@ -353,20 +367,31 @@ function extractToolCalls(records: JsonRecord[]): ToolCall[] {
   }));
 }
 
+interface TraceGroup {
+  trace: JsonRecord;
+  observations: JsonRecord[];
+}
+
+/**
+ * Groups a payload's traces with their observations. Top-level observations
+ * belong to a single-trace payload; attributing them to every trace of a
+ * multi-trace session would count them repeatedly.
+ */
+function groupedTraces(payload: unknown, baseUrl: string | undefined): TraceGroup[] {
+  const traces = tracesFromV2Observations(payload, baseUrl);
+  if (traces.length === 0) traces.push(...tracesFromSession(payload));
+  return traces.map((trace) => ({
+    trace,
+    observations: observationsFromTrace(trace, traces.length === 1 ? payload : undefined),
+  }));
+}
+
 export function extractLangfuseEnrichment(
   payload: unknown,
   options: { baseUrl?: string } = {},
 ): LangfuseEnrichment | undefined {
-  const traces = tracesFromV2Observations(payload, options.baseUrl);
-  if (traces.length === 0) traces.push(...tracesFromSession(payload));
-  if (traces.length === 0) return undefined;
-
-  // Top-level observations belong to a single-trace payload; attributing them to every
-  // trace of a multi-trace session would count them repeatedly.
-  const grouped = traces.map((trace) => ({
-    trace,
-    observations: observationsFromTrace(trace, traces.length === 1 ? payload : undefined),
-  }));
+  const grouped = groupedTraces(payload, options.baseUrl);
+  if (grouped.length === 0) return undefined;
 
   const inputTokens = aggregate(grouped, recordInputTokens);
   const outputTokens = aggregate(grouped, recordOutputTokens);
@@ -384,13 +409,51 @@ export function extractLangfuseEnrichment(
   return {
     traceId: firstString(first.id, first.traceId, first.trace_id),
     traceUrl: firstString(first.url, first.traceUrl, first.trace_url, first.htmlUrl),
-    traceCount: traces.length,
+    traceCount: grouped.length,
     costUsd,
     inputTokens,
     outputTokens,
     totalTokens,
     toolCalls,
   };
+}
+
+/**
+ * Like `extractLangfuseEnrichment`, but returns one entry per distinct trace
+ * instead of aggregating the whole payload into a single summary. Used by
+ * `pupil observe`, where each trace becomes its own sample.
+ */
+export function extractLangfuseEnrichmentsPerTrace(
+  payload: unknown,
+  options: { baseUrl?: string } = {},
+): LangfuseEnrichment[] {
+  return groupedTraces(payload, options.baseUrl).map((group) => {
+    const inputTokens = aggregate([group], recordInputTokens);
+    const outputTokens = aggregate([group], recordOutputTokens);
+    const totalTokens =
+      aggregate([group], recordTotalTokens) ??
+      (inputTokens !== undefined || outputTokens !== undefined
+        ? (inputTokens ?? 0) + (outputTokens ?? 0)
+        : undefined);
+    const costUsd = roundCost(aggregate([group], recordCost));
+    const toolCalls = extractToolCalls([group.trace, ...group.observations]);
+
+    return {
+      traceId: firstString(group.trace.id, group.trace.traceId, group.trace.trace_id),
+      traceUrl: firstString(
+        group.trace.url,
+        group.trace.traceUrl,
+        group.trace.trace_url,
+        group.trace.htmlUrl,
+      ),
+      traceCount: 1,
+      costUsd,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      toolCalls,
+    };
+  });
 }
 
 function traceDetailUrl(config: LangfuseConfig, traceId: string): URL {
@@ -565,4 +628,206 @@ export class LangfuseTraceSource implements TraceSource {
       toolCalls: enrichment.toolCalls,
     };
   }
+}
+
+/**
+ * Resolves a population of production traces from Langfuse via `v2/observations`,
+ * grouped by traceId. Unlike LangfuseTraceSource (which polls for an
+ * asynchronously-ingesting single trace), a population fetch is a one-shot
+ * query over already-ingested history — no polling/backoff needed.
+ */
+export class LangfuseTracePopulationSource implements TracePopulationSource {
+  readonly metadataKey = "langfuse";
+
+  constructor(
+    private readonly config: LangfuseConfig,
+    private readonly fetchImpl: typeof fetch = globalThis.fetch,
+  ) {}
+
+  static fromSettings(
+    settings?: LangfuseSettings,
+    env?: NodeJS.ProcessEnv,
+  ): LangfuseTracePopulationSource | undefined {
+    const config = resolveLangfuseConfig({ settings, env });
+    if (!config) return undefined;
+    return new LangfuseTracePopulationSource(config);
+  }
+
+  async fetch(query: TracePopulationQuery): Promise<Trajectory[]> {
+    const auth = Buffer.from(`${this.config.publicKey}:${this.config.secretKey}`).toString(
+      "base64",
+    );
+    const requestedLimit = query.limit ?? DEFAULT_POPULATION_LIMIT;
+
+    let combined: JsonRecord[] = [];
+    let cursor: string | undefined;
+    let exhausted = false;
+    let requests = 0;
+
+    // v2/observations is cursor-paginated (Langfuse's confirmed v1 page -> v2
+    // cursor migration) and sorted by startTime descending across ALL
+    // observations, not grouped by trace, so a trace's observations can
+    // straddle a page boundary. We loop until the cursor is genuinely
+    // exhausted, the requested limit is reached, or a hard safety cap guards
+    // against a misunderstood/misbehaving cursor contract.
+    //
+    // The descending-by-startTime ordering itself is an ASSUMED default, not
+    // something this code requests explicitly: `buildV2ObservationsUrl` sends
+    // no sort/orderBy parameter, and nothing in this codebase has confirmed
+    // whether v2/observations even exposes one. The trailing-trace drop logic
+    // below depends entirely on that assumption holding -- if Langfuse ever
+    // returns pages in a different (or unstable) order, "the last row in the
+    // page" is no longer "the oldest, at-risk-of-continuing" row, and the drop
+    // could remove the wrong trace or none at all. This is arguably a bigger
+    // unverified dependency than the `fields` param uncertainty documented
+    // above in buildV2ObservationsUrl, and is called out here with the same
+    // prominence (see also CLAUDE.md's `pupil observe` section).
+    while (requests < POPULATION_FETCH_MAX_REQUESTS) {
+      const remaining = requestedLimit - combined.length;
+      if (remaining <= 0) break;
+      const pageLimit = Math.min(remaining, POPULATION_FETCH_MAX_PAGE_SIZE);
+
+      const url = buildV2ObservationsUrl(this.config, query, new Date(), {
+        cursor,
+        limit: pageLimit,
+      });
+      const response = await fetchLangfuse(
+        url,
+        auth,
+        this.fetchImpl,
+        this.config.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
+      );
+      requests += 1;
+      if (!response.ok) {
+        throw new Error(
+          `Langfuse population fetch failed with status ${response.status} (${url.host})`,
+        );
+      }
+      const payload = await response.json();
+      const rows =
+        isRecord(payload) && Array.isArray(payload.data) ? payload.data.filter(isRecord) : [];
+      combined = combined.concat(rows);
+
+      // An empty page with a cursor still attached has nothing left to gain
+      // from continuing -- treat it the same as genuine exhaustion instead of
+      // burning further requests up to the safety cap.
+      if (rows.length === 0) {
+        exhausted = true;
+        break;
+      }
+
+      const nextCursor =
+        isRecord(payload) && isRecord(payload.meta) ? payload.meta.cursor : undefined;
+      const nextCursorString = typeof nextCursor === "string" ? nextCursor : undefined;
+      if (!nextCursorString) {
+        exhausted = true;
+        break;
+      }
+      cursor = nextCursorString;
+    }
+
+    // If the loop stopped without the cursor genuinely running out (limit
+    // reached, or the safety cap tripped), more observations may exist beyond
+    // what was fetched. Results are sorted descending by startTime, so the
+    // last-fetched records are the oldest and are the ones at risk of
+    // continuing into an unfetched page. Rather than risk silently
+    // undercounting that trace's tool calls, drop every record sharing its
+    // traceId and accept reporting one fewer trace than requested -- a
+    // partial trace excluded is safer than one included with wrong data.
+    if (!exhausted && combined.length > 0) {
+      const beforeCount = combined.length;
+      const lastRecord = combined[combined.length - 1];
+      const lastTraceId = lastRecord
+        ? firstString(lastRecord.traceId, lastRecord.trace_id)
+        : undefined;
+      if (lastTraceId) {
+        combined = combined.filter(
+          (record) => firstString(record.traceId, record.trace_id) !== lastTraceId,
+        );
+      } else {
+        // The trailing record itself carries no traceId to group by. The
+        // less-safe default would be to drop nothing here; fail safe instead
+        // by dropping the ambiguous record on its own, since it is the one
+        // record we know is at risk of belonging to a trace that straddles
+        // the unfetched page.
+        combined = combined.slice(0, -1);
+      }
+
+      const droppedCount = beforeCount - combined.length;
+      console.error(
+        `WARNING: Langfuse population fetch stopped before exhausting the time window ` +
+          `(cursor still present); dropped ${droppedCount} observation row(s)` +
+          `${lastTraceId ? ` belonging to trace ${lastTraceId}` : ""} to avoid an undercounted sample.`,
+      );
+    }
+
+    const enrichments = extractLangfuseEnrichmentsPerTrace(
+      { data: combined },
+      { baseUrl: this.config.baseUrl },
+    );
+    return enrichments.map((enrichment) => trajectoryFromTraceRecord(enrichment));
+  }
+}
+
+/** Langfuse's documented per-request page-size ceiling for v2/observations. */
+const POPULATION_FETCH_MAX_PAGE_SIZE = 1000;
+
+/**
+ * Safety net, not a documented Langfuse limit: guards against an infinite
+ * loop if the cursor contract is misunderstood or the backend misbehaves.
+ */
+const POPULATION_FETCH_MAX_REQUESTS = 20;
+
+const DEFAULT_POPULATION_LIMIT = 100;
+
+function populationFilterConditions(query: TracePopulationQuery): Record<string, unknown>[] {
+  const conditions: Record<string, unknown>[] = [];
+  if (query.name !== undefined) {
+    conditions.push({ type: "string", column: "traceName", operator: "=", value: query.name });
+  }
+  if (query.tags !== undefined && query.tags.length > 0) {
+    conditions.push({
+      type: "arrayOptions",
+      column: "tags",
+      operator: "any of",
+      value: [...query.tags],
+    });
+  }
+  return conditions;
+}
+
+/** Per-request overrides used when paginating a population fetch across multiple pages. */
+export interface V2ObservationsPageOptions {
+  /** Cursor from a previous page's `meta.cursor`; omitted for the first page. */
+  cursor?: string;
+  /** Overrides `query.limit` for this specific page request (e.g. the remaining rows needed). */
+  limit?: number;
+}
+
+/** Builds a Langfuse `v2/observations` request URL for a resolved population query. */
+export function buildV2ObservationsUrl(
+  config: LangfuseConfig,
+  query: TracePopulationQuery,
+  now: Date = new Date(),
+  page: V2ObservationsPageOptions = {},
+): URL {
+  const url = new URL(`${normalizeBaseUrl(config.baseUrl)}/api/public/v2/observations`);
+  url.searchParams.set("fromStartTime", resolveTimeBound(query.since, now));
+  url.searchParams.set("toStartTime", resolveTimeBound(query.until ?? "now", now));
+  // `metadata` is requested explicitly so extractToolCalls's
+  // metadata.attributes["langfuse.observation.type"] path (the reliable
+  // signal for IRIS's OTel-ingested tool observations) has data to read.
+  // This addition is a best-effort, unverified-against-a-live-instance fix:
+  // it is additive to a field list that already works, so it is low-risk,
+  // but it has not been confirmed to be the field group that actually
+  // carries `metadata` in the v2/observations response.
+  url.searchParams.set("fields", "core,basic,io,trace_context,metadata");
+  url.searchParams.set("limit", String(page.limit ?? query.limit ?? DEFAULT_POPULATION_LIMIT));
+  if (page.cursor !== undefined) url.searchParams.set("cursor", page.cursor);
+  if (query.userId !== undefined) url.searchParams.set("userId", query.userId);
+
+  const filter = populationFilterConditions(query);
+  if (filter.length > 0) url.searchParams.set("filter", JSON.stringify(filter));
+
+  return url;
 }

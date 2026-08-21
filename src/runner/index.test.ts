@@ -29,8 +29,10 @@ import {
   progressEventTypeForVerdict,
   runScenario,
   runScenarios,
+  summarizeResults,
   type RunnerDriver,
 } from "./index.js";
+import type { ScenarioResult } from "../core/types.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -1215,5 +1217,24 @@ describe("progressEventTypeForVerdict", () => {
     expect(progressEventTypeForVerdict(Verdict.NeedsReview)).toBe("scenario:needs_review");
     expect(progressEventTypeForVerdict(Verdict.Fail)).toBe("scenario:fail");
     expect(progressEventTypeForVerdict(Verdict.Error)).toBe("scenario:error");
+  });
+});
+
+describe("summarizeResults", () => {
+  it("counts each verdict bucket", () => {
+    const results: ScenarioResult[] = [
+      { verdict: Verdict.Pass } as ScenarioResult,
+      { verdict: Verdict.Fail } as ScenarioResult,
+      { verdict: Verdict.NeedsReview } as ScenarioResult,
+      { verdict: Verdict.Error } as ScenarioResult,
+      { verdict: Verdict.Skip } as ScenarioResult,
+    ];
+    expect(summarizeResults(results)).toEqual({
+      total: 5,
+      passed: 1,
+      failed: 1,
+      needsReview: 1,
+      errors: 1,
+    });
   });
 });
