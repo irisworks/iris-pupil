@@ -366,6 +366,106 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
+  it("loads config.invariants.file and scores its checks during pupil run", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "configured" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-invariants-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const invariantsPath = join(dir, "invariants.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-invariants-run",
+          "name: CLI invariants run",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        invariantsPath,
+        [
+          "invariants:",
+          "  - threshold:",
+          "      metric: turns",
+          "      max: 5",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        [
+          `scenarios: ${scenarioPath.replace(/\\/g, "\\\\")}`,
+          "driver:",
+          "  preset: iris-http",
+          "  config:",
+          `    baseUrl: http://${address.host}:${address.port}`,
+          "invariants:",
+          `  file: ${invariantsPath.replace(/\\/g, "\\\\")}`,
+          "history:",
+          `  dir: ${historyDir.replace(/\\/g, "\\\\")}`,
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(process.execPath, [cliPath, "run", "--config", configPath], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      const runId = /Run ([^:]+):/.exec(output.stdout)?.[1];
+      expect(runId).toBeDefined();
+      const runJson = JSON.parse(
+        await readFile(join(historyDir, "runs", `${runId}.json`), "utf-8"),
+      );
+      const scoreNames = runJson.results[0].scores.map((score: { name: string }) => score.name);
+      expect(scoreNames).toContain("invariant:repo:threshold:turns");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("fails pupil run loudly when config.invariants.file is set but missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-invariants-missing-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(scenarioPath, minimalScenarioYaml + "\n");
+      await writeFile(
+        configPath,
+        [
+          `scenarios: ${scenarioPath.replace(/\\/g, "\\\\")}`,
+          "invariants:",
+          "  file: does-not-exist.yaml",
+          "",
+        ].join("\n"),
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [cliPath, "run", "--config", configPath],
+        { encoding: "utf-8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("does-not-exist.yaml");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lets CLI driver flags override config file values", async () => {
     const mock = createIrisMockAgent({
       port: 0,
