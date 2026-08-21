@@ -1,6 +1,6 @@
 import type { RunComparison } from "../history/compare.js";
 import { Verdict, verdictSeverity, type RunResult } from "../core/types.js";
-import { NO_TOOL_EVIDENCE_MARKER } from "../eval/toolAssertions.js";
+import { NO_SAMPLES_MARKER, NO_TOOL_EVIDENCE_MARKER } from "../eval/toolAssertions.js";
 
 /**
  * Stable, documented shape for `pupil run --json`. Deliberately narrower than
@@ -52,7 +52,11 @@ export function countToolEvidenceSkips(run: RunResult): number {
   return run.results.reduce(
     (total, result) =>
       total +
-      result.scores.filter((score) => score.metadata.skipped === NO_TOOL_EVIDENCE_MARKER).length,
+      result.scores.filter(
+        (score) =>
+          score.metadata.skipped === NO_TOOL_EVIDENCE_MARKER ||
+          score.metadata.skipped === NO_SAMPLES_MARKER,
+      ).length,
     0,
   );
 }
