@@ -479,4 +479,68 @@ describe("loadPupilConfig", () => {
 
     expect(config.compare).toEqual({});
   });
+
+  it("parses an observe.populations block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "observe:",
+        "  populations:",
+        "    checkout-prod:",
+        '      name: "checkout-agent"',
+        '      tags: ["prod"]',
+        '      userId: "user-1"',
+        '      since: "24h"',
+        '      until: "now"',
+        "      limit: 250",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+    expect(config.observe?.populations["checkout-prod"]).toEqual({
+      name: "checkout-agent",
+      tags: ["prod"],
+      userId: "user-1",
+      since: "24h",
+      until: "now",
+      limit: 250,
+    });
+  });
+
+  it("requires since on every named population", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      ["observe:", "  populations:", "    checkout-prod:", '      name: "checkout-agent"', ""].join(
+        "\n",
+      ),
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/since/);
+  });
+
+  it("allows a profile to override a population's since", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "observe:",
+        "  populations:",
+        "    checkout-prod:",
+        '      since: "24h"',
+        "profiles:",
+        "  staging:",
+        "    observe:",
+        "      populations:",
+        "        checkout-prod:",
+        '          since: "7d"',
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, profile: "staging" });
+    expect(config.observe?.populations["checkout-prod"]?.since).toBe("7d");
+  });
 });
