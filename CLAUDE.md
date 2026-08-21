@@ -208,22 +208,37 @@ failure instead of a silent green. `pupil observe` also warns on stderr when no 
 invariants are configured at all, and rejects a resolved time window where `since` is not
 strictly before `until`.
 
-`v2/observations` is cursor-paginated (`meta.cursor`, max page size 1000), and its results are
-sorted by `startTime` descending across every observation rather than grouped by trace, so a
-trace's observations can straddle a page boundary. `LangfuseTracePopulationSource.fetch` follows
-`meta.cursor` across pages until it is exhausted, the requested `limit` is reached, or a hard
-20-request safety cap trips (a guard against a misunderstood cursor contract, not a documented
-Langfuse limit). Whenever the loop stops for a reason other than a genuinely exhausted cursor,
-the last-fetched trace is dropped rather than kept with a possibly-incomplete tool-call count -
-under-reporting one trace's presence is preferred over silently under-reporting its tool calls.
+`v2/observations` is cursor-paginated (`meta.cursor`, max page size 1000), and `pupil observe`'s
+default `--limit` of 100 means the cursor loop rarely runs more than once for a typical
+population — the first page already fills the limit for anything but a very small time window.
+The change that matters for most real usage isn't the multi-page loop itself; it's what happens
+at the boundary of whatever page(s) were fetched: results are sorted `startTime` descending
+across every observation rather than grouped by trace, so a single trace's observations can
+straddle a page boundary, and a trace larger than `--limit` (an IRIS conversation can easily
+exceed 100 observations) can otherwise fill an entire page on its own.
+`LangfuseTracePopulationSource.fetch` follows `meta.cursor` across pages until it is exhausted,
+the requested `limit` is reached, an empty page is returned, or a hard 20-request safety cap
+trips (a guard against a misunderstood cursor contract, not a documented Langfuse limit).
+Whenever the loop stops for a reason other than a genuinely exhausted cursor, the last-fetched
+trace is dropped rather than kept with a possibly-incomplete tool-call count - under-reporting
+one trace's presence is preferred over silently under-reporting its tool calls - and `fetch()`
+emits a `console.error` `WARNING:` naming the drop, since a silently emptied population would
+otherwise evaluate every invariant to `Verdict.Skip` and roll up to a green `Pass` with nothing
+printed anywhere.
 
-One honest limitation that remains only partially closed: `extractToolCalls`'s reliable signal
-for IRIS's OTel-ingested tool observations is `metadata.attributes["langfuse.observation.type"]`,
-and the `fields` request parameter now asks for `metadata` explicitly
-(`core,basic,io,trace_context,metadata`) so that data has somewhere to come from. This is a
-best-effort, low-risk change - additive to a field list that already works - but it has **not**
-been verified against a live Langfuse instance, so it reduces the risk of that metadata being
-silently absent from the response without eliminating it.
+Two honest limitations remain, both unverified against a live Langfuse instance:
+
+- `extractToolCalls`'s reliable signal for IRIS's OTel-ingested tool observations is
+  `metadata.attributes["langfuse.observation.type"]`, and the `fields` request parameter now
+  asks for `metadata` explicitly (`core,basic,io,trace_context,metadata`) so that data has
+  somewhere to come from. This is a best-effort, low-risk change - additive to a field list that
+  already works - but it reduces the risk of that metadata being silently absent from the
+  response without eliminating it.
+- The trailing-trace drop logic above assumes `v2/observations` actually returns results sorted
+  by `startTime` descending, and that this is Langfuse's default behavior rather than something
+  `buildV2ObservationsUrl` requests explicitly (it sends no sort/orderBy parameter, and nothing
+  here confirms the endpoint even exposes one). This is arguably the bigger unverified dependency
+  of the two, since the drop's correctness - not just its data quality - depends on it.
 
 ## What Pupil Is
 
