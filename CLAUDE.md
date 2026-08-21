@@ -226,19 +226,24 @@ emits a `console.error` `WARNING:` naming the drop, since a silently emptied pop
 otherwise evaluate every invariant to `Verdict.Skip` and roll up to a green `Pass` with nothing
 printed anywhere.
 
-Two honest limitations remain, both unverified against a live Langfuse instance:
+Both dependencies below were confirmed against a live Langfuse instance (a minimal, read-only
+structural check - row shape and ordering only, no trace content persisted), not just assumed:
 
 - `extractToolCalls`'s reliable signal for IRIS's OTel-ingested tool observations is
-  `metadata.attributes["langfuse.observation.type"]`, and the `fields` request parameter now
-  asks for `metadata` explicitly (`core,basic,io,trace_context,metadata`) so that data has
-  somewhere to come from. This is a best-effort, low-risk change - additive to a field list that
-  already works - but it reduces the risk of that metadata being silently absent from the
-  response without eliminating it.
-- The trailing-trace drop logic above assumes `v2/observations` actually returns results sorted
-  by `startTime` descending, and that this is Langfuse's default behavior rather than something
-  `buildV2ObservationsUrl` requests explicitly (it sends no sort/orderBy parameter, and nothing
-  here confirms the endpoint even exposes one). This is arguably the bigger unverified dependency
-  of the two, since the drop's correctness - not just its data quality - depends on it.
+  `metadata.attributes["langfuse.observation.type"]`, and the `fields` request parameter asks for
+  `metadata` explicitly (`core,basic,io,trace_context,metadata`). Confirmed live: every returned
+  row carries a populated `metadata` object, and `metadata.attributes["langfuse.observation.type"]`
+  is present on the subset of rows that are tool-type observations, matching what `extractToolCalls`
+  expects.
+- The trailing-trace drop logic depends on `v2/observations` returning results sorted by
+  `startTime` descending even though `buildV2ObservationsUrl` never requests a sort/orderBy
+  parameter explicitly. Confirmed live: results are descending both within one page and across
+  cursor-paginated pages (the first row of a later page has an equal-or-earlier `startTime` than
+  the first row of the page before it).
+
+This was checked once against one live project's recent data, not load-tested or checked across
+every Langfuse deployment configuration - if the hosted API's behavior here ever changes, revisit
+this note.
 
 ## What Pupil Is
 
