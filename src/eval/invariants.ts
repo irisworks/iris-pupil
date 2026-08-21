@@ -1,0 +1,97 @@
+import {
+  Verdict,
+  type InvariantCheck,
+  type LoadedInvariant,
+  type Score,
+  type Trajectory,
+} from "../core/types.js";
+import { evaluateAssertion, evaluateThreshold } from "./index.js";
+
+export interface InvariantEvaluationOptions {
+  /** From config.invariants.defaultMaxViolationRate. Used only when a check sets none of its own. */
+  defaultMaxViolationRate?: number;
+}
+
+function evaluateSample(check: InvariantCheck, sample: Trajectory): Score {
+  return check.assertion !== undefined
+    ? evaluateAssertion(check.assertion, sample)
+    : evaluateThreshold(check.threshold, sample);
+}
+
+function invariantName(source: string, innerName: string): string {
+  return `invariant:${source}:${innerName}`;
+}
+
+function checkLabel(check: InvariantCheck): string {
+  return check.assertion !== undefined ? check.assertion.type : `threshold:${check.threshold.metric}`;
+}
+
+/**
+ * Deliberately mode-oblivious: this never learns whether `samples` came from
+ * a driven run (length 1, see the runner) or a fetched trace population
+ * (IRIS-164). Drive-mode strictness is not a special case here -- it falls
+ * out of a single sample's violationRate always being 0 or 1.
+ */
+export function evaluateInvariant(
+  loaded: LoadedInvariant,
+  samples: readonly Trajectory[],
+  options: InvariantEvaluationOptions = {},
+): Score {
+  if (samples.length === 0) {
+    return {
+      name: invariantName(loaded.source, checkLabel(loaded.check)),
+      verdict: Verdict.Skip,
+      reason: "No samples to evaluate",
+      metadata: { check: loaded.check, source: loaded.source, sampleCount: 0, evaluatedCount: 0 },
+    };
+  }
+
+  const perSample = samples.map((sample) => evaluateSample(loaded.check, sample));
+  const evaluated = perSample.filter((score) => score.verdict !== Verdict.Skip);
+  const name = invariantName(loaded.source, perSample[0]!.name);
+
+  if (evaluated.length === 0) {
+    const firstSkip = perSample[0]!;
+    return {
+      name,
+      verdict: Verdict.Skip,
+      reason: firstSkip.reason ?? "No evidence available",
+      metadata: {
+        check: loaded.check,
+        source: loaded.source,
+        sampleCount: samples.length,
+        evaluatedCount: 0,
+        ...(firstSkip.metadata.skipped !== undefined && { skipped: firstSkip.metadata.skipped }),
+      },
+    };
+  }
+
+  const violations = evaluated.filter((score) => score.verdict === Verdict.Fail).length;
+  const violationRate = violations / evaluated.length;
+  const maxViolationRate = loaded.check.maxViolationRate ?? options.defaultMaxViolationRate ?? 0;
+  const verdict = violationRate <= maxViolationRate ? Verdict.Pass : Verdict.Fail;
+
+  return {
+    name,
+    verdict,
+    reason: `Violated in ${violations}/${evaluated.length} sample(s) (rate ${violationRate}, max ${maxViolationRate})`,
+    value: violationRate,
+    metadata: {
+      check: loaded.check,
+      source: loaded.source,
+      sampleCount: samples.length,
+      evaluatedCount: evaluated.length,
+      violations,
+      violationRate,
+      maxViolationRate,
+    },
+  };
+}
+
+export function evaluateInvariants(
+  loaded: readonly LoadedInvariant[],
+  samples: readonly Trajectory[],
+  options: InvariantEvaluationOptions = {},
+): Score[] {
+  return loaded.map((entry) => evaluateInvariant(entry, samples, options));
+}

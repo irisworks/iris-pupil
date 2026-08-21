@@ -18,6 +18,12 @@ export {
 } from "./eval/toolAssertions.js";
 
 export {
+  evaluateInvariant,
+  evaluateInvariants,
+  type InvariantEvaluationOptions,
+} from "./eval/invariants.js";
+
+export {
   applyTraceEnrichment,
   summarizeTraceRun,
   NO_CORRELATION_KEY_REASON,
