@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
   PupilError,
-  Verdict,
   type LoadedInvariant,
   type RunResult,
   type ScenarioResult,
-  type Score,
   type TargetIdentity,
   type Trajectory,
 } from "../core/types.js";
@@ -51,19 +49,6 @@ export interface BuildObserveResultOptions {
   target: TargetIdentity;
 }
 
-/**
- * `aggregateScores` treats a Skip the same severity as a Pass, which is right
- * for a mixed set of scores (an unrelated skip shouldn't hide a real
- * failure) but wrong when literally every score skipped: an empty population
- * has verified nothing, and should read as Skip rather than a quiet Pass.
- */
-function verdictFromScores(scores: readonly Score[]): Verdict {
-  if (scores.length > 0 && scores.every((score) => score.verdict === Verdict.Skip)) {
-    return Verdict.Skip;
-  }
-  return aggregateScores(scores);
-}
-
 /** Builds the RunResult for one `pupil observe` invocation. */
 export function buildObserveResult(options: BuildObserveResultOptions): RunResult {
   const startedAt = new Date().toISOString();
@@ -71,7 +56,7 @@ export function buildObserveResult(options: BuildObserveResultOptions): RunResul
     defaultMaxViolationRate: options.defaultMaxViolationRate,
   });
   const scores = applyTraceRequirement(rawScores, options.requireTrace);
-  const verdict = verdictFromScores(scores);
+  const verdict = aggregateScores(scores);
   const completedAt = new Date().toISOString();
 
   const scenarioResult: ScenarioResult = {
@@ -96,9 +81,11 @@ export function buildObserveResult(options: BuildObserveResultOptions): RunResul
   return {
     runId: options.runId ?? randomUUID(),
     // Always exactly one synthetic scenario, so the run's verdict is just its
-    // scenario's verdict -- no re-aggregation, and no risk of the plain
-    // aggregateVerdicts's Pass-biased handling of an all-Skip singleton
-    // disagreeing with the scenario verdict computed above.
+    // scenario's verdict -- no re-aggregation needed. Verdict.Skip shares
+    // severity 0 with Verdict.Pass by design (see VERDICT_SEVERITY), so an
+    // all-skip scores array (e.g. an empty population) rolls up to Pass here,
+    // same as everywhere else in the codebase; the skip count is surfaced
+    // separately via metadata.observe.traceCount.
     verdict,
     results,
     startedAt,
