@@ -1,9 +1,15 @@
 import { Buffer } from "node:buffer";
 import { firstString, isRecord, type JsonRecord } from "../core/json.js";
-import type { ToolCall } from "../core/types.js";
-import type { TraceLookupContext, TraceRecord, TraceSource } from "../trace/index.js";
+import type { ToolCall, Trajectory } from "../core/types.js";
+import type {
+  TraceLookupContext,
+  TracePopulationQuery,
+  TracePopulationSource,
+  TraceRecord,
+  TraceSource,
+} from "../trace/index.js";
+import { trajectoryFromTraceRecord } from "../trace/index.js";
 import { resolveTimeBound } from "../observe/time.js";
-import type { TracePopulationQuery } from "../trace/index.js";
 
 export interface LangfuseEnrichment {
   readonly traceId?: string;
@@ -615,6 +621,51 @@ export class LangfuseTraceSource implements TraceSource {
       totalTokens: enrichment.totalTokens,
       toolCalls: enrichment.toolCalls,
     };
+  }
+}
+
+/**
+ * Resolves a population of production traces from Langfuse via `v2/observations`,
+ * grouped by traceId. Unlike LangfuseTraceSource (which polls for an
+ * asynchronously-ingesting single trace), a population fetch is a one-shot
+ * query over already-ingested history — no polling/backoff needed.
+ */
+export class LangfuseTracePopulationSource implements TracePopulationSource {
+  readonly metadataKey = "langfuse";
+
+  constructor(
+    private readonly config: LangfuseConfig,
+    private readonly fetchImpl: typeof fetch = globalThis.fetch,
+  ) {}
+
+  static fromSettings(
+    settings?: LangfuseSettings,
+    env?: NodeJS.ProcessEnv,
+  ): LangfuseTracePopulationSource | undefined {
+    const config = resolveLangfuseConfig({ settings, env });
+    if (!config) return undefined;
+    return new LangfuseTracePopulationSource(config);
+  }
+
+  async fetch(query: TracePopulationQuery): Promise<Trajectory[]> {
+    const auth = Buffer.from(`${this.config.publicKey}:${this.config.secretKey}`).toString(
+      "base64",
+    );
+    const url = buildV2ObservationsUrl(this.config, query);
+    const response = await fetchLangfuse(
+      url,
+      auth,
+      this.fetchImpl,
+      this.config.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
+    );
+    if (!response.ok) {
+      throw new Error(`Langfuse population fetch failed with status ${response.status}`);
+    }
+    const payload = await response.json();
+    const enrichments = extractLangfuseEnrichmentsPerTrace(payload, {
+      baseUrl: this.config.baseUrl,
+    });
+    return enrichments.map((enrichment) => trajectoryFromTraceRecord(enrichment));
   }
 }
 
