@@ -2,6 +2,8 @@ import { Buffer } from "node:buffer";
 import { firstString, isRecord, type JsonRecord } from "../core/json.js";
 import type { ToolCall } from "../core/types.js";
 import type { TraceLookupContext, TraceRecord, TraceSource } from "../trace/index.js";
+import { resolveTimeBound } from "../observe/time.js";
+import type { TracePopulationQuery } from "../trace/index.js";
 
 export interface LangfuseEnrichment {
   readonly traceId?: string;
@@ -614,4 +616,41 @@ export class LangfuseTraceSource implements TraceSource {
       toolCalls: enrichment.toolCalls,
     };
   }
+}
+
+const DEFAULT_POPULATION_LIMIT = 100;
+
+function populationFilterConditions(query: TracePopulationQuery): Record<string, unknown>[] {
+  const conditions: Record<string, unknown>[] = [];
+  if (query.name !== undefined) {
+    conditions.push({ type: "string", column: "traceName", operator: "=", value: query.name });
+  }
+  if (query.tags !== undefined && query.tags.length > 0) {
+    conditions.push({
+      type: "arrayOptions",
+      column: "tags",
+      operator: "any of",
+      value: [...query.tags],
+    });
+  }
+  return conditions;
+}
+
+/** Builds a Langfuse `v2/observations` request URL for a resolved population query. */
+export function buildV2ObservationsUrl(
+  config: LangfuseConfig,
+  query: TracePopulationQuery,
+  now: Date = new Date(),
+): URL {
+  const url = new URL(`${normalizeBaseUrl(config.baseUrl)}/api/public/v2/observations`);
+  url.searchParams.set("fromStartTime", resolveTimeBound(query.since, now));
+  url.searchParams.set("toStartTime", resolveTimeBound(query.until ?? "now", now));
+  url.searchParams.set("fields", "core,basic,io,trace_context");
+  url.searchParams.set("limit", String(query.limit ?? DEFAULT_POPULATION_LIMIT));
+  if (query.userId !== undefined) url.searchParams.set("userId", query.userId);
+
+  const filter = populationFilterConditions(query);
+  if (filter.length > 0) url.searchParams.set("filter", JSON.stringify(filter));
+
+  return url;
 }
