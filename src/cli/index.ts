@@ -22,7 +22,8 @@ import { loadInvariantFile } from "../invariants/index.js";
 import { LangfuseTraceSource, LangfuseTracePopulationSource } from "../langfuse/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { buildObserveResult, resolvePopulationQuery } from "../observe/index.js";
-import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
+import { resolveTimeBound } from "../observe/time.js";
+import { runScenarios, summarizeResults, type RunnerProgressEvent } from "../runner/index.js";
 import {
   assertUniqueScenarioIds,
   loadScenarioFile,
@@ -192,22 +193,6 @@ function formatSummary(summary: {
   errors: number;
 }): string {
   return `${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.needsReview} needs_review, ${summary.errors} errors`;
-}
-
-function summarizeResults(results: { verdict: Verdict }[]): {
-  total: number;
-  passed: number;
-  failed: number;
-  needsReview: number;
-  errors: number;
-} {
-  return {
-    total: results.length,
-    passed: results.filter((result) => result.verdict === Verdict.Pass).length,
-    failed: results.filter((result) => result.verdict === Verdict.Fail).length,
-    needsReview: results.filter((result) => result.verdict === Verdict.NeedsReview).length,
-    errors: results.filter((result) => result.verdict === Verdict.Error).length,
-  };
 }
 
 program
@@ -442,6 +427,11 @@ program
       const invariants = config.invariants?.file
         ? await loadInvariantFile(config.invariants.file)
         : [];
+      if (invariants.length === 0) {
+        console.error(
+          "WARNING: no repo-level invariants are configured (config.invariants.file is unset), so pupil observe checked nothing.",
+        );
+      }
 
       const query = resolvePopulationQuery(config.observe?.populations ?? {}, population, {
         ...(options.since !== undefined && { since: options.since }),
@@ -451,6 +441,15 @@ program
         ...(options.userId !== undefined && { userId: options.userId }),
         ...(options.limit !== undefined && { limit: options.limit }),
       });
+
+      const now = new Date();
+      const resolvedSince = resolveTimeBound(query.since, now);
+      const resolvedUntil = resolveTimeBound(query.until ?? "now", now);
+      if (!(resolvedSince < resolvedUntil)) {
+        throw new PupilError(
+          `Population "${population}" has an invalid time window: since (${resolvedSince}) is not before until (${resolvedUntil})`,
+        );
+      }
 
       const populationSource = LangfuseTracePopulationSource.fromSettings(config.langfuse);
       if (!populationSource) {
@@ -477,6 +476,7 @@ program
         defaultMaxViolationRate: config.invariants?.defaultMaxViolationRate,
         requireTrace: Boolean(options.requireTrace) || config.requireTrace,
         target: mergedTarget,
+        sourceMetadataKey: populationSource.metadataKey,
       });
 
       await finishRun(result, {
@@ -488,7 +488,10 @@ program
         latencyThresholdMs: options.latencyThresholdMs,
         latencyThresholdPct: options.latencyThresholdPct,
         compareConfig: config.compare,
-        summaryLine: (result) => `Observed population "${population}": ${result.verdict}`,
+        summaryLine: (result) =>
+          `Observed population "${population}": ${result.verdict} (${trajectories.length} trace${
+            trajectories.length === 1 ? "" : "s"
+          } evaluated)`,
         skipNoun: "invariant check",
       });
     },

@@ -35,7 +35,9 @@ export function resolvePopulationQuery(
     );
   }
 
-  return merged as TracePopulationQuery;
+  // Spreading `since` back in (now known to be a string) narrows the type
+  // without an `as` cast papering over the guard above.
+  return { ...merged, since: merged.since };
 }
 
 export interface BuildObserveResultOptions {
@@ -47,6 +49,9 @@ export interface BuildObserveResultOptions {
   defaultMaxViolationRate?: number;
   requireTrace: boolean;
   target: TargetIdentity;
+  /** The population source's metadataKey (e.g. "langfuse"), if known, so the
+   * RunResult records which backend produced this population. */
+  sourceMetadataKey?: string;
 }
 
 /** Builds the RunResult for one `pupil observe` invocation. */
@@ -59,6 +64,14 @@ export function buildObserveResult(options: BuildObserveResultOptions): RunResul
   const verdict = aggregateScores(scores);
   const completedAt = new Date().toISOString();
 
+  // "How many samples were actually usable for the least-restrictive check" --
+  // the max across scores' evaluatedCount, since per-check skips can make
+  // individual checks see fewer usable samples than others.
+  const evaluatedCount = scores.reduce((max, entry) => {
+    const value = entry.metadata.evaluatedCount;
+    return typeof value === "number" && value > max ? value : max;
+  }, 0);
+
   const scenarioResult: ScenarioResult = {
     scenarioId: options.populationName,
     scenarioName: options.populationName,
@@ -67,7 +80,7 @@ export function buildObserveResult(options: BuildObserveResultOptions): RunResul
     turns: [],
     startedAt,
     completedAt,
-    metrics: { traceCount: options.trajectories.length },
+    metrics: { traceCount: options.trajectories.length, evaluatedCount },
     metadata: {
       observe: {
         population: options.populationName,
@@ -91,7 +104,9 @@ export function buildObserveResult(options: BuildObserveResultOptions): RunResul
     startedAt,
     completedAt,
     summary: summarizeResults(results),
-    metadata: {},
+    metadata: options.sourceMetadataKey
+      ? { [options.sourceMetadataKey]: { populationSource: true } }
+      : {},
     target: options.target,
   };
 }

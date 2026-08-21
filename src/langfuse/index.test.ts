@@ -926,7 +926,9 @@ describe("LangfuseTracePopulationSource", () => {
       publicKey: "pk",
       secretKey: "sk",
     });
-    await expect(source.fetch({ since: "24h" })).rejects.toThrow(/status 500/);
+    await expect(source.fetch({ since: "24h" })).rejects.toThrow(
+      new RegExp(`status 500 \\(127\\.0\\.0\\.1:${port}\\)`),
+    );
   });
 });
 
