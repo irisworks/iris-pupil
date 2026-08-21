@@ -7,6 +7,7 @@ import {
   type Trajectory,
 } from "../core/types.js";
 import { evaluateInvariant, evaluateInvariants } from "./invariants.js";
+import { applyTraceRequirement, NO_SAMPLES_MARKER } from "./toolAssertions.js";
 
 function trajectoryWithMetrics(metrics: Record<string, number>): Trajectory {
   return { source: "driven", steps: [], metrics, metadata: {} };
@@ -114,11 +115,19 @@ describe("evaluateInvariant over a population", () => {
     expect(score.metadata.skipped).toBe("no_tool_evidence");
   });
 
-  it("skips with a clear reason when there are no samples at all", () => {
+  it("skips with a clear reason when there are no samples at all, carrying the escalatable marker", () => {
     const check: InvariantCheck = { threshold: { metric: "turns", max: 2 } };
     const score = evaluateInvariant(loaded(check), []);
     expect(score.verdict).toBe(Verdict.Skip);
     expect(score.reason).toBe("No samples to evaluate");
+    expect(score.metadata.skipped).toBe(NO_SAMPLES_MARKER);
+  });
+
+  it("escalates the zero-samples skip to a failure under --require-trace", () => {
+    const check: InvariantCheck = { threshold: { metric: "turns", max: 2 } };
+    const score = evaluateInvariant(loaded(check), []);
+    const [escalated] = applyTraceRequirement([score], true);
+    expect(escalated!.verdict).toBe(Verdict.Fail);
   });
 
   it("names the zero-samples skip the same as a real threshold sample would", () => {

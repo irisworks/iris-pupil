@@ -24,6 +24,9 @@ export const NO_TOOL_EVIDENCE_MARKER = "no_tool_evidence";
  */
 export const NO_TRACE_METRIC_MARKER = "no_trace_metric";
 
+/** Marker for an invariant check skipped because the population had zero samples. */
+export const NO_SAMPLES_MARKER = "no_samples";
+
 const TOOL_ASSERTION_TYPES = new Set([
   "tool_called",
   "tool_not_called",
@@ -241,7 +244,11 @@ export function evaluateToolAssertion(
   }
 }
 
-const ESCALATABLE_MARKERS = new Set<unknown>([NO_TOOL_EVIDENCE_MARKER, NO_TRACE_METRIC_MARKER]);
+const ESCALATABLE_MARKERS = new Set<unknown>([
+  NO_TOOL_EVIDENCE_MARKER,
+  NO_TRACE_METRIC_MARKER,
+  NO_SAMPLES_MARKER,
+]);
 
 /**
  * Opt-in policy pass: turns "we could not check" into a failure.
