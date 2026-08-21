@@ -353,20 +353,31 @@ function extractToolCalls(records: JsonRecord[]): ToolCall[] {
   }));
 }
 
+interface TraceGroup {
+  trace: JsonRecord;
+  observations: JsonRecord[];
+}
+
+/**
+ * Groups a payload's traces with their observations. Top-level observations
+ * belong to a single-trace payload; attributing them to every trace of a
+ * multi-trace session would count them repeatedly.
+ */
+function groupedTraces(payload: unknown, baseUrl: string | undefined): TraceGroup[] {
+  const traces = tracesFromV2Observations(payload, baseUrl);
+  if (traces.length === 0) traces.push(...tracesFromSession(payload));
+  return traces.map((trace) => ({
+    trace,
+    observations: observationsFromTrace(trace, traces.length === 1 ? payload : undefined),
+  }));
+}
+
 export function extractLangfuseEnrichment(
   payload: unknown,
   options: { baseUrl?: string } = {},
 ): LangfuseEnrichment | undefined {
-  const traces = tracesFromV2Observations(payload, options.baseUrl);
-  if (traces.length === 0) traces.push(...tracesFromSession(payload));
-  if (traces.length === 0) return undefined;
-
-  // Top-level observations belong to a single-trace payload; attributing them to every
-  // trace of a multi-trace session would count them repeatedly.
-  const grouped = traces.map((trace) => ({
-    trace,
-    observations: observationsFromTrace(trace, traces.length === 1 ? payload : undefined),
-  }));
+  const grouped = groupedTraces(payload, options.baseUrl);
+  if (grouped.length === 0) return undefined;
 
   const inputTokens = aggregate(grouped, recordInputTokens);
   const outputTokens = aggregate(grouped, recordOutputTokens);
@@ -384,13 +395,51 @@ export function extractLangfuseEnrichment(
   return {
     traceId: firstString(first.id, first.traceId, first.trace_id),
     traceUrl: firstString(first.url, first.traceUrl, first.trace_url, first.htmlUrl),
-    traceCount: traces.length,
+    traceCount: grouped.length,
     costUsd,
     inputTokens,
     outputTokens,
     totalTokens,
     toolCalls,
   };
+}
+
+/**
+ * Like `extractLangfuseEnrichment`, but returns one entry per distinct trace
+ * instead of aggregating the whole payload into a single summary. Used by
+ * `pupil observe`, where each trace becomes its own sample.
+ */
+export function extractLangfuseEnrichmentsPerTrace(
+  payload: unknown,
+  options: { baseUrl?: string } = {},
+): LangfuseEnrichment[] {
+  return groupedTraces(payload, options.baseUrl).map((group) => {
+    const inputTokens = aggregate([group], recordInputTokens);
+    const outputTokens = aggregate([group], recordOutputTokens);
+    const totalTokens =
+      aggregate([group], recordTotalTokens) ??
+      (inputTokens !== undefined || outputTokens !== undefined
+        ? (inputTokens ?? 0) + (outputTokens ?? 0)
+        : undefined);
+    const costUsd = roundCost(aggregate([group], recordCost));
+    const toolCalls = extractToolCalls([group.trace, ...group.observations]);
+
+    return {
+      traceId: firstString(group.trace.id, group.trace.traceId, group.trace.trace_id),
+      traceUrl: firstString(
+        group.trace.url,
+        group.trace.traceUrl,
+        group.trace.trace_url,
+        group.trace.htmlUrl,
+      ),
+      traceCount: 1,
+      costUsd,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      toolCalls,
+    };
+  });
 }
 
 function traceDetailUrl(config: LangfuseConfig, traceId: string): URL {
