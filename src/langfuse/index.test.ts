@@ -930,6 +930,91 @@ describe("LangfuseTracePopulationSource", () => {
       new RegExp(`status 500 \\(127\\.0\\.0\\.1:${port}\\)`),
     );
   });
+
+  it("follows meta.cursor across pages until the cursor is exhausted", async () => {
+    const { baseUrl, requests } = await stubSession(
+      {
+        data: [
+          { traceId: "trace-1", type: "TOOL", name: "a", startTime: "2026-08-21T00:00:03.000Z" },
+          { traceId: "trace-1", type: "TOOL", name: "b", startTime: "2026-08-21T00:00:02.000Z" },
+        ],
+        meta: { cursor: "cursor-1" },
+      },
+      {
+        data: [
+          { traceId: "trace-2", type: "TOOL", name: "c", startTime: "2026-08-21T00:00:01.000Z" },
+        ],
+        // No meta.cursor at all: the cursor is genuinely exhausted here.
+      },
+    );
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.url).toContain("cursor=cursor-1");
+    expect(trajectories).toHaveLength(2);
+    const byTraceToolCount = trajectories.map((t) => t.toolCalls?.length ?? 0).sort();
+    expect(byTraceToolCount).toEqual([1, 2]);
+  });
+
+  it("drops the last, potentially-partial trace when the requested limit is reached before the cursor is exhausted", async () => {
+    const { baseUrl, requests } = await stubSession({
+      data: [
+        { traceId: "trace-a", type: "TOOL", name: "a1", startTime: "2026-08-21T00:00:03.000Z" },
+        { traceId: "trace-a", type: "TOOL", name: "a2", startTime: "2026-08-21T00:00:02.000Z" },
+        // trace-b is last in the (startTime-descending) page, so it is the
+        // one at risk of continuing into an unfetched page and must be
+        // dropped once the requested limit is reached.
+        { traceId: "trace-b", type: "TOOL", name: "b1", startTime: "2026-08-21T00:00:01.000Z" },
+      ],
+      meta: { cursor: "cursor-1" },
+    });
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h", limit: 3 });
+
+    expect(requests).toHaveLength(1);
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]?.toolCalls?.map((c) => c.name)).toEqual(["a2", "a1"]);
+  });
+
+  it("drops the last, potentially-partial trace when the safety cap of requests is reached", async () => {
+    const pages = Array.from({ length: 25 }, (_, i) => ({
+      data: [
+        {
+          traceId: `trace-${i}`,
+          type: "TOOL",
+          name: `tool-${i}`,
+          startTime: `2026-08-21T00:${String(59 - i).padStart(2, "0")}:00.000Z`,
+        },
+      ],
+      meta: { cursor: `cursor-${i}` },
+    }));
+    const { baseUrl, requests } = await stubSession(...pages);
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    // Default limit (100) is never reached because each page only contributes
+    // one row, so the loop only stops via the 20-request safety cap.
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(20);
+    // 20 distinct traces fetched, minus the last (potentially-partial) one dropped.
+    expect(trajectories).toHaveLength(19);
+    expect(trajectories.some((t) => t.toolCalls?.[0]?.name === "tool-19")).toBe(false);
+  });
 });
 
 describe("buildV2ObservationsUrl", () => {

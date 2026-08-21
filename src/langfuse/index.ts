@@ -651,25 +651,91 @@ export class LangfuseTracePopulationSource implements TracePopulationSource {
     const auth = Buffer.from(`${this.config.publicKey}:${this.config.secretKey}`).toString(
       "base64",
     );
-    const url = buildV2ObservationsUrl(this.config, query);
-    const response = await fetchLangfuse(
-      url,
-      auth,
-      this.fetchImpl,
-      this.config.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
-    );
-    if (!response.ok) {
-      throw new Error(
-        `Langfuse population fetch failed with status ${response.status} (${url.host})`,
+    const requestedLimit = query.limit ?? DEFAULT_POPULATION_LIMIT;
+
+    let combined: JsonRecord[] = [];
+    let cursor: string | undefined;
+    let exhausted = false;
+    let requests = 0;
+
+    // v2/observations is cursor-paginated (Langfuse's confirmed v1 page -> v2
+    // cursor migration) and sorted by startTime descending across ALL
+    // observations, not grouped by trace, so a trace's observations can
+    // straddle a page boundary. We loop until the cursor is genuinely
+    // exhausted, the requested limit is reached, or a hard safety cap guards
+    // against a misunderstood/misbehaving cursor contract.
+    while (requests < POPULATION_FETCH_MAX_REQUESTS) {
+      const remaining = requestedLimit - combined.length;
+      if (remaining <= 0) break;
+      const pageLimit = Math.min(remaining, POPULATION_FETCH_MAX_PAGE_SIZE);
+
+      const url = buildV2ObservationsUrl(this.config, query, new Date(), {
+        cursor,
+        limit: pageLimit,
+      });
+      const response = await fetchLangfuse(
+        url,
+        auth,
+        this.fetchImpl,
+        this.config.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
       );
+      requests += 1;
+      if (!response.ok) {
+        throw new Error(
+          `Langfuse population fetch failed with status ${response.status} (${url.host})`,
+        );
+      }
+      const payload = await response.json();
+      const rows =
+        isRecord(payload) && Array.isArray(payload.data) ? payload.data.filter(isRecord) : [];
+      combined = combined.concat(rows);
+
+      const nextCursor =
+        isRecord(payload) && isRecord(payload.meta) ? payload.meta.cursor : undefined;
+      const nextCursorString = typeof nextCursor === "string" ? nextCursor : undefined;
+      if (!nextCursorString) {
+        exhausted = true;
+        break;
+      }
+      cursor = nextCursorString;
     }
-    const payload = await response.json();
-    const enrichments = extractLangfuseEnrichmentsPerTrace(payload, {
-      baseUrl: this.config.baseUrl,
-    });
+
+    // If the loop stopped without the cursor genuinely running out (limit
+    // reached, or the safety cap tripped), more observations may exist beyond
+    // what was fetched. Results are sorted descending by startTime, so the
+    // last-fetched records are the oldest and are the ones at risk of
+    // continuing into an unfetched page. Rather than risk silently
+    // undercounting that trace's tool calls, drop every record sharing its
+    // traceId and accept reporting one fewer trace than requested -- a
+    // partial trace excluded is safer than one included with wrong data.
+    if (!exhausted && combined.length > 0) {
+      const lastRecord = combined[combined.length - 1];
+      const lastTraceId = lastRecord
+        ? firstString(lastRecord.traceId, lastRecord.trace_id)
+        : undefined;
+      if (lastTraceId) {
+        combined = combined.filter(
+          (record) => firstString(record.traceId, record.trace_id) !== lastTraceId,
+        );
+      }
+    }
+
+    const enrichments = extractLangfuseEnrichmentsPerTrace(
+      { data: combined },
+      { baseUrl: this.config.baseUrl },
+    );
     return enrichments.map((enrichment) => trajectoryFromTraceRecord(enrichment));
   }
 }
+
+/** Langfuse's documented per-request page-size ceiling for v2/observations. */
+const POPULATION_FETCH_MAX_PAGE_SIZE = 1000;
+
+/**
+ * Safety net, not a documented Langfuse limit: guards against an infinite
+ * loop if the cursor contract is misunderstood or the backend misbehaves.
+ */
+const POPULATION_FETCH_MAX_REQUESTS = 20;
 
 const DEFAULT_POPULATION_LIMIT = 100;
 
@@ -689,17 +755,27 @@ function populationFilterConditions(query: TracePopulationQuery): Record<string,
   return conditions;
 }
 
+/** Per-request overrides used when paginating a population fetch across multiple pages. */
+export interface V2ObservationsPageOptions {
+  /** Cursor from a previous page's `meta.cursor`; omitted for the first page. */
+  cursor?: string;
+  /** Overrides `query.limit` for this specific page request (e.g. the remaining rows needed). */
+  limit?: number;
+}
+
 /** Builds a Langfuse `v2/observations` request URL for a resolved population query. */
 export function buildV2ObservationsUrl(
   config: LangfuseConfig,
   query: TracePopulationQuery,
   now: Date = new Date(),
+  page: V2ObservationsPageOptions = {},
 ): URL {
   const url = new URL(`${normalizeBaseUrl(config.baseUrl)}/api/public/v2/observations`);
   url.searchParams.set("fromStartTime", resolveTimeBound(query.since, now));
   url.searchParams.set("toStartTime", resolveTimeBound(query.until ?? "now", now));
   url.searchParams.set("fields", "core,basic,io,trace_context");
-  url.searchParams.set("limit", String(query.limit ?? DEFAULT_POPULATION_LIMIT));
+  url.searchParams.set("limit", String(page.limit ?? query.limit ?? DEFAULT_POPULATION_LIMIT));
+  if (page.cursor !== undefined) url.searchParams.set("cursor", page.cursor);
   if (query.userId !== undefined) url.searchParams.set("userId", query.userId);
 
   const filter = populationFilterConditions(query);
