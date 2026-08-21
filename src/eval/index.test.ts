@@ -356,7 +356,7 @@ describe("threshold evaluator", () => {
       evaluateThreshold({ metric: "toolCalls", max: 3 }, trajectory({ tool_calls: 3 })).verdict,
     ).toBe(Verdict.Pass);
     expect(
-      evaluateThreshold({ metric: "distinctTools", max: 2 }, trajectory({ distinct_tools: 3 }))
+      evaluateThreshold({ metric: "toolInvocations", max: 2 }, trajectory({ tool_invocations: 3 }))
         .verdict,
     ).toBe(Verdict.Fail);
   });
@@ -370,7 +370,7 @@ describe("threshold evaluator", () => {
   });
 
   it("skips trace-derived metrics that are missing instead of failing", () => {
-    for (const metric of ["tool_calls", "distinct_tools", "total_tokens"]) {
+    for (const metric of ["tool_calls", "tool_invocations", "total_tokens"]) {
       const score = evaluateThreshold({ metric, max: 5 }, trajectory({}));
 
       expect(score.verdict).toBe(Verdict.Skip);

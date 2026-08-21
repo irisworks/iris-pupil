@@ -111,12 +111,12 @@ millisecond.
 
 Trace enrichment records two tool metrics, which catch different regressions:
 
-- `tool_calls` — total invocations. Rising means the agent got less efficient:
-  retry loops, redundant lookups.
-- `distinct_tools` — unique tool names. Rising means the agent's scope changed:
-  it reached for a tool it never used at baseline. `tool_calls` structurally
-  cannot detect this, since N calls to one tool and N calls across N tools are
-  indistinguishable under it.
+- `tool_calls` — unique tool names used. Rising means the agent's scope
+  changed: it reached for a tool it never used at baseline.
+- `tool_invocations` — total number of tool calls. Rising means the agent got
+  less efficient: retry loops, redundant lookups. `tool_calls` structurally
+  cannot detect this, since one call each to N different tools and N calls to
+  one tool are identical under it.
 
 Gate them per scenario under `expect.thresholds`, or across runs via
 `compare.metricThresholds` in `pupil.config.yaml` — `pupil compare` diffs every
@@ -125,8 +125,11 @@ only from trace evidence: without it the threshold **skips** rather than fails,
 matching the tool-assertion rule above. `--require-trace` escalates those skips
 too. `examples/scenarios/iris-tool-efficiency.yaml` shows both in use.
 
-Note `tool_calls` changed meaning in this release: it previously counted
-distinct tools. `distinct_tools` is now the metric for that.
+`tool_calls` keeps the meaning it has always had — unique tool count. An
+earlier draft of this feature considered changing it to total invocations;
+`tool_invocations` is that total-count metric under its own name instead, so
+no existing `tool_calls` threshold or baseline can silently start scoring
+something different.
 
 ## What Pupil Is
 

@@ -961,7 +961,7 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
 
     const result = await runScenario(
       scenario({
-        expect: { assertions: [], thresholds: [{ metric: "tool_calls", max: 5 }] },
+        expect: { assertions: [], thresholds: [{ metric: "tool_invocations", max: 5 }] },
       }),
       {
         driverFactory: () =>
@@ -970,7 +970,8 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
       },
     );
 
-    expect(result.metrics.tool_calls).toBe(2);
+    expect(result.metrics.tool_invocations).toBe(2);
+    expect(result.metrics.tool_calls).toBe(1);
     expect(result.verdict).toBe(Verdict.Pass);
   });
 

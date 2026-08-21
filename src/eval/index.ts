@@ -281,8 +281,8 @@ function metricKey(metric: string): string {
   if (normalized === "toolcalls" || normalized === "maxtoolcalls") {
     return "tool_calls";
   }
-  if (normalized === "distincttools" || normalized === "maxdistincttools") {
-    return "distinct_tools";
+  if (normalized === "toolinvocations" || normalized === "maxtoolinvocations") {
+    return "tool_invocations";
   }
   return metric;
 }
@@ -299,7 +299,7 @@ const TRACE_DERIVED_METRICS = new Set([
   "output_tokens",
   "total_tokens",
   "tool_calls",
-  "distinct_tools",
+  "tool_invocations",
 ]);
 
 function thresholdScore(

@@ -111,13 +111,13 @@ export function applyTraceEnrichment(
   if (record.outputTokens !== undefined) result.metrics.output_tokens = record.outputTokens;
   if (record.totalTokens !== undefined) result.metrics.total_tokens = record.totalTokens;
   if (record.toolCalls !== undefined) {
-    // Two different regression signals, deliberately both recorded:
-    // tool_calls rising means the agent got less efficient (retries, redundant
-    // lookups); distinct_tools rising means its scope changed — it reached for a
-    // tool it never used at baseline. Total count cannot detect the second,
-    // since N calls to one tool and N calls across N tools are indistinguishable.
-    result.metrics.tool_calls = record.toolCalls.length;
-    result.metrics.distinct_tools = new Set(record.toolCalls.map((call) => call.name)).size;
+    // tool_calls preserves its pre-PR meaning (distinct tool names used) so an
+    // existing threshold/baseline on it cannot silently misfire. tool_invocations
+    // is the new signal this PR introduced (total call count, efficiency
+    // regressions like retry loops) — it gets its own name rather than
+    // overloading tool_calls's established meaning.
+    result.metrics.tool_calls = new Set(record.toolCalls.map((call) => call.name)).size;
+    result.metrics.tool_invocations = record.toolCalls.length;
   }
 
   result.metadata = {
