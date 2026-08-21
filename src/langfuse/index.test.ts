@@ -956,10 +956,56 @@ describe("LangfuseTracePopulationSource", () => {
     const trajectories = await source.fetch({ since: "24h" });
 
     expect(requests).toHaveLength(2);
+    expect(requests[0]?.url).toContain("limit=100");
+    // Page 1 already returned 2 rows toward the default limit of 100, so
+    // page 2 should only ask for the remaining 98.
+    expect(requests[1]?.url).toContain("limit=98");
     expect(requests[1]?.url).toContain("cursor=cursor-1");
     expect(trajectories).toHaveLength(2);
     const byTraceToolCount = trajectories.map((t) => t.toolCalls?.length ?? 0).sort();
     expect(byTraceToolCount).toEqual([1, 2]);
+  });
+
+  it("merges a single trace's observations when they straddle a page boundary, dropping nothing once the cursor exhausts naturally", async () => {
+    const { baseUrl, requests } = await stubSession(
+      {
+        data: [
+          {
+            traceId: "trace-1",
+            type: "TOOL",
+            name: "search",
+            startTime: "2026-08-21T00:00:02.000Z",
+          },
+        ],
+        meta: { cursor: "cursor-1" },
+      },
+      {
+        data: [
+          {
+            traceId: "trace-1",
+            type: "TOOL",
+            name: "book",
+            startTime: "2026-08-21T00:00:01.000Z",
+          },
+        ],
+        // No meta.cursor: the cursor genuinely exhausts on page 2, so nothing
+        // should be dropped even though every row belongs to trace-1.
+      },
+    );
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(2);
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]?.toolCalls?.map((c) => c.name).sort()).toEqual(["book", "search"]);
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   it("drops the last, potentially-partial trace when the requested limit is reached before the cursor is exhausted", async () => {
@@ -975,6 +1021,7 @@ describe("LangfuseTracePopulationSource", () => {
       meta: { cursor: "cursor-1" },
     });
 
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const source = new LangfuseTracePopulationSource({
       baseUrl,
       publicKey: "pk",
@@ -985,6 +1032,9 @@ describe("LangfuseTracePopulationSource", () => {
     expect(requests).toHaveLength(1);
     expect(trajectories).toHaveLength(1);
     expect(trajectories[0]?.toolCalls?.map((c) => c.name)).toEqual(["a2", "a1"]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/^WARNING:.*trace-b/);
+    errorSpy.mockRestore();
   });
 
   it("drops the last, potentially-partial trace when the safety cap of requests is reached", async () => {
@@ -1001,6 +1051,7 @@ describe("LangfuseTracePopulationSource", () => {
     }));
     const { baseUrl, requests } = await stubSession(...pages);
 
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const source = new LangfuseTracePopulationSource({
       baseUrl,
       publicKey: "pk",
@@ -1014,6 +1065,51 @@ describe("LangfuseTracePopulationSource", () => {
     // 20 distinct traces fetched, minus the last (potentially-partial) one dropped.
     expect(trajectories).toHaveLength(19);
     expect(trajectories.some((t) => t.toolCalls?.[0]?.name === "tool-19")).toBe(false);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/^WARNING:/);
+    errorSpy.mockRestore();
+  });
+
+  it("drops the ambiguous trailing record itself when it carries no traceId to group by", async () => {
+    const { baseUrl } = await stubSession({
+      data: [
+        { traceId: "trace-a", type: "TOOL", name: "a1", startTime: "2026-08-21T00:00:02.000Z" },
+        // Last row in the page has no traceId at all: fail safe by dropping
+        // this record instead of the less-safe default of keeping it.
+        { type: "TOOL", name: "untraced", startTime: "2026-08-21T00:00:01.000Z" },
+      ],
+      meta: { cursor: "cursor-1" },
+    });
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h", limit: 2 });
+
+    expect(trajectories).toHaveLength(1);
+    expect(trajectories[0]?.toolCalls?.map((c) => c.name)).toEqual(["a1"]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+
+  it("stops immediately when a page returns an empty data array with a cursor, instead of burning the full safety cap", async () => {
+    const { baseUrl, requests } = await stubSession({
+      data: [],
+      meta: { cursor: "cursor-1" },
+    });
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(requests).toHaveLength(1);
+    expect(trajectories).toEqual([]);
   });
 });
 

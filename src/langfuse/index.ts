@@ -670,6 +670,18 @@ export class LangfuseTracePopulationSource implements TracePopulationSource {
     // straddle a page boundary. We loop until the cursor is genuinely
     // exhausted, the requested limit is reached, or a hard safety cap guards
     // against a misunderstood/misbehaving cursor contract.
+    //
+    // The descending-by-startTime ordering itself is an ASSUMED default, not
+    // something this code requests explicitly: `buildV2ObservationsUrl` sends
+    // no sort/orderBy parameter, and nothing in this codebase has confirmed
+    // whether v2/observations even exposes one. The trailing-trace drop logic
+    // below depends entirely on that assumption holding -- if Langfuse ever
+    // returns pages in a different (or unstable) order, "the last row in the
+    // page" is no longer "the oldest, at-risk-of-continuing" row, and the drop
+    // could remove the wrong trace or none at all. This is arguably a bigger
+    // unverified dependency than the `fields` param uncertainty documented
+    // above in buildV2ObservationsUrl, and is called out here with the same
+    // prominence (see also CLAUDE.md's `pupil observe` section).
     while (requests < POPULATION_FETCH_MAX_REQUESTS) {
       const remaining = requestedLimit - combined.length;
       if (remaining <= 0) break;
@@ -696,6 +708,14 @@ export class LangfuseTracePopulationSource implements TracePopulationSource {
         isRecord(payload) && Array.isArray(payload.data) ? payload.data.filter(isRecord) : [];
       combined = combined.concat(rows);
 
+      // An empty page with a cursor still attached has nothing left to gain
+      // from continuing -- treat it the same as genuine exhaustion instead of
+      // burning further requests up to the safety cap.
+      if (rows.length === 0) {
+        exhausted = true;
+        break;
+      }
+
       const nextCursor =
         isRecord(payload) && isRecord(payload.meta) ? payload.meta.cursor : undefined;
       const nextCursorString = typeof nextCursor === "string" ? nextCursor : undefined;
@@ -715,6 +735,7 @@ export class LangfuseTracePopulationSource implements TracePopulationSource {
     // traceId and accept reporting one fewer trace than requested -- a
     // partial trace excluded is safer than one included with wrong data.
     if (!exhausted && combined.length > 0) {
+      const beforeCount = combined.length;
       const lastRecord = combined[combined.length - 1];
       const lastTraceId = lastRecord
         ? firstString(lastRecord.traceId, lastRecord.trace_id)
@@ -723,7 +744,21 @@ export class LangfuseTracePopulationSource implements TracePopulationSource {
         combined = combined.filter(
           (record) => firstString(record.traceId, record.trace_id) !== lastTraceId,
         );
+      } else {
+        // The trailing record itself carries no traceId to group by. The
+        // less-safe default would be to drop nothing here; fail safe instead
+        // by dropping the ambiguous record on its own, since it is the one
+        // record we know is at risk of belonging to a trace that straddles
+        // the unfetched page.
+        combined = combined.slice(0, -1);
       }
+
+      const droppedCount = beforeCount - combined.length;
+      console.error(
+        `WARNING: Langfuse population fetch stopped before exhausting the time window ` +
+          `(cursor still present); dropped ${droppedCount} observation row(s)` +
+          `${lastTraceId ? ` belonging to trace ${lastTraceId}` : ""} to avoid an undercounted sample.`,
+      );
     }
 
     const enrichments = extractLangfuseEnrichmentsPerTrace(
