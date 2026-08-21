@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { readFileSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { loadPupilConfig, type PupilConfig } from "../core/config.js";
@@ -20,18 +18,12 @@ import {
   resolveCompareOptions,
   type RunComparison,
 } from "../history/index.js";
+import { finishRun } from "./finishRun.js";
 import { loadInvariantFile } from "../invariants/index.js";
 import { LangfuseTraceSource, LangfuseTracePopulationSource } from "../langfuse/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { buildObserveResult, resolvePopulationQuery } from "../observe/index.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
-import {
-  buildRunJson,
-  buildStepSummaryMarkdown,
-  countToolEvidenceSkips,
-  formatJUnitXml,
-  isStrictFailure,
-} from "./reporting.js";
 import {
   assertUniqueScenarioIds,
   loadScenarioFile,
@@ -358,115 +350,19 @@ program
         defaultMaxViolationRate: config.invariants?.defaultMaxViolationRate,
       });
 
-      const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
-      let stored;
-      try {
-        stored = await store.writeRun(result);
-      } catch (error) {
-        throw new PupilError(
-          `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-
-      let comparison: RunComparison | undefined;
-      if (options.baseline) {
-        const baselineRunId = await store.getBaselineRunId();
-        if (!baselineRunId) {
-          console.error(
-            "WARNING: --baseline was requested but no baseline run is set, so no regression comparison ran. Set one with `pupil baseline <runId>`.",
-          );
-        } else {
-          const baselineRun = await store.readRun(baselineRunId);
-          comparison = compareRuns(
-            baselineRun,
-            result,
-            resolveCompareOptions(config.compare, {
-              latencyThresholdMs: options.latencyThresholdMs,
-              latencyThresholdPct: options.latencyThresholdPct,
-            }),
-          );
-        }
-      }
-
-      if (options.junit) {
-        try {
-          await mkdir(dirname(options.junit), { recursive: true });
-          await writeFile(
-            options.junit,
-            formatJUnitXml(result, { strict: options.strict }),
-            "utf-8",
-          );
-        } catch (error) {
-          throw new PupilError(
-            `Failed to write JUnit report to ${options.junit}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-
-      const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
-      if (stepSummaryPath) {
-        try {
-          await appendFile(
-            stepSummaryPath,
-            buildStepSummaryMarkdown(result, { comparison }),
-            "utf-8",
-          );
-        } catch (error) {
-          console.error(
-            `WARNING: failed to write the GitHub step summary to ${stepSummaryPath}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-
-      if (options.json) {
-        console.log(
-          JSON.stringify(
-            buildRunJson(result, {
-              strict: options.strict,
-              historyPath: stored.runPath,
-              comparison,
-              baselineRequested: options.baseline,
-            }),
-            null,
-            2,
-          ),
-        );
-      } else {
-        console.log(`Saved run: ${stored.runPath}`);
-        console.log(
+      await finishRun(result, {
+        historyDir: options.historyDir ?? config.history.dir,
+        baseline: options.baseline,
+        strict: options.strict,
+        json: options.json,
+        junit: options.junit,
+        latencyThresholdMs: options.latencyThresholdMs,
+        latencyThresholdPct: options.latencyThresholdPct,
+        compareConfig: config.compare,
+        summaryLine: (result) =>
           `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
-        );
-        const toolSkips = countToolEvidenceSkips(result);
-        if (toolSkips > 0) {
-          console.log(
-            `WARNING: ${toolSkips} tool assertion${toolSkips === 1 ? "" : "s"} skipped — no trace evidence. ` +
-              "Run with --require-trace to fail instead of skipping.",
-          );
-        }
-        if (comparison) {
-          process.stdout.write(formatRunComparison(comparison));
-        }
-      }
-
-      if (isStrictFailure(result.verdict, options.strict)) {
-        process.exitCode = 1;
-      } else if (comparison !== undefined) {
-        const hasHardTargetMismatch = comparison.targetMismatch.some(
-          (mismatch) => mismatch.severity === "hard",
-        );
-        if (hasHardTargetMismatch) {
-          // A hard mismatch (e.g. stubbed vs. live) means the comparison is not
-          // meaningful. Use exit 2 so CI can distinguish "refused to compare"
-          // from "compared and regressed" — mirrors the `pupil compare` behaviour.
-          process.exitCode = 2;
-        } else if (comparison.hasRegressions) {
-          process.exitCode = 1;
-        }
-      }
+        skipNoun: "tool assertion",
+      });
     },
   );
 
@@ -584,110 +480,18 @@ program
         target: mergedTarget,
       });
 
-      const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
-      let stored;
-      try {
-        stored = await store.writeRun(result);
-      } catch (error) {
-        throw new PupilError(
-          `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-
-      let comparison: RunComparison | undefined;
-      if (options.baseline) {
-        const baselineRunId = await store.getBaselineRunId();
-        if (!baselineRunId) {
-          console.error(
-            "WARNING: --baseline was requested but no baseline run is set, so no regression comparison ran. Set one with `pupil baseline <runId>`.",
-          );
-        } else {
-          const baselineRun = await store.readRun(baselineRunId);
-          comparison = compareRuns(
-            baselineRun,
-            result,
-            resolveCompareOptions(config.compare, {
-              latencyThresholdMs: options.latencyThresholdMs,
-              latencyThresholdPct: options.latencyThresholdPct,
-            }),
-          );
-        }
-      }
-
-      if (options.junit) {
-        try {
-          await mkdir(dirname(options.junit), { recursive: true });
-          await writeFile(
-            options.junit,
-            formatJUnitXml(result, { strict: options.strict }),
-            "utf-8",
-          );
-        } catch (error) {
-          throw new PupilError(
-            `Failed to write JUnit report to ${options.junit}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-
-      const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
-      if (stepSummaryPath) {
-        try {
-          await appendFile(
-            stepSummaryPath,
-            buildStepSummaryMarkdown(result, { comparison }),
-            "utf-8",
-          );
-        } catch (error) {
-          console.error(
-            `WARNING: failed to write the GitHub step summary to ${stepSummaryPath}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-
-      if (options.json) {
-        console.log(
-          JSON.stringify(
-            buildRunJson(result, {
-              strict: options.strict,
-              historyPath: stored.runPath,
-              comparison,
-              baselineRequested: options.baseline,
-            }),
-            null,
-            2,
-          ),
-        );
-      } else {
-        console.log(`Saved run: ${stored.runPath}`);
-        console.log(`Observed population "${population}": ${result.verdict}`);
-        const toolSkips = countToolEvidenceSkips(result);
-        if (toolSkips > 0) {
-          console.log(
-            `WARNING: ${toolSkips} invariant check${toolSkips === 1 ? "" : "s"} skipped — no trace evidence. ` +
-              "Run with --require-trace to fail instead of skipping.",
-          );
-        }
-        if (comparison) {
-          process.stdout.write(formatRunComparison(comparison));
-        }
-      }
-
-      if (isStrictFailure(result.verdict, options.strict)) {
-        process.exitCode = 1;
-      } else if (comparison !== undefined) {
-        const hasHardTargetMismatch = comparison.targetMismatch.some(
-          (mismatch) => mismatch.severity === "hard",
-        );
-        if (hasHardTargetMismatch) {
-          process.exitCode = 2;
-        } else if (comparison.hasRegressions) {
-          process.exitCode = 1;
-        }
-      }
+      await finishRun(result, {
+        historyDir: options.historyDir ?? config.history.dir,
+        baseline: options.baseline,
+        strict: options.strict,
+        json: options.json,
+        junit: options.junit,
+        latencyThresholdMs: options.latencyThresholdMs,
+        latencyThresholdPct: options.latencyThresholdPct,
+        compareConfig: config.compare,
+        summaryLine: (result) => `Observed population "${population}": ${result.verdict}`,
+        skipNoun: "invariant check",
+      });
     },
   );
 
