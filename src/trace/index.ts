@@ -1,5 +1,5 @@
 import { isRecord } from "../core/json.js";
-import type { RunResult, ScenarioResult } from "../core/types.js";
+import type { RunResult, ScenarioResult, ToolCall } from "../core/types.js";
 
 export interface TraceRecord {
   readonly traceId?: string;
@@ -9,7 +9,15 @@ export interface TraceRecord {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
-  readonly toolCalls: readonly string[];
+  /**
+   * Observed tool calls in call order.
+   *
+   * `undefined` means this backend does not report tool calls at all, and tool
+   * assertions must skip. An empty array means the backend looked and the agent
+   * called no tools — a real observation that tool assertions must score.
+   * These two must never be collapsed into one another.
+   */
+  readonly toolCalls?: readonly ToolCall[];
 }
 
 export type TraceStatus = "enriched" | "skipped" | "error";
@@ -102,7 +110,15 @@ export function applyTraceEnrichment(
   if (record.inputTokens !== undefined) result.metrics.input_tokens = record.inputTokens;
   if (record.outputTokens !== undefined) result.metrics.output_tokens = record.outputTokens;
   if (record.totalTokens !== undefined) result.metrics.total_tokens = record.totalTokens;
-  result.metrics.tool_calls = record.toolCalls.length;
+  if (record.toolCalls !== undefined) {
+    // tool_calls preserves its pre-PR meaning (distinct tool names used) so an
+    // existing threshold/baseline on it cannot silently misfire. tool_invocations
+    // is the new signal this PR introduced (total call count, efficiency
+    // regressions like retry loops) — it gets its own name rather than
+    // overloading tool_calls's established meaning.
+    result.metrics.tool_calls = new Set(record.toolCalls.map((call) => call.name)).size;
+    result.metrics.tool_invocations = record.toolCalls.length;
+  }
 
   result.metadata = {
     ...(result.metadata ?? {}),
@@ -112,7 +128,11 @@ export function applyTraceEnrichment(
       traceId: record.traceId,
       traceUrl: record.traceUrl,
       ...(record.traceCount > 1 && { traceCount: record.traceCount }),
-      toolCalls: record.toolCalls,
+      // Names only: run history is JSON and reviewed in PRs, so it stays compact
+      // and diffable. Full ToolCall detail reaches evaluators via the Trajectory.
+      ...(record.toolCalls !== undefined && {
+        toolCalls: record.toolCalls.map((call) => call.name),
+      }),
     },
   };
   return "enriched";

@@ -1,0 +1,47 @@
+id: iris-171-tool-observation
+name: Tool calls appear in Langfuse trace (IRIS-171 regression guard)
+description: >
+  Verifies that bash tool calls produce a SPAN observation in Langfuse via the
+  OTel ingestion path. Before IRIS-171 was fixed, every tool call was silently
+  rejected by the deprecated REST endpoint and zero tool observations ever
+  landed. This scenario fails if trace evidence is missing (--require-trace) and
+  fails if bash was not recorded as a tool call.
+tags:
+  - iris
+  - trajectory
+  - tools
+  - regression
+  - iris-171
+
+driver:
+  type: rest
+  preset: iris-http
+
+turns:
+  - user: >
+      Do these three things in order:
+      1. Run bash: echo IRIS171_$(date +%s)
+      2. Write a file called /tmp/iris171-test.txt with content "hello iris171"
+      3. Read the file /tmp/iris171-test.txt back and confirm its content
+
+expect:
+  assertions:
+    - type: tool_called
+      tool: bash
+      times: 1
+    - type: tool_called
+      tool: write
+      times: 1
+    - type: tool_called
+      tool: read
+      times: 1
+    - type: tool_order
+      tools: [bash, write, read]
+    - type: contains
+      target: response.text
+      value: "hello iris171"
+  thresholds:
+    - metric: latency_ms
+      max: 60000
+    - metric: cost_usd
+      max: 0.10

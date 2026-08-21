@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { MockTraceSource } from "./mockTraceSource.js";
+import type { ToolCall } from "../core/types.js";
 import type { TraceSource } from "../trace/index.js";
 
 export interface IrisMockRule {
@@ -10,9 +11,17 @@ export interface IrisMockRule {
   status?: number;
 }
 
+/** A tool call the mock agent should record, beyond just its name. */
+export interface ToolCallFixture {
+  name: string;
+  args?: unknown;
+  error?: string;
+}
+
 export interface MockTraceRule {
   match: string | RegExp;
-  toolCalls: string[];
+  /** Plain strings are shorthand for `{ name }`. */
+  toolCalls: Array<string | ToolCallFixture>;
 }
 
 export interface IrisMockOptions {
@@ -22,7 +31,7 @@ export interface IrisMockOptions {
   rules?: IrisMockRule[];
   apiToken?: string | false;
   traceRules?: MockTraceRule[];
-  defaultToolCalls?: string[];
+  defaultToolCalls?: Array<string | ToolCallFixture>;
 }
 
 export interface RecordedMockRequest {
@@ -104,9 +113,19 @@ function findTraceRule(text: string, rules: MockTraceRule[]): MockTraceRule | un
   });
 }
 
+function toToolCall(fixture: string | ToolCallFixture, index: number): ToolCall {
+  if (typeof fixture === "string") return { name: fixture, index };
+  return {
+    name: fixture.name,
+    index,
+    ...(fixture.args !== undefined && { args: fixture.args }),
+    ...(fixture.error !== undefined && { error: fixture.error }),
+  };
+}
+
 export function createIrisMockAgent(
   options: IrisMockOptions = {},
-  spanStore: Map<string, string[]> = new Map(),
+  spanStore: Map<string, ToolCall[]> = new Map(),
 ): IrisMockAgent {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 5050;
@@ -221,7 +240,12 @@ export function createIrisMockAgent(
         if (spansToAppend !== null) {
           const sessionIdDecoded = decodeURIComponent(messageMatch[1]);
           const existing = spanStore.get(sessionIdDecoded) ?? [];
-          spanStore.set(sessionIdDecoded, [...existing, ...spansToAppend]);
+          spanStore.set(sessionIdDecoded, [
+            ...existing,
+            ...spansToAppend.map((fixture, offset) =>
+              toToolCall(fixture, existing.length + offset),
+            ),
+          ]);
         }
 
         const delayMs = getDelayFromText(text, defaultDelayMs);
@@ -297,7 +321,7 @@ export interface MockAgentBundle {
 }
 
 export function createMockAgentBundle(options?: IrisMockOptions): MockAgentBundle {
-  const spanStore = new Map<string, string[]>();
+  const spanStore = new Map<string, ToolCall[]>();
   return {
     agent: createIrisMockAgent(options, spanStore),
     traceSource: new MockTraceSource(spanStore),

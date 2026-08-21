@@ -13,7 +13,11 @@ import {
   type RestConversation,
   type RestDriverResponse,
 } from "../driver/index.js";
-import { createIrisMockAgent, type IrisMockAgent } from "../mock/irisMockAgent.js";
+import {
+  createIrisMockAgent,
+  createMockAgentBundle,
+  type IrisMockAgent,
+} from "../mock/irisMockAgent.js";
 import {
   createDrivenTrajectory,
   progressEventTypeForVerdict,
@@ -392,6 +396,66 @@ describe("scenario runner", () => {
     );
   });
 
+  it("skips tool_calls threshold without a traceSource", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "tool_calls", max: 3 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores.find((score) => score.name === "threshold:tool_calls")?.verdict).toBe(
+      Verdict.Skip,
+    );
+  });
+
+  it("skips tool_invocations threshold without a traceSource", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "tool_invocations", max: 10 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(
+      result.scores.find((score) => score.name === "threshold:tool_invocations")?.verdict,
+    ).toBe(Verdict.Skip);
+  });
+
+  it("skips total_tokens threshold without a traceSource", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "total_tokens", max: 5000 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores.find((score) => score.name === "threshold:total_tokens")?.verdict).toBe(
+      Verdict.Skip,
+    );
+  });
+
   it("scores cost thresholds against Langfuse-enriched metrics", async () => {
     const calls: string[] = [];
     const result = await runScenario(
@@ -615,6 +679,108 @@ describe("scenario runner", () => {
     expect(attempts).toBe(2);
   });
 
+  it("skips tool assertions without evidence and stays green by default", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [{ type: "tool_called", tool: "calendar.create", match: "exact" }],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores[0]?.verdict).toBe(Verdict.Skip);
+  });
+
+  it("fails tool assertions without evidence when requireTrace is set", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [{ type: "tool_called", tool: "calendar.create", match: "exact" }],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+        requireTrace: true,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Fail);
+    expect(result.scores[0]?.verdict).toBe(Verdict.Fail);
+    expect(result.scores[0]?.reason).toContain("--require-trace");
+  });
+
+  it("does not escalate skips that are unrelated to trace evidence", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [],
+          judge: { enabled: true },
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+        requireTrace: true,
+      },
+    );
+
+    expect(result.scores[0]?.verdict).toBe(Verdict.Skip);
+    expect(result.verdict).toBe(Verdict.Pass);
+  });
+
+  it("scores tool assertions end to end against the mock agent", async () => {
+    const bundle = createMockAgentBundle({
+      port: 0,
+      rules: [{ match: /book/i, reply: "Booked." }],
+      traceRules: [
+        {
+          match: /book/i,
+          toolCalls: ["search", { name: "calendar.create", args: { title: "Standup" } }],
+        },
+      ],
+    });
+    mock = bundle.agent;
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const result = await runScenario(
+      scenario({
+        turns: [{ user: "book a standup", expect: [] }],
+        driver: { type: "rest", preset: "iris-http", config: { baseUrl } },
+        expect: {
+          assertions: [
+            { type: "tool_called", tool: "calendar.create", times: 1, match: "exact" },
+            { type: "tool_not_called", tool: "email.send", match: "exact" },
+            { type: "tool_order", tools: ["search", "calendar.create"], match: "exact" },
+            {
+              type: "tool_args",
+              tool: "calendar.create",
+              equals: { title: "Standup" },
+              match: "exact",
+            },
+          ],
+          thresholds: [],
+        },
+      }),
+      { traceSource: bundle.traceSource },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metrics.tool_calls).toBe(2);
+  });
+
   it("limits scenario concurrency", async () => {
     let active = 0;
     let maxActive = 0;
@@ -741,7 +907,10 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
     fakeSource.seed(SESSION_ID, {
       traceCount: 1,
       costUsd: 0.05,
-      toolCalls: ["search", "read_file"],
+      toolCalls: [
+        { name: "search", index: 0 },
+        { name: "read_file", index: 1 },
+      ],
     });
 
     const result = await runScenario(scenario(), {
@@ -835,6 +1004,140 @@ describe("FakeTraceSource (AC2: second backend needs no core changes)", () => {
         LANGFUSE_SECRET_KEY: "sk",
       }),
     ).toBeInstanceOf(LangfuseTraceSource);
+  });
+
+  it("copies tool calls from the trace source onto the trajectory", async () => {
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () =>
+        Promise.resolve({
+          traceCount: 1,
+          toolCalls: [
+            { name: "search", index: 0 },
+            { name: "search", index: 1 },
+          ],
+        }),
+    };
+
+    const result = await runScenario(
+      scenario({
+        expect: { assertions: [], thresholds: [{ metric: "tool_invocations", max: 5 }] },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: toolSource,
+      },
+    );
+
+    expect(result.metrics.tool_invocations).toBe(2);
+    expect(result.metrics.tool_calls).toBe(1);
+    expect(result.verdict).toBe(Verdict.Pass);
+  });
+
+  it("places tool calls with full args onto trajectory.toolCalls, not just metrics", async () => {
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () =>
+        Promise.resolve({
+          traceCount: 1,
+          toolCalls: [{ name: "search", index: 0, args: { city: "NYC", limit: 5 } }],
+        }),
+    };
+
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls.length", equals: 1 },
+            {
+              type: "jsonpath",
+              target: "trajectory",
+              path: "$.toolCalls[0].name",
+              equals: "search",
+            },
+            {
+              type: "jsonpath",
+              target: "trajectory",
+              path: "$.toolCalls[0].args.city",
+              equals: "NYC",
+            },
+            {
+              type: "jsonpath",
+              target: "trajectory",
+              path: "$.toolCalls[0].args.limit",
+              equals: 5,
+            },
+          ],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: toolSource,
+      },
+    );
+
+    // Every assertion above reads trajectory.toolCalls, not result.metadata, so a
+    // regression that routes args through the names-only metadata path (instead of
+    // returning them from enrichWithTraceSource) would fail this test.
+    expect(result.verdict).toBe(Verdict.Pass);
+    for (const score of result.scores) {
+      expect(score.verdict).toBe(Verdict.Pass);
+    }
+  });
+
+  it("sets trajectory.toolCalls to [] (not undefined) when the source found evidence of no calls", async () => {
+    const emptySource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () => Promise.resolve({ traceCount: 1, toolCalls: [] }),
+    };
+
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls", exists: true },
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls.length", equals: 0 },
+          ],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: emptySource,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    for (const score of result.scores) {
+      expect(score.verdict).toBe(Verdict.Pass);
+    }
+  });
+
+  it("leaves trajectory.toolCalls undefined (not []) when there is no trace evidence", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [
+            { type: "jsonpath", target: "trajectory", path: "$.toolCalls", exists: false },
+          ],
+          thresholds: [],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        traceSource: false,
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    for (const score of result.scores) {
+      expect(score.verdict).toBe(Verdict.Pass);
+    }
   });
 });
 

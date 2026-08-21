@@ -7,6 +7,7 @@ import {
   type Scenario,
   type ScenarioResult,
   type TargetIdentity,
+  type ToolCall,
   type Trajectory,
   type TurnRecord,
   Verdict,
@@ -29,6 +30,7 @@ import {
   evaluateThresholds,
 } from "../eval/index.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
+import { applyTraceRequirement } from "../eval/toolAssertions.js";
 import {
   applyTraceEnrichment,
   NO_CORRELATION_KEY_REASON,
@@ -81,6 +83,12 @@ export interface RunScenarioOptions {
    * A `TraceSource`: that backend is used and no fallback is consulted.
    */
   traceSource?: TraceSource | false;
+  /**
+   * When true, tool assertions that skipped for missing trace evidence are
+   * escalated to failures. Default false, so a trace backend outage cannot
+   * block a pipeline that did not ask for that.
+   */
+  requireTrace?: boolean;
 }
 
 export interface RunScenariosOptions extends RunScenarioOptions {
@@ -153,7 +161,7 @@ async function enrichWithTraceSource(
   result: ScenarioResult,
   source: TraceSource,
   startedAt: number,
-): Promise<void> {
+): Promise<readonly ToolCall[] | undefined> {
   const key = extractCorrelationKey(result);
   let lookup: TraceLookupResult;
 
@@ -169,6 +177,9 @@ async function enrichWithTraceSource(
   }
 
   applyTraceEnrichment(result, key, lookup, source.metadataKey);
+  // Returned directly rather than re-read from metadata: metadata keeps names
+  // only for compact history, while evaluators need full args and ordering.
+  return lookup.status === "found" ? lookup.record.toolCalls : undefined;
 }
 
 function stringOption(value: unknown, name: string): string | undefined {
@@ -254,12 +265,14 @@ export function createDrivenTrajectory({
   metadata = {},
   currentStepIndex,
   snapshot,
+  toolCalls,
 }: {
   turns: readonly TurnRecord[];
   metrics?: Record<string, number>;
   metadata?: Record<string, unknown>;
   currentStepIndex?: number;
   snapshot?: ScenarioResult;
+  toolCalls?: readonly ToolCall[];
 }): Trajectory {
   const finalResponse = turns.at(-1)?.response;
   return {
@@ -282,6 +295,7 @@ export function createDrivenTrajectory({
     ...(finalResponse !== undefined && { finalResponse }),
     metrics,
     metadata,
+    ...(toolCalls !== undefined && { toolCalls }),
     ...(snapshot !== undefined && { snapshot }),
   };
 }
@@ -456,27 +470,26 @@ export async function runScenario(
         ...(scenario.sourceFile !== undefined && { sourceFile: scenario.sourceFile }),
       };
       // Enrich before scoring so cost/token thresholds see the trace metrics.
+      let toolCalls: readonly ToolCall[] | undefined;
       if (traceSource) {
-        await enrichWithTraceSource(baseResult, traceSource, attemptStartedAtMs);
+        toolCalls = await enrichWithTraceSource(baseResult, traceSource, attemptStartedAtMs);
       }
       const trajectory = createDrivenTrajectory({
         turns,
         metrics: baseResult.metrics,
         metadata: baseResult.metadata ?? {},
         snapshot: baseResult,
+        toolCalls,
       });
       const scenarioScores = evaluateAssertions(scenario.expect.assertions, trajectory);
       const thresholdScores = evaluateThresholds(scenario.expect.thresholds, trajectory);
       const manualScores = evaluateManualScoring(scenario.expect.manual);
       const judgeScores = evaluateJudge(scenario.expect.judge);
       const turnScores = turns.flatMap((turn) => turn.assertions);
-      const scores = [
-        ...turnScores,
-        ...scenarioScores,
-        ...thresholdScores,
-        ...manualScores,
-        ...judgeScores,
-      ];
+      const scores = applyTraceRequirement(
+        [...turnScores, ...scenarioScores, ...thresholdScores, ...manualScores, ...judgeScores],
+        options.requireTrace ?? false,
+      );
       const verdict = aggregateScores(scores);
       const result: ScenarioResult = { ...baseResult, verdict, scores };
       options.progress?.({

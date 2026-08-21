@@ -351,12 +351,39 @@ describe("threshold evaluator", () => {
     ).toBe(Verdict.Fail);
   });
 
+  it("normalizes camelCase aliases for the trace-derived tool metrics", () => {
+    expect(
+      evaluateThreshold({ metric: "toolCalls", max: 3 }, trajectory({ tool_calls: 3 })).verdict,
+    ).toBe(Verdict.Pass);
+    expect(
+      evaluateThreshold({ metric: "toolInvocations", max: 2 }, trajectory({ tool_invocations: 3 }))
+        .verdict,
+    ).toBe(Verdict.Fail);
+  });
+
   it("skips maxCostUsd cleanly when cost data is missing", () => {
     const score = evaluateThreshold({ metric: "maxCostUsd", max: 0.25 }, trajectory({}));
 
     expect(score.verdict).toBe(Verdict.Skip);
-    expect(score.reason).toMatch(/Cost metric is missing/);
+    expect(score.reason).toMatch(/cost_usd is missing/);
     expect(aggregateScores([score])).toBe(Verdict.Pass);
+  });
+
+  it("skips trace-derived metrics that are missing instead of failing", () => {
+    for (const metric of ["tool_calls", "tool_invocations", "total_tokens"]) {
+      const score = evaluateThreshold({ metric, max: 5 }, trajectory({}));
+
+      expect(score.verdict).toBe(Verdict.Skip);
+      expect(score.metadata.skipped).toBe("no_trace_metric");
+      expect(aggregateScores([score])).toBe(Verdict.Pass);
+    }
+  });
+
+  it("still fails on a missing metric that trace evidence never supplies", () => {
+    const score = evaluateThreshold({ metric: "turns", max: 5 }, trajectory({}));
+
+    expect(score.verdict).toBe(Verdict.Fail);
+    expect(score.reason).toMatch(/Metric turns is missing/);
   });
 });
 

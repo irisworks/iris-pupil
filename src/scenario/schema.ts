@@ -13,15 +13,32 @@ const driverSchema = z
   .strict()
   .default({ type: "rest", config: {} });
 
-const textAssertionSchema = z
-  .object({
-    type: z.enum(["contains", "not_contains", "equals", "regex"]),
-    target: z.string().min(1).default("response.text"),
-    value: z.string(),
-    caseSensitive: z.boolean().default(false),
-  })
-  .strict();
+/**
+ * One schema per text-assertion `type` literal (rather than a single schema
+ * with `type: z.enum([...])`) so every variant can sit directly in the flat
+ * `z.discriminatedUnion` below. A shared enum field can't serve as a
+ * discriminated union's discriminant because each branch of a discriminated
+ * union must carry its own single literal value.
+ */
+function textAssertionVariant<T extends string>(type: T) {
+  return z
+    .object({
+      type: z.literal(type),
+      target: z.string().min(1).default("response.text"),
+      value: z.string(),
+      caseSensitive: z.boolean().default(false),
+    })
+    .strict();
+}
 
+const containsSchema = textAssertionVariant("contains");
+const notContainsSchema = textAssertionVariant("not_contains");
+const equalsSchema = textAssertionVariant("equals");
+const regexSchema = textAssertionVariant("regex");
+
+// No `.refine()` here (that would produce a `ZodEffects`, which
+// `z.discriminatedUnion` can't accept as a branch) - the equals/exists
+// requirement is enforced by the `superRefine` on `assertionSchema` below.
 const jsonPathAssertionSchema = z
   .object({
     type: z.literal("jsonpath"),
@@ -30,17 +47,124 @@ const jsonPathAssertionSchema = z
     equals: z.unknown().optional(),
     exists: z.boolean().optional(),
   })
-  .strict()
-  .refine((value) => value.equals !== undefined || value.exists !== undefined, {
-    message: "jsonpath assertion requires equals or exists",
-  });
+  .strict();
 
-const assertionSchema = z.union([textAssertionSchema, jsonPathAssertionSchema]);
+const toolNameMatchSchema = z.enum(["exact", "glob"]).default("exact");
+
+const toolCalledSchema = z
+  .object({
+    type: z.literal("tool_called"),
+    tool: z.string().min(1, "tool_called requires tool"),
+    match: toolNameMatchSchema,
+    times: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+const toolNotCalledSchema = z
+  .object({
+    type: z.literal("tool_not_called"),
+    tool: z.string().min(1, "tool_not_called requires tool"),
+    match: toolNameMatchSchema,
+  })
+  .strict();
+
+// Same reasoning as `jsonPathAssertionSchema`: the min/max requirement moves
+// to the outer `superRefine` so this stays a plain object schema.
+const toolCallCountSchema = z
+  .object({
+    type: z.literal("tool_call_count"),
+    tool: z.string().min(1).optional(),
+    match: toolNameMatchSchema,
+    min: z.number().int().nonnegative().optional(),
+    max: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+const toolOrderSchema = z
+  .object({
+    type: z.literal("tool_order"),
+    tools: z.array(z.string().min(1)).min(1, "tool_order requires at least one tool"),
+    match: toolNameMatchSchema,
+  })
+  .strict();
+
+const toolArgsSchema = z
+  .object({
+    type: z.literal("tool_args"),
+    tool: z.string().min(1, "tool_args requires tool"),
+    match: toolNameMatchSchema,
+    equals: z.record(z.unknown()),
+  })
+  .strict();
+
+// Shared branch lists, reused by both the scenario-level and turn-level
+// discriminated unions below so the individual branch schemas are defined
+// exactly once.
+const nonToolAssertionBranches = [
+  containsSchema,
+  notContainsSchema,
+  equalsSchema,
+  regexSchema,
+  jsonPathAssertionSchema,
+] as const;
+
+const toolAssertionBranches = [
+  toolCalledSchema,
+  toolNotCalledSchema,
+  toolCallCountSchema,
+  toolOrderSchema,
+  toolArgsSchema,
+] as const;
+
+function withAssertionRefinements<T extends z.ZodDiscriminatedUnion<"type", any>>(union: T) {
+  return union.superRefine((value, ctx) => {
+    if (value.type === "jsonpath" && value.equals === undefined && value.exists === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "jsonpath assertion requires equals or exists",
+      });
+    }
+    if (value.type === "tool_call_count" && value.min === undefined && value.max === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "tool_call_count requires at least one of min or max",
+      });
+    }
+  });
+}
+
+/**
+ * A single flat `z.discriminatedUnion` over all ten `type` literals (the
+ * seven assertion shapes, with the four text-assertion types counted once
+ * each). Zod resolves a discriminated union by reading `type` and parsing
+ * only the matching branch, so a malformed assertion produces exactly the
+ * issues from the branch the author meant - never noise from unrelated
+ * branches, and never the opaque `invalid_union` wrapper a plain `z.union`
+ * (or a discriminated union nested inside one) would produce instead.
+ *
+ * Scenario-scoped only. Used at the top-level `expect:`/`assertions:`.
+ */
+const assertionSchema = withAssertionRefinements(
+  z.discriminatedUnion("type", [...nonToolAssertionBranches, ...toolAssertionBranches]),
+);
+
+/**
+ * Same branches minus the five tool-assertion types. Enrichment that
+ * populates `trajectory.toolCalls` runs once per scenario after all turns
+ * finish (see design decision 2), so there is no reliable way to attribute a
+ * tool call to a specific turn. A per-turn tool assertion would otherwise
+ * silently skip forever - or, under `--require-trace`, falsely fail with a
+ * misleading "no trace evidence" reason even though scenario-level trace
+ * evidence exists. Reject it at schema validation time instead.
+ */
+const turnAssertionSchema = withAssertionRefinements(
+  z.discriminatedUnion("type", [...nonToolAssertionBranches]),
+);
 
 const turnSchema = z
   .object({
     user: z.string().min(1, "turn.user is required"),
-    expect: z.array(assertionSchema).default([]),
+    expect: z.array(turnAssertionSchema).default([]),
   })
   .strict();
 

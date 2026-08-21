@@ -90,6 +90,18 @@ const compareConfigSchema = z
 // selected profile has been merged in and resolved.
 const templatableNumber = z.union([z.number(), z.string()]);
 
+// `${VAR:-false}` templates resolve to the literal string "false" before this
+// schema validates, and z.coerce.boolean() calls JS Boolean(), which is true
+// for any non-empty string (including "false"). Map the resolved template
+// strings to real booleans first so genuine invalid values still fail loudly.
+const templatableBoolean = z.preprocess((value) => {
+  if (typeof value === "string") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+  }
+  return value;
+}, z.boolean());
+
 // The profile schemas below mirror the top-level ones with every field optional.
 // Keep them in sync when a top-level field is added, or that field becomes
 // unsettable per profile (strict objects reject it as an unknown key).
@@ -125,6 +137,14 @@ const profileCompareConfigSchema = z
 const profileConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).optional(),
+    // Mirrors templatableNumber above, not templatableBoolean: profiles are
+    // validated before ${VAR} resolution, so this may still hold a raw
+    // template string like "${PUPIL_REQUIRE_TRACE:-false}" - not yet the
+    // literal "true"/"false" that templatableBoolean's preprocess expects.
+    // The real boolean coercion happens via templatableBoolean in the
+    // top-level schema, after the selected profile has been merged in and
+    // resolved.
+    requireTrace: z.union([z.boolean(), z.string()]).optional(),
     driver: profileDriverConfigSchema.optional(),
     history: profileHistoryConfigSchema.optional(),
     langfuse: profileLangfuseConfigSchema.optional(),
@@ -136,6 +156,8 @@ const profileConfigSchema = z
 const pupilConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).default("examples/scenarios"),
+    /** When true, tool assertions that skip for missing trace evidence fail instead. */
+    requireTrace: templatableBoolean.default(false),
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,

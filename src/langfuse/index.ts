@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { firstString, isRecord, type JsonRecord } from "../core/json.js";
+import type { ToolCall } from "../core/types.js";
 import type { TraceLookupContext, TraceRecord, TraceSource } from "../trace/index.js";
 
 export interface LangfuseEnrichment {
@@ -10,7 +11,7 @@ export interface LangfuseEnrichment {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
-  readonly toolCalls: string[];
+  readonly toolCalls: ToolCall[];
 }
 
 export interface LangfuseConfig {
@@ -203,7 +204,7 @@ function tracesFromSession(payload: unknown): JsonRecord[] {
   if (Array.isArray(payload.traces)) return payload.traces.filter(isRecord);
   if (Array.isArray(payload.data)) return payload.data.filter(isRecord);
   if (isRecord(payload.trace)) return [payload.trace];
-  if (firstString(payload.traceId, payload.trace_id)) return [payload];
+  if (firstString(payload.id, payload.traceId, payload.trace_id)) return [payload];
   return [];
 }
 
@@ -237,11 +238,14 @@ function traceIdsFromPayload(payload: unknown): string[] {
 }
 
 function observationsFromTrace(trace: JsonRecord, payload: unknown): JsonRecord[] {
+  const payloadObservations = isRecord(payload) ? payload.observations : undefined;
   const candidates = [
     trace.observations,
     trace.generations,
     trace.spans,
-    isRecord(payload) ? payload.observations : undefined,
+    // A single-trace payload where the trace object IS the payload (e.g. a bare
+    // `{ id, observations }` shape) would otherwise flatten the same array in twice.
+    payloadObservations === trace.observations ? undefined : payloadObservations,
   ];
   return candidates.flatMap((candidate) =>
     Array.isArray(candidate) ? candidate.filter(isRecord) : [],
@@ -264,29 +268,89 @@ function aggregate(
   return total;
 }
 
-function extractToolCalls(records: JsonRecord[]): string[] {
-  const names = new Set<string>();
+/** Langfuse sends tool arguments either as an object or as a JSON string. */
+function parseArgs(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    // A non-JSON string is still the best argument evidence we have.
+    return value;
+  }
+}
+
+function observationError(record: JsonRecord): string | undefined {
+  const level = firstString(record.level, record.statusLevel)?.toUpperCase();
+  if (level !== "ERROR") return undefined;
+  return firstString(record.statusMessage, record.status_message, record.error) ?? "tool error";
+}
+
+type CollectedToolCall = Omit<ToolCall, "index">;
+
+/**
+ * Collects tool calls in call order.
+ *
+ * Order comes from `startTime` when every collected call has one; otherwise
+ * payload order is preserved. Sorting only when all entries are timed avoids an
+ * inconsistent comparator, which would give undefined results for mixed input.
+ * Duplicates are deliberately kept — `tool_call_count` and `tool_order` depend
+ * on them.
+ */
+function extractToolCalls(records: JsonRecord[]): ToolCall[] {
+  const collected: CollectedToolCall[] = [];
+
   for (const record of records) {
     const type = firstString(record.type, record.observationType, record.kind)?.toLowerCase() ?? "";
+    // Also check the OTel attribute Langfuse echoes back in metadata.attributes —
+    // this is the reliable path for iris-core's OTel-ingested tool observations,
+    // which may land as type SPAN in Langfuse's internal model but always carry
+    // the original 'tool' value in the raw OTel attribute.
+    const otelType =
+      isRecord(record.metadata) && isRecord(record.metadata["attributes"])
+        ? firstString(record.metadata["attributes"]["langfuse.observation.type"])?.toLowerCase()
+        : undefined;
     const name = firstString(record.name, record.toolName, record.tool_name);
-    if (type.includes("tool") && name) names.add(name);
+    if ((type.includes("tool") || otelType === "tool") && name) {
+      collected.push({
+        name,
+        args: parseArgs(record.input ?? record.args ?? record.arguments),
+        startedAt: firstString(record.startTime, record.start_time),
+        error: observationError(record),
+      });
+    }
 
     for (const key of ["toolCalls", "tool_calls"] as const) {
       const calls = record[key];
       if (!Array.isArray(calls)) continue;
       for (const call of calls) {
         if (!isRecord(call)) continue;
-        const callName = firstString(
-          call.name,
-          call.toolName,
-          call.tool_name,
-          isRecord(call.function) ? call.function.name : undefined,
-        );
-        if (callName) names.add(callName);
+        const fn = isRecord(call.function) ? call.function : undefined;
+        const callName = firstString(call.name, call.toolName, call.tool_name, fn?.name);
+        if (!callName) continue;
+        collected.push({
+          name: callName,
+          args: parseArgs(call.args ?? call.input ?? call.arguments ?? fn?.arguments),
+          startedAt: firstString(call.startTime, call.start_time, record.startTime),
+          error: undefined,
+        });
       }
     }
   }
-  return [...names].sort();
+
+  const allTimed = collected.every((call) => call.startedAt !== undefined);
+  if (allTimed) {
+    collected.sort((a, b) => (a.startedAt as string).localeCompare(b.startedAt as string));
+  }
+
+  return collected.map((call, index) => ({
+    name: call.name,
+    index,
+    ...(call.args !== undefined && { args: call.args }),
+    ...(call.startedAt !== undefined && { startedAt: call.startedAt }),
+    ...(call.error !== undefined && { error: call.error }),
+  }));
 }
 
 export function extractLangfuseEnrichment(

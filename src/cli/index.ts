@@ -26,6 +26,7 @@ import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import {
   buildRunJson,
   buildStepSummaryMarkdown,
+  countToolEvidenceSkips,
   formatJUnitXml,
   isStrictFailure,
 } from "./reporting.js";
@@ -268,6 +269,11 @@ program
   )
   .option("--history-dir <dir>", "Directory for JSON run history")
   .option("--no-langfuse", "Skip Langfuse trace enrichment for this run")
+  .option(
+    "--require-trace",
+    "Fail (instead of skip) tool assertions when no trace evidence is available",
+    false,
+  )
   .option("--system <name>", "Agent system name (e.g. support-agent)")
   .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
   .option("--target-version <version>", "Deployed version or commit SHA")
@@ -304,6 +310,7 @@ program
         concurrency: number;
         historyDir?: string;
         langfuse: boolean;
+        requireTrace?: boolean;
         system?: string;
         environment?: string;
         targetVersion?: string;
@@ -341,6 +348,7 @@ program
             ? false
             : (LangfuseTraceSource.fromSettings(config.langfuse) ?? false),
         target: mergedTarget,
+        requireTrace: Boolean(options.requireTrace) || config.requireTrace,
       });
 
       const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
@@ -425,13 +433,32 @@ program
         console.log(
           `Run ${result.runId}: ${result.verdict} (${result.summary.passed}/${result.summary.total} passed, ${result.summary.errors} errors)`,
         );
+        const toolSkips = countToolEvidenceSkips(result);
+        if (toolSkips > 0) {
+          console.log(
+            `WARNING: ${toolSkips} tool assertion${toolSkips === 1 ? "" : "s"} skipped — no trace evidence. ` +
+              "Run with --require-trace to fail instead of skipping.",
+          );
+        }
         if (comparison) {
           process.stdout.write(formatRunComparison(comparison));
         }
       }
 
-      if (isStrictFailure(result.verdict, options.strict) || comparison?.hasRegressions === true) {
+      if (isStrictFailure(result.verdict, options.strict)) {
         process.exitCode = 1;
+      } else if (comparison !== undefined) {
+        const hasHardTargetMismatch = comparison.targetMismatch.some(
+          (mismatch) => mismatch.severity === "hard",
+        );
+        if (hasHardTargetMismatch) {
+          // A hard mismatch (e.g. stubbed vs. live) means the comparison is not
+          // meaningful. Use exit 2 so CI can distinguish "refused to compare"
+          // from "compared and regressed" — mirrors the `pupil compare` behaviour.
+          process.exitCode = 2;
+        } else if (comparison.hasRegressions) {
+          process.exitCode = 1;
+        }
       }
     },
   );

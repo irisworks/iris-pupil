@@ -153,4 +153,141 @@ describe("normalizeScenario", () => {
       ),
     ).toThrow(/bad\.yaml:driver: Unrecognized key\(s\) in object: 'presett'/);
   });
+
+  it("accepts all five tool assertion types", () => {
+    const scenario = normalizeScenario({
+      id: "tools",
+      input: "book a meeting",
+      expect: {
+        assertions: [
+          { type: "tool_called", tool: "calendar.create", times: 1 },
+          { type: "tool_not_called", tool: "email.send" },
+          { type: "tool_call_count", tool: "search", min: 1, max: 3 },
+          { type: "tool_order", tools: ["search", "calendar.create"] },
+          { type: "tool_args", tool: "calendar.create", equals: { title: "Standup" } },
+        ],
+      },
+    });
+
+    expect(scenario.expect.assertions).toHaveLength(5);
+  });
+
+  it("defaults tool name matching to exact", () => {
+    const scenario = normalizeScenario({
+      id: "tools",
+      input: "hi",
+      expect: { assertions: [{ type: "tool_called", tool: "search" }] },
+    });
+
+    expect(scenario.expect.assertions[0]).toMatchObject({ match: "exact" });
+  });
+
+  it("reports a single error for a malformed tool assertion", () => {
+    expect(() =>
+      normalizeScenario(
+        {
+          id: "tools",
+          input: "hi",
+          expect: { assertions: [{ type: "tool_called" }] },
+        },
+        "scenarios/tools.yaml",
+      ),
+    ).toThrowError(/scenarios\/tools\.yaml:expect\.assertions\.0\.tool/);
+  });
+
+  it("rejects tool_call_count without min or max", () => {
+    expect(() =>
+      normalizeScenario({
+        id: "tools",
+        input: "hi",
+        expect: { assertions: [{ type: "tool_call_count", tool: "search" }] },
+      }),
+    ).toThrowError(/min or max/);
+  });
+
+  it("rejects an unknown key on a tool assertion", () => {
+    expect(() =>
+      normalizeScenario({
+        id: "tools",
+        input: "hi",
+        expect: { assertions: [{ type: "tool_called", tool: "search", nope: true }] },
+      }),
+    ).toThrowError();
+  });
+
+  it("reports a single clear error for a jsonpath assertion missing a required field, uncontaminated by tool branches", () => {
+    let thrown: unknown;
+    try {
+      normalizeScenario(
+        {
+          id: "bad-jsonpath-field",
+          input: "hi",
+          expect: { assertions: [{ type: "jsonpath", target: "response.raw" }] },
+        },
+        "bad.yaml",
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    const detailLines = message.split("\n").slice(1);
+
+    expect(detailLines).toHaveLength(1);
+    expect(detailLines[0]).toMatch(/bad\.yaml:expect\.assertions\.0\.path/);
+    expect(message).not.toMatch(/tool_call_count/);
+    expect(message).not.toMatch(/tool_called/);
+    expect(message).not.toMatch(/discriminator/i);
+  });
+
+  it("reports a single clear error for a contains assertion missing a required field, uncontaminated by tool branches", () => {
+    let thrown: unknown;
+    try {
+      normalizeScenario(
+        {
+          id: "bad-contains-field",
+          input: "hi",
+          expect: { assertions: [{ type: "contains", target: "response.text" }] },
+        },
+        "bad.yaml",
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    const detailLines = message.split("\n").slice(1);
+
+    expect(detailLines).toHaveLength(1);
+    expect(detailLines[0]).toMatch(/bad\.yaml:expect\.assertions\.0\.value/);
+    expect(message).not.toMatch(/tool_call_count/);
+    expect(message).not.toMatch(/tool_called/);
+    expect(message).not.toMatch(/discriminator/i);
+  });
+
+  it("rejects tool assertions inside turns[].expect with file and path context", () => {
+    expect(() =>
+      normalizeScenario(
+        {
+          id: "turn-tool-assertion",
+          turns: [{ user: "book a meeting", expect: [{ type: "tool_called", tool: "x" }] }],
+        },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:turns\.0\.expect\.0\.type:/);
+  });
+
+  it("still accepts scenario-level tool assertions in expect:", () => {
+    const scenario = normalizeScenario({
+      id: "scenario-level-tools",
+      input: "book a meeting",
+      expect: { assertions: [{ type: "tool_called", tool: "calendar.create" }] },
+    });
+
+    expect(scenario.expect.assertions).toEqual([
+      { type: "tool_called", tool: "calendar.create", match: "exact" },
+    ]);
+  });
 });

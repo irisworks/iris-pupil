@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { applyTraceEnrichment } from "../trace/index.js";
-import { Verdict, type ScenarioResult } from "../core/types.js";
+import { Verdict, type ScenarioResult, type ToolCall } from "../core/types.js";
 import { createMockAgentBundle, type IrisMockAgent } from "./irisMockAgent.js";
 import { MockTraceSource } from "./mockTraceSource.js";
 
 describe("MockTraceSource", () => {
   it("resolve returns undefined for an unknown session ID", async () => {
-    const store = new Map<string, string[]>();
+    const store = new Map<string, ToolCall[]>();
     const source = new MockTraceSource(store);
 
     await expect(source.resolve("nonexistent-id")).resolves.toBeUndefined();
   });
 
   it("resolve returns traceCount 1 with empty toolCalls for a session that produced no spans", async () => {
-    const store = new Map<string, string[]>([["session-1", []]]);
+    const store = new Map<string, ToolCall[]>([["session-1", []]]);
     const source = new MockTraceSource(store);
 
     await expect(source.resolve("session-1")).resolves.toEqual({
@@ -23,37 +23,48 @@ describe("MockTraceSource", () => {
   });
 
   it("resolve returns accumulated spans after one turn", async () => {
-    const store = new Map<string, string[]>([["session-1", ["web_search"]]]);
+    const store = new Map<string, ToolCall[]>([["session-1", [{ name: "web_search", index: 0 }]]]);
     const source = new MockTraceSource(store);
 
     await expect(source.resolve("session-1")).resolves.toEqual({
       traceCount: 1,
-      toolCalls: ["web_search"],
+      toolCalls: [{ name: "web_search", index: 0 }],
     });
   });
 
   it("resolve returns accumulated spans after multiple turns in emission order", async () => {
-    const store = new Map<string, string[]>([
-      ["session-1", ["web_search", "calendar_create", "email_send"]],
+    const store = new Map<string, ToolCall[]>([
+      [
+        "session-1",
+        [
+          { name: "web_search", index: 0 },
+          { name: "calendar_create", index: 1 },
+          { name: "email_send", index: 2 },
+        ],
+      ],
     ]);
     const source = new MockTraceSource(store);
 
     await expect(source.resolve("session-1")).resolves.toEqual({
       traceCount: 1,
-      toolCalls: ["web_search", "calendar_create", "email_send"],
+      toolCalls: [
+        { name: "web_search", index: 0 },
+        { name: "calendar_create", index: 1 },
+        { name: "email_send", index: 2 },
+      ],
     });
   });
 
   it("returns a copy of spans — mutations to the returned array do not affect the store", async () => {
-    const spans = ["web_search"];
-    const store = new Map<string, string[]>([["session-1", spans]]);
+    const spans: ToolCall[] = [{ name: "web_search", index: 0 }];
+    const store = new Map<string, ToolCall[]>([["session-1", spans]]);
     const source = new MockTraceSource(store);
 
     const record = await source.resolve("session-1");
-    (record!.toolCalls as string[]).push("mutated");
+    (record!.toolCalls as ToolCall[]).push({ name: "mutated", index: 1 });
 
     // Store is unaffected
-    expect(store.get("session-1")).toEqual(["web_search"]);
+    expect(store.get("session-1")).toEqual([{ name: "web_search", index: 0 }]);
   });
 
   it("metadataKey is 'mock'", () => {
@@ -98,7 +109,10 @@ describe("integration — createMockAgentBundle + applyTraceEnrichment", () => {
     // Resolve trace evidence directly from the MockTraceSource
     const record = await bundle.traceSource.resolve(sessionId);
     expect(record).toBeDefined();
-    expect(record!.toolCalls).toEqual(["calendar_create", "notify_user"]);
+    expect(record!.toolCalls).toEqual([
+      { name: "calendar_create", index: 0 },
+      { name: "notify_user", index: 1 },
+    ]);
 
     // Apply enrichment just like the runner does
     const result: ScenarioResult = {

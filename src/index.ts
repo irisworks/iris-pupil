@@ -9,6 +9,14 @@ export * from "./eval/index.js";
 export * from "./history/index.js";
 
 export {
+  evaluateToolAssertion,
+  isToolAssertion,
+  subsetMatches,
+  NO_TOOL_EVIDENCE_REASON,
+  NO_TOOL_EVIDENCE_MARKER,
+} from "./eval/toolAssertions.js";
+
+export {
   applyTraceEnrichment,
   summarizeTraceRun,
   NO_CORRELATION_KEY_REASON,

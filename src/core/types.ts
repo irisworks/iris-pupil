@@ -49,6 +49,26 @@ export interface TargetIdentity {
   fixtureSet?: string;
 }
 
+/**
+ * One observed tool invocation, in call order.
+ *
+ * Shaped near OpenTelemetry GenAI concepts (name, input, timing, error) without
+ * binding Pupil to experimental semantic-convention field names — the same
+ * reasoning applied to TrajectoryStep.
+ */
+export interface ToolCall {
+  /** Tool identifier as reported by the agent, e.g. "calendar.create". */
+  name: string;
+  /** 0-based position in call order across the whole trajectory. */
+  index: number;
+  /** Parsed argument payload, when the backend provides one. */
+  args?: unknown;
+  /** ISO-8601 start time, when the backend provides one. */
+  startedAt?: string;
+  /** Set when the tool itself reported a failure. */
+  error?: string;
+}
+
 export interface ScenarioDriverRef {
   type: string;
   preset?: string;
@@ -70,8 +90,56 @@ export interface JsonPathAssertionCheck {
   exists?: boolean;
 }
 
-/** Assertion Pupil can evaluate against an agent response. */
-export type AssertionCheck = TextAssertionCheck | JsonPathAssertionCheck;
+/** How a tool name in an assertion is compared against an observed call. */
+export type ToolNameMatch = "exact" | "glob";
+
+export interface ToolCalledAssertionCheck {
+  type: "tool_called";
+  tool: string;
+  match?: ToolNameMatch;
+  /** Exact call count. Omitted means "at least once". */
+  times?: number;
+}
+
+export interface ToolNotCalledAssertionCheck {
+  type: "tool_not_called";
+  tool: string;
+  match?: ToolNameMatch;
+}
+
+export interface ToolCallCountAssertionCheck {
+  type: "tool_call_count";
+  /** Omitted counts every tool call in the trajectory. */
+  tool?: string;
+  match?: ToolNameMatch;
+  min?: number;
+  max?: number;
+}
+
+export interface ToolOrderAssertionCheck {
+  type: "tool_order";
+  /** Matched as a subsequence: unrelated calls may appear in between. */
+  tools: string[];
+  match?: ToolNameMatch;
+}
+
+export interface ToolArgsAssertionCheck {
+  type: "tool_args";
+  tool: string;
+  match?: ToolNameMatch;
+  /** Subset match: listed keys must match, extra keys are ignored. */
+  equals: Record<string, unknown>;
+}
+
+export type ToolAssertionCheck =
+  | ToolCalledAssertionCheck
+  | ToolNotCalledAssertionCheck
+  | ToolCallCountAssertionCheck
+  | ToolOrderAssertionCheck
+  | ToolArgsAssertionCheck;
+
+/** Assertion Pupil can evaluate against an agent response or trajectory. */
+export type AssertionCheck = TextAssertionCheck | JsonPathAssertionCheck | ToolAssertionCheck;
 
 export interface ThresholdCheck {
   metric: string;
@@ -184,6 +252,18 @@ export interface Trajectory {
   };
   metrics: Record<string, number>;
   metadata: Record<string, unknown>;
+  /**
+   * Observed tool calls in call order, when the producer has evidence.
+   *
+   * Top-level rather than distributed across `steps` because both producers can
+   * populate it: a driven run gets it from trace enrichment, and a trace-derived
+   * run (`pupil observe`) may have tool calls but no conversational steps at all.
+   * Tool assertions must read this field and never `steps`.
+   *
+   * `undefined` means no evidence — tool assertions skip. `[]` means the producer
+   * had evidence and the agent called no tools — tool assertions score normally.
+   */
+  toolCalls?: readonly ToolCall[];
   /**
    * Backward-compatible producer snapshot for existing `result.*` assertions.
    * New evaluators should prefer explicit trajectory fields.

@@ -146,6 +146,17 @@ describe("pupil CLI", () => {
     expect(result.stderr.trim()).toBe("");
   });
 
+  it("validates the tool efficiency example scenario", () => {
+    const result = spawnSync(
+      process.execPath,
+      [cliPath, "validate", "examples/scenarios/iris-tool-efficiency.yaml"],
+      { encoding: "utf-8" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("iris-tool-efficiency");
+  });
+
   it("does not duplicate Commander parse errors", () => {
     const result = spawnSync(process.execPath, [cliPath, "unknown-command"], { encoding: "utf-8" });
 
@@ -222,6 +233,71 @@ describe("pupil CLI", () => {
       expect(JSON.parse(runJson)).toMatchObject({ runId, verdict: "pass" });
       const index = await readFile(join(historyDir, "index.jsonl"), "utf-8");
       expect(index).toContain(`"runId":"${runId}"`);
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("warns in the plain terminal summary when a tool assertion is skipped for missing trace evidence", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "online" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-run-tool-skip-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-tool-skip",
+          "name: CLI run tool skip",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: tool_called",
+          "      tool: calendar.create",
+          "",
+        ].join("\n"),
+      );
+      // An explicit, minimal config (rather than falling back to the ambient
+      // pupil.config.yaml at the repo root) keeps this test isolated from
+      // whatever `requireTrace` value the surrounding project happens to have
+      // configured, so the assertion is guaranteed to skip rather than fail.
+      await writeFile(configPath, ["scenarios: examples/scenarios", ""].join("\n"));
+
+      const child = spawn(
+        process.execPath,
+        [
+          cliPath,
+          "run",
+          scenarioPath,
+          "--config",
+          configPath,
+          "--base-url",
+          `http://${address.host}:${address.port}`,
+          "--origin-thread-ts",
+          "thread-1",
+          "--history-dir",
+          historyDir,
+          "--no-langfuse",
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      expect(output.stdout).toContain("PASS cli-run-tool-skip");
+      expect(output.stdout).toContain(
+        "WARNING: 1 tool assertion skipped — no trace evidence. Run with --require-trace to fail instead of skipping.",
+      );
     } finally {
       await mock.close();
       await rm(dir, { recursive: true, force: true });
@@ -1750,6 +1826,7 @@ describe("pupil CLI", () => {
       const baselineRun: RunResult = {
         runId: "baseline-run",
         verdict: Verdict.Pass,
+        target: { mode: "driven" },
         results: [
           {
             scenarioId: "cli-run-baseline-config",
@@ -1832,6 +1909,99 @@ describe("pupil CLI", () => {
         baseline?: { status: string; hasRegressions?: boolean };
       };
       expect(strictPayload.baseline).toMatchObject({ status: "compared", hasRegressions: true });
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("exits 2 from run --baseline on a hard target mismatch", async () => {
+    const mock = createIrisMockAgent({ port: 0, rules: [{ match: "hello", reply: "online" }] });
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const dir = await mkdtemp(join(tmpdir(), "pupil-target-mismatch-"));
+    const historyDir = join(dir, "history");
+    const scenarioPath = join(dir, "scenario.yaml");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-run-target-mismatch",
+          "name: CLI run target mismatch",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions:",
+          "    - type: contains",
+          "      target: response.text",
+          "      value: online",
+          "",
+        ].join("\n"),
+      );
+
+      const store = new JsonRunHistoryStore({ dir: historyDir });
+      const baselineRun: RunResult = {
+        runId: "baseline-stubbed",
+        verdict: Verdict.Pass,
+        target: { mode: "driven", fixtureSet: "stubbed-mock" },
+        results: [
+          {
+            scenarioId: "cli-run-target-mismatch",
+            scenarioName: "CLI run target mismatch",
+            verdict: Verdict.Pass,
+            scores: [
+              {
+                name: "assertion:contains:response.text",
+                verdict: Verdict.Pass,
+                reason: "Expected response.text to contain online",
+                metadata: {},
+              },
+            ],
+            turns: [],
+            startedAt: "2026-07-27T00:00:00.000Z",
+            completedAt: "2026-07-27T00:00:00.050Z",
+            metrics: { turns: 1, latency_ms: 50 },
+          },
+        ],
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:00:00.050Z",
+        summary: { total: 1, passed: 1, failed: 0, needsReview: 0, errors: 0 },
+        metadata: {},
+      };
+      await store.writeRun(baselineRun);
+      await store.setBaseline("baseline-stubbed");
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "run",
+            scenarioPath,
+            "--base-url",
+            baseUrl,
+            "--origin-thread-ts",
+            "thread-1",
+            "--history-dir",
+            historyDir,
+            "--fixture-set",
+            "live",
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      // Hard mismatch on fixtureSet (stubbed-mock vs live) must exit 2
+      expect(run.code).toBe(2);
+      const payload = JSON.parse(run.stdout) as {
+        baseline?: { status: string; hasRegressions?: boolean };
+      };
+      expect(payload.baseline).toBeDefined();
     } finally {
       await mock.close();
       await rm(dir, { recursive: true, force: true });
