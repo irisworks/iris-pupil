@@ -1026,7 +1026,7 @@ describe("buildV2ObservationsUrl", () => {
     expect(url.pathname).toBe("/api/public/v2/observations");
     expect(url.searchParams.get("fromStartTime")).toBe("2026-08-20T12:00:00.000Z");
     expect(url.searchParams.get("toStartTime")).toBe("2026-08-21T12:00:00.000Z");
-    expect(url.searchParams.get("fields")).toBe("core,basic,io,trace_context");
+    expect(url.searchParams.get("fields")).toBe("core,basic,io,trace_context,metadata");
     expect(url.searchParams.get("limit")).toBe("100");
   });
 
