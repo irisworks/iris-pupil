@@ -22,7 +22,10 @@ function trajectoryWithToolCalls(toolCalls?: readonly ToolCall[]): Trajectory {
   };
 }
 
-function loaded(check: InvariantCheck, source: LoadedInvariant["source"] = "repo"): LoadedInvariant {
+function loaded(
+  check: InvariantCheck,
+  source: LoadedInvariant["source"] = "repo",
+): LoadedInvariant {
   return { check, source };
 }
 
@@ -116,6 +119,22 @@ describe("evaluateInvariant over a population", () => {
     const score = evaluateInvariant(loaded(check), []);
     expect(score.verdict).toBe(Verdict.Skip);
     expect(score.reason).toBe("No samples to evaluate");
+  });
+
+  it("names the zero-samples skip the same as a real threshold sample would", () => {
+    const check: InvariantCheck = { threshold: { metric: "turns", max: 2 } };
+    const zeroSamples = evaluateInvariant(loaded(check), []);
+    const realSample = evaluateInvariant(loaded(check), [trajectoryWithMetrics({ turns: 1 })]);
+    expect(zeroSamples.name).toBe("invariant:repo:threshold:turns");
+    expect(zeroSamples.name).toBe(realSample.name);
+  });
+
+  it("names the zero-samples skip the same as a real tool-assertion sample would", () => {
+    const check: InvariantCheck = { assertion: { type: "tool_not_called", tool: "legacy" } };
+    const zeroSamples = evaluateInvariant(loaded(check), []);
+    const realSample = evaluateInvariant(loaded(check), [trajectoryWithToolCalls([])]);
+    expect(zeroSamples.name).toBe("invariant:repo:assertion:tool_not_called:legacy");
+    expect(zeroSamples.name).toBe(realSample.name);
   });
 
   it("falls back to options.defaultMaxViolationRate when the check sets none", () => {

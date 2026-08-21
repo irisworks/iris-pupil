@@ -137,9 +137,14 @@ Scenarios and the project as a whole can declare input-free checks that hold for
 conversation - `invariants:` in a scenario, plus an optional repo-wide policy file at
 `config.invariants.file` (path resolves relative to the config file). Both layers compose as a
 pure union: every check from both is always evaluated, and neither layer can suppress or
-override the other. Each entry is exactly one existing `assertion` (any of the five tool
-assertion types) or `threshold` (any metric, including the trace-derived `tool_calls` and
-`tool_invocations`), plus an optional `maxViolationRate` in `[0, 1]`.
+override the other. Each entry is exactly one existing `assertion` (any assertion type the
+scenario schema supports, not just the five tool assertion types) or `threshold` (any metric,
+including the trace-derived `tool_calls` and `tool_invocations`), plus an optional
+`maxViolationRate` in `[0, 1]`. Tool assertions and thresholds are genuinely input-free and safe
+for both drive mode and population evaluation. Text and jsonpath assertions are input-bound: a
+future `pupil observe` (IRIS-164) sample with no conversational turns would resolve
+`response.text` to `undefined` and fail every sample - a spurious 100% violation rate rather than
+a skip - so use them here with that in mind.
 
 `pupil run` evaluates every composed invariant against the single trajectory the scenario just
 produced (one sample). The evaluator itself has no "drive mode" special case: strictness falls

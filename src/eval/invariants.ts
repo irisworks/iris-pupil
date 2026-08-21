@@ -5,7 +5,7 @@ import {
   type Score,
   type Trajectory,
 } from "../core/types.js";
-import { evaluateAssertion, evaluateThreshold } from "./index.js";
+import { assertionName, evaluateAssertion, evaluateThreshold, thresholdName } from "./index.js";
 
 export interface InvariantEvaluationOptions {
   /** From config.invariants.defaultMaxViolationRate. Used only when a check sets none of its own. */
@@ -22,8 +22,14 @@ function invariantName(source: string, innerName: string): string {
   return `invariant:${source}:${innerName}`;
 }
 
+// Mirrors the name the real per-sample evaluator would produce, so a check's
+// Score name has the same shape whether it hits this zero-samples path or the
+// normal path below (perSample[0]!.name). Reuses assertionName/thresholdName
+// from ./index.js rather than re-deriving the naming convention here.
 function checkLabel(check: InvariantCheck): string {
-  return check.assertion !== undefined ? check.assertion.type : `threshold:${check.threshold.metric}`;
+  return check.assertion !== undefined
+    ? assertionName(check.assertion)
+    : thresholdName(check.threshold);
 }
 
 /**
@@ -38,6 +44,12 @@ export function evaluateInvariant(
   options: InvariantEvaluationOptions = {},
 ): Score {
   if (samples.length === 0) {
+    // No `metadata.skipped` marker here, so --require-trace never escalates this
+    // skip. That's correct today: pupil run always supplies exactly one sample,
+    // so zero samples can't happen in practice. Revisit once pupil observe
+    // (IRIS-164) can produce a genuinely empty trace-window population -- at
+    // that point a --require-trace run going green having checked nothing would
+    // be the wrong outcome, and this branch will need a marker too.
     return {
       name: invariantName(loaded.source, checkLabel(loaded.check)),
       verdict: Verdict.Skip,

@@ -57,6 +57,8 @@ describe("loadInvariantFile", () => {
 
     const malformed = join(tmpRoot, "malformed.yaml");
     await writeFile(malformed, "invariants:\n  - assertion: {}\n", "utf8");
-    await expect(loadInvariantFile(malformed)).rejects.toMatchObject({ context: { file: malformed } });
+    await expect(loadInvariantFile(malformed)).rejects.toMatchObject({
+      context: { file: malformed },
+    });
   });
 });

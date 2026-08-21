@@ -496,11 +496,11 @@ export async function runScenario(
       const thresholdScores = evaluateThresholds(scenario.expect.thresholds, trajectory);
       const manualScores = evaluateManualScoring(scenario.expect.manual);
       const judgeScores = evaluateJudge(scenario.expect.judge);
-      const invariants: LoadedInvariant[] = [
+      const composedInvariants: LoadedInvariant[] = [
         ...(options.invariants ?? []),
-        ...scenario.invariants.map((check) => ({ check, source: "scenario" as const })),
+        ...(scenario.invariants ?? []).map((check) => ({ check, source: "scenario" as const })),
       ];
-      const invariantScores = evaluateInvariants(invariants, [trajectory], {
+      const invariantScores = evaluateInvariants(composedInvariants, [trajectory], {
         defaultMaxViolationRate: options.defaultMaxViolationRate,
       });
       const turnScores = turns.flatMap((turn) => turn.assertions);

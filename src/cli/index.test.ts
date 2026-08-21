@@ -393,13 +393,7 @@ describe("pupil CLI", () => {
       );
       await writeFile(
         invariantsPath,
-        [
-          "invariants:",
-          "  - threshold:",
-          "      metric: turns",
-          "      max: 5",
-          "",
-        ].join("\n"),
+        ["invariants:", "  - threshold:", "      metric: turns", "      max: 5", ""].join("\n"),
       );
       await writeFile(
         configPath,
@@ -453,11 +447,9 @@ describe("pupil CLI", () => {
         ].join("\n"),
       );
 
-      const result = spawnSync(
-        process.execPath,
-        [cliPath, "run", "--config", configPath],
-        { encoding: "utf-8" },
-      );
+      const result = spawnSync(process.execPath, [cliPath, "run", "--config", configPath], {
+        encoding: "utf-8",
+      });
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("does-not-exist.yaml");
