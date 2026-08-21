@@ -5,6 +5,7 @@ import {
   extractLangfuseEnrichment,
   extractLangfuseEnrichmentsPerTrace,
   langfuseConfigFromEnv,
+  LangfuseTracePopulationSource,
   LangfuseTraceSource,
   resolveLangfuseConfig,
 } from "./index.js";
@@ -862,6 +863,70 @@ describe("extractLangfuseEnrichmentsPerTrace", () => {
 
   it("returns an empty array for a payload with no traces", () => {
     expect(extractLangfuseEnrichmentsPerTrace({ data: [] })).toEqual([]);
+  });
+});
+
+async function stubObservations(payload: unknown): Promise<StubbedServer> {
+  const requests: StubbedServer["requests"] = [];
+  server = createServer((req, res) => {
+    requests.push({ url: req.url, authorization: req.headers.authorization });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+  const address = server!.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return { baseUrl: `http://127.0.0.1:${port}`, requests };
+}
+
+describe("LangfuseTracePopulationSource", () => {
+  it("fetches and converts each trace into a Trajectory", async () => {
+    const { baseUrl, requests } = await stubObservations({
+      data: [
+        {
+          traceId: "trace-a",
+          type: "TOOL",
+          name: "search",
+          startTime: "2026-08-21T00:00:00.000Z",
+        },
+        {
+          traceId: "trace-b",
+          type: "TOOL",
+          name: "book",
+          startTime: "2026-08-21T00:00:01.000Z",
+        },
+      ],
+    });
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    const trajectories = await source.fetch({ since: "24h" });
+
+    expect(trajectories).toHaveLength(2);
+    expect(trajectories.every((t) => t.source === "trace")).toBe(true);
+    expect(trajectories.map((t) => t.toolCalls?.[0]?.name).sort()).toEqual(["book", "search"]);
+    expect(requests[0]?.url).toContain("/api/public/v2/observations");
+    expect(requests[0]?.authorization).toMatch(/^Basic /);
+  });
+
+  it("throws when the response is not ok", async () => {
+    server = createServer((_req, res) => {
+      res.writeHead(500);
+      res.end("boom");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server!.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    const source = new LangfuseTracePopulationSource({
+      baseUrl: `http://127.0.0.1:${port}`,
+      publicKey: "pk",
+      secretKey: "sk",
+    });
+    await expect(source.fetch({ since: "24h" })).rejects.toThrow(/status 500/);
   });
 });
 
