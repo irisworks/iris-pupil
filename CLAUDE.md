@@ -208,6 +208,15 @@ failure instead of a silent green. `pupil observe` also warns on stderr when no 
 invariants are configured at all, and rejects a resolved time window where `since` is not
 strictly before `until`.
 
+`v2/observations` is cursor-paginated (`meta.cursor`, max page size 1000), and its results are
+sorted by `startTime` descending across every observation rather than grouped by trace, so a
+trace's observations can straddle a page boundary. `LangfuseTracePopulationSource.fetch` follows
+`meta.cursor` across pages until it is exhausted, the requested `limit` is reached, or a hard
+20-request safety cap trips (a guard against a misunderstood cursor contract, not a documented
+Langfuse limit). Whenever the loop stops for a reason other than a genuinely exhausted cursor,
+the last-fetched trace is dropped rather than kept with a possibly-incomplete tool-call count -
+under-reporting one trace's presence is preferred over silently under-reporting its tool calls.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.
