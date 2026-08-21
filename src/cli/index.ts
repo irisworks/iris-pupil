@@ -16,7 +16,6 @@ import {
   formatRunComparison,
   JsonRunHistoryStore,
   resolveCompareOptions,
-  type RunComparison,
 } from "../history/index.js";
 import { finishRun } from "./finishRun.js";
 import { loadInvariantFile } from "../invariants/index.js";
