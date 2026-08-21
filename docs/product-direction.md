@@ -58,7 +58,7 @@ incl.), 288 tests across 20 files.
 ### Gaps, in order of how much they hurt
 
 1. **~~Tool calls are read but not assertable.~~ RESOLVED (IRIS-161).** `TraceRecord.toolCalls`
-   exists, `src/trace/index.ts` writes `metrics.tool_calls` and `metadata.<source>.toolCalls`
+   exists, `src/trace/index.ts` writes `metrics.tool_calls`, `metrics.tool_invocations`, and `metadata.<source>.toolCalls`
    onto every enriched run, and `MockTraceSource` can emit configurable spans for tests. Five
    assertion types now read that data: `tool_called`, `tool_not_called`, `tool_call_count`,
    `tool_order`, and `tool_args`, scenario-scoped (`src/eval/toolAssertions.ts`), with
@@ -473,7 +473,7 @@ makes observe mode and the continuity claim possible.
    (IRIS-159) is not started, so correlation is still the `sessionId` echo — strategy 2.
 7. **✅ Done (IRIS-161) — Tool assertions** — `tool_called`, `tool_not_called`,
    `tool_call_count`, `tool_order`, `tool_args` over the `toolCalls` the `TraceSource` already
-   returns. The trace-derived metrics themselves (`tool_calls`, `cost_usd`, `input_tokens`,
+   returns. The trace-derived metrics themselves (`tool_calls`, `tool_invocations`, `cost_usd`, `input_tokens`,
    `output_tokens`, `total_tokens`) shipped with IRIS-97/158 and are **not** part of this step.
 8. **⬜ Not started (IRIS-163) — Invariants** — the `invariants:` block, `maxViolationRate`,
    repo-level policy files (section 4.1).
