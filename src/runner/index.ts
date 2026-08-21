@@ -564,7 +564,7 @@ export async function runScenario(
   return result;
 }
 
-function summarize(results: ScenarioResult[]): RunResult["summary"] {
+export function summarizeResults(results: ScenarioResult[]): RunResult["summary"] {
   return {
     total: results.length,
     passed: results.filter((result) => result.verdict === Verdict.Pass).length,
@@ -615,7 +615,7 @@ export async function runScenarios(
     results,
     startedAt,
     completedAt,
-    summary: summarize(results),
+    summary: summarizeResults(results),
     metadata: options.metadata ?? {},
     ...(options.target !== undefined && { target: options.target }),
   };
