@@ -396,6 +396,66 @@ describe("scenario runner", () => {
     );
   });
 
+  it("skips tool_calls threshold without a traceSource", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "tool_calls", max: 3 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores.find((score) => score.name === "threshold:tool_calls")?.verdict).toBe(
+      Verdict.Skip,
+    );
+  });
+
+  it("skips tool_invocations threshold without a traceSource", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "tool_invocations", max: 10 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(
+      result.scores.find((score) => score.name === "threshold:tool_invocations")?.verdict,
+    ).toBe(Verdict.Skip);
+  });
+
+  it("skips total_tokens threshold without a traceSource", async () => {
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [{ metric: "total_tokens", max: 5000 }],
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.scores.find((score) => score.name === "threshold:total_tokens")?.verdict).toBe(
+      Verdict.Skip,
+    );
+  });
+
   it("scores cost thresholds against Langfuse-enriched metrics", async () => {
     const calls: string[] = [];
     const result = await runScenario(

@@ -445,8 +445,20 @@ program
         }
       }
 
-      if (isStrictFailure(result.verdict, options.strict) || comparison?.hasRegressions === true) {
+      if (isStrictFailure(result.verdict, options.strict)) {
         process.exitCode = 1;
+      } else if (comparison !== undefined) {
+        const hasHardTargetMismatch = comparison.targetMismatch.some(
+          (mismatch) => mismatch.severity === "hard",
+        );
+        if (hasHardTargetMismatch) {
+          // A hard mismatch (e.g. stubbed vs. live) means the comparison is not
+          // meaningful. Use exit 2 so CI can distinguish "refused to compare"
+          // from "compared and regressed" — mirrors the `pupil compare` behaviour.
+          process.exitCode = 2;
+        } else if (comparison.hasRegressions) {
+          process.exitCode = 1;
+        }
       }
     },
   );

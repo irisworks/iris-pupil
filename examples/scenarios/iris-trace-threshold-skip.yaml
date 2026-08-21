@@ -1,0 +1,40 @@
+id: iris-trace-threshold-skip
+name: Trace-derived thresholds skip (not fail) when no trace is available
+description: >
+  Exercises the false-red bug from the IRIS-161 review: tool_calls,
+  tool_invocations, and total_tokens thresholds must skip rather than
+  hard-fail when no trace evidence arrives. Run without a Langfuse source
+  (--no-langfuse) to isolate the no-trace path. All three thresholds should
+  emit Verdict.Skip and the scenario should still pass.
+tags:
+  - iris
+  - tools
+  - regression
+  - trace-skip
+
+driver:
+  type: rest
+  preset: iris-http
+
+turns:
+  - user: Hello Iris, say "I am online" and nothing else.
+
+expect:
+  assertions:
+    - type: contains
+      target: response.text
+      value: online
+      caseSensitive: false
+  thresholds:
+    # These three are TRACE_DERIVED_METRICS. Without a traceSource they must
+    # skip (Verdict.Skip), not fail. Any of these failing without a trace is
+    # the false-red the fix targets.
+    - metric: tool_calls
+      max: 10
+    - metric: tool_invocations
+      max: 20
+    - metric: total_tokens
+      max: 5000
+    # latency_ms is runner-computed so it must still evaluate normally.
+    - metric: latency_ms
+      max: 30000
