@@ -21,8 +21,9 @@ import {
   type RunComparison,
 } from "../history/index.js";
 import { loadInvariantFile } from "../invariants/index.js";
-import { LangfuseTraceSource } from "../langfuse/index.js";
+import { LangfuseTraceSource, LangfuseTracePopulationSource } from "../langfuse/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
+import { buildObserveResult, resolvePopulationQuery } from "../observe/index.js";
 import { runScenarios, type RunnerProgressEvent } from "../runner/index.js";
 import {
   buildRunJson,
@@ -461,6 +462,227 @@ program
           // A hard mismatch (e.g. stubbed vs. live) means the comparison is not
           // meaningful. Use exit 2 so CI can distinguish "refused to compare"
           // from "compared and regressed" — mirrors the `pupil compare` behaviour.
+          process.exitCode = 2;
+        } else if (comparison.hasRegressions) {
+          process.exitCode = 1;
+        }
+      }
+    },
+  );
+
+program
+  .command("observe")
+  .description("Evaluate repo-level invariants against a population of production traces.")
+  .argument("<population>", "Named population from config.observe.populations")
+  .option("--config <path>", "Path to a Pupil config file (default: pupil.config.yaml)")
+  .option("--profile <name>", "Environment profile from pupil.config.yaml")
+  .option("--history-dir <dir>", "Directory for JSON run history")
+  .option("--since <since>", "Population time window start (relative, e.g. 24h, or ISO)")
+  .option("--until <until>", "Population time window end (relative or ISO; default now)")
+  .option("--name <name>", "Override the population's Langfuse trace name filter")
+  .option(
+    "--tag <tag>",
+    "Add a tag filter (repeatable)",
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
+  )
+  .option("--user-id <userId>", "Override the population's userId filter")
+  .option("--limit <limit>", "Max observation rows to fetch", (value) =>
+    parsePositiveInteger(value, "limit"),
+  )
+  .option(
+    "--require-trace",
+    "Fail (instead of skip) invariants when no trace evidence is available",
+    false,
+  )
+  .option("--system <name>", "Agent system name (e.g. support-agent)")
+  .option("--environment <env>", "Deployment environment (e.g. staging, pr-123)")
+  .option("--target-version <version>", "Deployed version or commit SHA")
+  .option("--fixture-set <name>", "Active fixture/stub set name")
+  .option(
+    "--baseline",
+    "Auto-compare against the stored baseline run and exit 1 on regression",
+    false,
+  )
+  .option("--strict", "Also fail (exit 1) when the run verdict is needs_review", false)
+  .option("--json", "Print machine-readable JSON output instead of human-readable lines", false)
+  .option("--junit <path>", "Write a JUnit XML report to this path")
+  .option(
+    "--latency-threshold-ms <latencyThresholdMs>",
+    "Allowed latency increase in milliseconds before flagging a regression",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-ms"),
+  )
+  .option(
+    "--latency-threshold-pct <latencyThresholdPct>",
+    "Allowed latency increase as a percent before flagging a regression (default: 20)",
+    (value) => parseNonNegativeNumber(value, "latency-threshold-pct"),
+  )
+  .action(
+    async (
+      population: string,
+      options: {
+        config?: string;
+        profile?: string;
+        historyDir?: string;
+        since?: string;
+        until?: string;
+        name?: string;
+        tag: string[];
+        userId?: string;
+        limit?: number;
+        requireTrace?: boolean;
+        system?: string;
+        environment?: string;
+        targetVersion?: string;
+        fixtureSet?: string;
+        baseline: boolean;
+        strict: boolean;
+        json: boolean;
+        junit?: string;
+        latencyThresholdMs?: number;
+        latencyThresholdPct?: number;
+      },
+    ) => {
+      const config = await loadPupilConfig(configLoadOptions(options));
+      const invariants = config.invariants?.file
+        ? await loadInvariantFile(config.invariants.file)
+        : [];
+
+      const query = resolvePopulationQuery(config.observe?.populations ?? {}, population, {
+        ...(options.since !== undefined && { since: options.since }),
+        ...(options.until !== undefined && { until: options.until }),
+        ...(options.name !== undefined && { name: options.name }),
+        ...(options.tag.length > 0 && { tags: options.tag }),
+        ...(options.userId !== undefined && { userId: options.userId }),
+        ...(options.limit !== undefined && { limit: options.limit }),
+      });
+
+      const populationSource = LangfuseTracePopulationSource.fromSettings(config.langfuse);
+      if (!populationSource) {
+        throw new PupilError(
+          "pupil observe requires Langfuse to be configured (langfuse.host/publicKey/secretKey via pupil.config.yaml or environment)",
+        );
+      }
+      const trajectories = await populationSource.fetch(query);
+
+      const mergedTarget: TargetIdentity = {
+        ...config.target,
+        mode: "observed",
+        ...(options.system ? { system: options.system } : {}),
+        ...(options.environment ? { environment: options.environment } : {}),
+        ...(options.targetVersion ? { version: options.targetVersion } : {}),
+        ...(options.fixtureSet ? { fixtureSet: options.fixtureSet } : {}),
+      };
+
+      const result = buildObserveResult({
+        populationName: population,
+        query,
+        trajectories,
+        invariants,
+        defaultMaxViolationRate: config.invariants?.defaultMaxViolationRate,
+        requireTrace: Boolean(options.requireTrace) || config.requireTrace,
+        target: mergedTarget,
+      });
+
+      const store = new JsonRunHistoryStore({ dir: options.historyDir ?? config.history.dir });
+      let stored;
+      try {
+        stored = await store.writeRun(result);
+      } catch (error) {
+        throw new PupilError(
+          `Failed to save run history: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      let comparison: RunComparison | undefined;
+      if (options.baseline) {
+        const baselineRunId = await store.getBaselineRunId();
+        if (!baselineRunId) {
+          console.error(
+            "WARNING: --baseline was requested but no baseline run is set, so no regression comparison ran. Set one with `pupil baseline <runId>`.",
+          );
+        } else {
+          const baselineRun = await store.readRun(baselineRunId);
+          comparison = compareRuns(
+            baselineRun,
+            result,
+            resolveCompareOptions(config.compare, {
+              latencyThresholdMs: options.latencyThresholdMs,
+              latencyThresholdPct: options.latencyThresholdPct,
+            }),
+          );
+        }
+      }
+
+      if (options.junit) {
+        try {
+          await mkdir(dirname(options.junit), { recursive: true });
+          await writeFile(
+            options.junit,
+            formatJUnitXml(result, { strict: options.strict }),
+            "utf-8",
+          );
+        } catch (error) {
+          throw new PupilError(
+            `Failed to write JUnit report to ${options.junit}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
+      if (stepSummaryPath) {
+        try {
+          await appendFile(
+            stepSummaryPath,
+            buildStepSummaryMarkdown(result, { comparison }),
+            "utf-8",
+          );
+        } catch (error) {
+          console.error(
+            `WARNING: failed to write the GitHub step summary to ${stepSummaryPath}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            buildRunJson(result, {
+              strict: options.strict,
+              historyPath: stored.runPath,
+              comparison,
+              baselineRequested: options.baseline,
+            }),
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.log(`Saved run: ${stored.runPath}`);
+        console.log(`Observed population "${population}": ${result.verdict}`);
+        const toolSkips = countToolEvidenceSkips(result);
+        if (toolSkips > 0) {
+          console.log(
+            `WARNING: ${toolSkips} invariant check${toolSkips === 1 ? "" : "s"} skipped — no trace evidence. ` +
+              "Run with --require-trace to fail instead of skipping.",
+          );
+        }
+        if (comparison) {
+          process.stdout.write(formatRunComparison(comparison));
+        }
+      }
+
+      if (isStrictFailure(result.verdict, options.strict)) {
+        process.exitCode = 1;
+      } else if (comparison !== undefined) {
+        const hasHardTargetMismatch = comparison.targetMismatch.some(
+          (mismatch) => mismatch.severity === "hard",
+        );
+        if (hasHardTargetMismatch) {
           process.exitCode = 2;
         } else if (comparison.hasRegressions) {
           process.exitCode = 1;
