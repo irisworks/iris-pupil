@@ -217,6 +217,14 @@ Langfuse limit). Whenever the loop stops for a reason other than a genuinely exh
 the last-fetched trace is dropped rather than kept with a possibly-incomplete tool-call count -
 under-reporting one trace's presence is preferred over silently under-reporting its tool calls.
 
+One honest limitation that remains only partially closed: `extractToolCalls`'s reliable signal
+for IRIS's OTel-ingested tool observations is `metadata.attributes["langfuse.observation.type"]`,
+and the `fields` request parameter now asks for `metadata` explicitly
+(`core,basic,io,trace_context,metadata`) so that data has somewhere to come from. This is a
+best-effort, low-risk change - additive to a field list that already works - but it has **not**
+been verified against a live Langfuse instance, so it reduces the risk of that metadata being
+silently absent from the response without eliminating it.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.

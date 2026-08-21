@@ -315,6 +315,12 @@ function extractToolCalls(records: JsonRecord[]): ToolCall[] {
     // this is the reliable path for iris-core's OTel-ingested tool observations,
     // which may land as type SPAN in Langfuse's internal model but always carry
     // the original 'tool' value in the raw OTel attribute.
+    // `fields` on the v2/observations request explicitly asks for the
+    // `metadata` field group (see buildV2ObservationsUrl) so this path has
+    // data to read, but that inclusion is NOT verified against a live
+    // Langfuse instance — see buildV2ObservationsUrl's comment for the same
+    // caveat. If `metadata` turns out to live under a different field group
+    // name, this path silently falls back to the `type`-based check above.
     const otelType =
       isRecord(record.metadata) && isRecord(record.metadata["attributes"])
         ? firstString(record.metadata["attributes"]["langfuse.observation.type"])?.toLowerCase()
@@ -773,7 +779,14 @@ export function buildV2ObservationsUrl(
   const url = new URL(`${normalizeBaseUrl(config.baseUrl)}/api/public/v2/observations`);
   url.searchParams.set("fromStartTime", resolveTimeBound(query.since, now));
   url.searchParams.set("toStartTime", resolveTimeBound(query.until ?? "now", now));
-  url.searchParams.set("fields", "core,basic,io,trace_context");
+  // `metadata` is requested explicitly so extractToolCalls's
+  // metadata.attributes["langfuse.observation.type"] path (the reliable
+  // signal for IRIS's OTel-ingested tool observations) has data to read.
+  // This addition is a best-effort, unverified-against-a-live-instance fix:
+  // it is additive to a field list that already works, so it is low-risk,
+  // but it has not been confirmed to be the field group that actually
+  // carries `metadata` in the v2/observations response.
+  url.searchParams.set("fields", "core,basic,io,trace_context,metadata");
   url.searchParams.set("limit", String(page.limit ?? query.limit ?? DEFAULT_POPULATION_LIMIT));
   if (page.cursor !== undefined) url.searchParams.set("cursor", page.cursor);
   if (query.userId !== undefined) url.searchParams.set("userId", query.userId);
