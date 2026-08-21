@@ -198,8 +198,9 @@ mode-specific code path.
 mismatch rule (exit code 2) already guarantees an observed run is never diffed against a
 driven baseline. A config or fetch failure (bad Langfuse credentials, unknown population
 name, network error) fails the command outright with no history write, since there is no
-partial result to fall back to; an empty population still evaluates and skips every check,
-matching `evaluateInvariant`'s existing zero-samples behavior.
+partial result to fall back to; an empty population still evaluates through the existing
+zero-samples branch, which returns `Verdict.Skip` for every check — the same severity as `Pass`,
+so an empty population reports green rather than failing the pipeline.
 
 ## What Pupil Is
 
