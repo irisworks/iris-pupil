@@ -89,7 +89,7 @@ describe("buildObserveResult", () => {
       requireTrace: false,
       target: { mode: "observed" },
     });
-    expect(run.results[0]?.verdict).toBe(Verdict.Skip);
+    expect(run.results[0]?.verdict).toBe(Verdict.Pass);
     expect(run.results[0]?.metadata?.observe).toEqual({
       population: "checkout-prod",
       filters: { since: "24h" },
