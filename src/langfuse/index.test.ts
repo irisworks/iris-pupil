@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildV2ObservationsUrl,
   extractLangfuseEnrichment,
   extractLangfuseEnrichmentsPerTrace,
   langfuseConfigFromEnv,
@@ -861,5 +862,48 @@ describe("extractLangfuseEnrichmentsPerTrace", () => {
 
   it("returns an empty array for a payload with no traces", () => {
     expect(extractLangfuseEnrichmentsPerTrace({ data: [] })).toEqual([]);
+  });
+});
+
+describe("buildV2ObservationsUrl", () => {
+  const config = { baseUrl: "https://cloud.langfuse.com", publicKey: "pk", secretKey: "sk" };
+  const now = new Date("2026-08-21T12:00:00.000Z");
+
+  it("always sets fromStartTime/toStartTime, fields, and limit", () => {
+    const url = buildV2ObservationsUrl(config, { since: "24h" }, now);
+    expect(url.pathname).toBe("/api/public/v2/observations");
+    expect(url.searchParams.get("fromStartTime")).toBe("2026-08-20T12:00:00.000Z");
+    expect(url.searchParams.get("toStartTime")).toBe("2026-08-21T12:00:00.000Z");
+    expect(url.searchParams.get("fields")).toBe("core,basic,io,trace_context");
+    expect(url.searchParams.get("limit")).toBe("100");
+  });
+
+  it("respects an explicit until and limit", () => {
+    const url = buildV2ObservationsUrl(
+      config,
+      { since: "7d", until: "2026-08-21T00:00:00.000Z", limit: 25 },
+      now,
+    );
+    expect(url.searchParams.get("toStartTime")).toBe("2026-08-21T00:00:00.000Z");
+    expect(url.searchParams.get("limit")).toBe("25");
+  });
+
+  it("adds userId directly and name/tags as filter conditions", () => {
+    const url = buildV2ObservationsUrl(
+      config,
+      { since: "24h", name: "checkout-agent", tags: ["prod", "canary"], userId: "user-1" },
+      now,
+    );
+    expect(url.searchParams.get("userId")).toBe("user-1");
+    const filter = JSON.parse(url.searchParams.get("filter")!);
+    expect(filter).toEqual([
+      { type: "string", column: "traceName", operator: "=", value: "checkout-agent" },
+      { type: "arrayOptions", column: "tags", operator: "any of", value: ["prod", "canary"] },
+    ]);
+  });
+
+  it("omits the filter param entirely when neither name nor tags are set", () => {
+    const url = buildV2ObservationsUrl(config, { since: "24h" }, now);
+    expect(url.searchParams.has("filter")).toBe(false);
   });
 });
