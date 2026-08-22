@@ -191,4 +191,82 @@ describe("RestDriver", () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toMatch(/timed out/);
   });
+
+  it("reports seed strategy support based on configured templates", () => {
+    const driver = irisDriver("http://example.invalid");
+    expect(driver.supportsSeedStrategy("replay")).toBe(true);
+    expect(driver.supportsSeedStrategy("fork")).toBe(false);
+    expect(driver.supportsSeedStrategy("inject")).toBe(false);
+
+    const withFork = irisDriver("http://example.invalid", {
+      fork: { method: "POST", path: "/sessions/{{conversationId}}/fork" },
+    });
+    expect(withFork.supportsSeedStrategy("fork")).toBe(true);
+  });
+
+  it("forks a conversation using the configured fork template", async () => {
+    mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const driver = irisDriver(`http://${address.host}:${address.port}`, {
+      fork: {
+        method: "POST",
+        path: "/sessions/{{conversationId}}/fork",
+        extract: { conversationId: "$.sessionId" },
+      },
+    });
+
+    const original = await driver.createConversation({ threadTs: "thread-fork" });
+    await driver.send(original, "warm up");
+    const forked = await driver.fork(original);
+
+    expect(forked.id).not.toBe(original.id);
+    expect(mock.requests.map((request) => request.path)).toContain(
+      `/sessions/${original.id}/fork`,
+    );
+  });
+
+  it("throws immediately when fork is called without a configured template", async () => {
+    const driver = irisDriver("http://example.invalid");
+    const conversation = { id: "s1", raw: {} };
+    await expect(driver.fork(conversation)).rejects.toThrow(/no 'fork' template configured/);
+  });
+
+  it("injects a conversation using the configured inject template", async () => {
+    mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const driver = irisDriver(`http://${address.host}:${address.port}`, {
+      inject: {
+        method: "POST",
+        path: "/sessions",
+        body: {
+          originChannel: "pupil",
+          originThreadTs: "{{threadTs}}",
+          history: "{{history}}",
+        },
+        extract: { conversationId: "$.sessionId" },
+      },
+    });
+
+    const conversation = await driver.inject(
+      [
+        { role: "user", content: "seeded question" },
+        { role: "assistant", content: "seeded answer" },
+      ],
+      { threadTs: "thread-inject" },
+    );
+
+    expect(conversation.id).toMatch(/[0-9a-f-]{36}/);
+    const historyResponse = await fetch(
+      `http://${address.host}:${address.port}/sessions/${conversation.id}/history`,
+    );
+    const { history } = (await historyResponse.json()) as {
+      history: Array<{ role: string; content: string }>;
+    };
+    expect(history.map((entry) => entry.content)).toEqual(["seeded question", "seeded answer"]);
+  });
+
+  it("throws immediately when inject is called without a configured template", async () => {
+    const driver = irisDriver("http://example.invalid");
+    await expect(driver.inject([])).rejects.toThrow(/no 'inject' template configured/);
+  });
 });
