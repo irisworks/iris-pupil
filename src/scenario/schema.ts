@@ -168,6 +168,19 @@ const turnSchema = z
   })
   .strict();
 
+const seedTurnSchema = z
+  .object({
+    user: z.string().min(1, "seed turn requires user"),
+  })
+  .strict();
+
+const seedSchema = z
+  .object({
+    strategy: z.enum(["replay", "fork", "inject"]),
+    turns: z.array(seedTurnSchema).min(1, "seed requires at least one turn"),
+  })
+  .strict();
+
 const thresholdSchema = z
   .object({
     metric: z.string().min(1),
@@ -215,6 +228,7 @@ const rawScenarioSchema = z
     tags: z.array(z.string()).default([]),
     metadata: metadataSchema.optional(),
     driver: driverSchema.optional(),
+    seed: seedSchema.optional(),
     input: z.unknown().optional(),
     turns: z.array(turnSchema).min(1, "scenario requires at least one turn").optional(),
     expect: expectSchema.optional(),
@@ -286,6 +300,7 @@ export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
       ...(scenario.driver?.preset !== undefined && { preset: scenario.driver.preset }),
       config: scenario.driver?.config ?? {},
     },
+    ...(scenario.seed !== undefined && { seed: scenario.seed }),
     turns,
     expect: {
       assertions: [...expectations.assertions, ...(scenario.assertions ?? [])],
