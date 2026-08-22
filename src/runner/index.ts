@@ -33,7 +33,12 @@ import {
 } from "../eval/index.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
 import { applyTraceRequirement } from "../eval/toolAssertions.js";
-import { assertSeedCapability, filterSeedPhaseToolCalls, runSeedPhase } from "./seed.js";
+import {
+  assertSeedCapability,
+  filterSeedPhaseToolCalls,
+  runSeedPhase,
+  SeedPhaseError,
+} from "./seed.js";
 import {
   applyTraceEnrichment,
   NO_CORRELATION_KEY_REASON,
@@ -116,7 +121,7 @@ export interface RunnerDriverContext {
 interface ScenarioAttemptResult {
   turns: TurnRecord[];
   sessionId?: string;
-  seedCompletedAt: string;
+  seedCompletedAt?: string;
 }
 
 class ScenarioAttemptError extends Error {
@@ -369,6 +374,7 @@ async function executeAttempt(
 
   const turns: TurnRecord[] = [];
   let conversation: RestConversation | undefined;
+  let sourceConversation: RestConversation | undefined;
   const timeout = setTimeout(() => driver.dispose?.(), timeoutMs);
 
   try {
@@ -381,8 +387,20 @@ async function executeAttempt(
         `${context.runId}:${scenario.id}`,
     };
 
-    const seedResult = await runSeedPhase(scenario, driver, createContext);
+    let seedResult;
+    try {
+      seedResult = await runSeedPhase(scenario, driver, createContext);
+    } catch (error) {
+      if (error instanceof SeedPhaseError) {
+        conversation = error.conversation;
+        turns.push(...error.turns);
+        throw new ScenarioAttemptError(error.cause, turns, conversation?.id);
+      }
+      throw error;
+    }
+
     conversation = seedResult.conversation;
+    sourceConversation = seedResult.sourceConversation;
     turns.push(...seedResult.turns);
 
     for (const [offset, turn] of scenario.turns.entries()) {
@@ -422,6 +440,13 @@ async function executeAttempt(
     throw new ScenarioAttemptError(error, turns, conversation?.id);
   } finally {
     clearTimeout(timeout);
+    if (sourceConversation && sourceConversation.id !== conversation?.id) {
+      try {
+        await driver.closeConversation(sourceConversation);
+      } catch {
+        // Best-effort cleanup of the pre-fork session; failures here are not the scenario's failure.
+      }
+    }
     if (conversation) {
       try {
         await driver.closeConversation(conversation);

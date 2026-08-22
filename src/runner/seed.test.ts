@@ -148,6 +148,27 @@ describe("runSeedPhase", () => {
     expect(result.turns).toEqual([]);
     expect(result.conversation.id).toBe("inject-1");
   });
+
+  it("attaches the conversation and partial turns to SeedPhaseError when a seed turn fails mid-replay", async () => {
+    class FailingSeedDriver extends FakeSeedDriver {
+      async send(conversation: RestConversation, message: string): Promise<RestDriverResponse> {
+        if (message === "warm up two") throw new Error("mock seed failure");
+        return super.send(conversation, message);
+      }
+    }
+    const driver = new FailingSeedDriver();
+    const scenario = baseScenario({
+      seed: { strategy: "replay", turns: [{ user: "warm up one" }, { user: "warm up two" }] },
+    });
+
+    await expect(runSeedPhase(scenario, driver, {})).rejects.toMatchObject({
+      conversation: { id: "conv-1" },
+      turns: [
+        expect.objectContaining({ user: "warm up one", isSeed: true }),
+        expect.objectContaining({ user: "warm up two", isSeed: true, error: "mock seed failure" }),
+      ],
+    });
+  });
 });
 
 describe("filterSeedPhaseToolCalls", () => {

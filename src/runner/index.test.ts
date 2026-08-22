@@ -1314,4 +1314,43 @@ describe("seeded conversation state", () => {
       ]),
     );
   });
+
+  it("does not filter tool calls at all for a scenario with no seed block", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [{ match: "the real question", reply: "The real answer." }],
+    });
+
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () =>
+        Promise.resolve({
+          traceCount: 1,
+          toolCalls: [{ name: "some-tool", index: 0, startedAt: "2000-01-01T00:00:00.000Z" }],
+        }),
+    };
+
+    const result = await runScenario(
+      scenario({ turns: [{ user: "the real question", expect: [] }] }),
+      { driverConfig: { baseUrl }, traceSource: toolSource },
+    );
+
+    expect(result.metrics.tool_invocations).toBe(1);
+    expect(result.metrics.tool_calls).toBe(1);
+  });
+
+  it("throws immediately, before any HTTP call, when inject is requested without a configured template", async () => {
+    const baseUrl = await mockBaseUrl();
+
+    await expect(
+      runScenario(
+        scenario({
+          seed: { strategy: "inject", turns: [{ user: "seeded question" }] },
+          turns: [{ user: "the real question", expect: [] }],
+        }),
+        { driverConfig: { baseUrl } },
+      ),
+    ).resolves.toMatchObject({ verdict: Verdict.Error });
+
+    expect(mock?.requests).toEqual([]);
+  });
 });

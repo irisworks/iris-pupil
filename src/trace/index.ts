@@ -130,6 +130,10 @@ export function applyTraceEnrichment(
       ...(record.traceCount > 1 && { traceCount: record.traceCount }),
       // Names only: run history is JSON and reviewed in PRs, so it stays compact
       // and diffable. Full ToolCall detail reaches evaluators via the Trajectory.
+      // Raw evidence, deliberately unfiltered: unlike trajectory.toolCalls and the
+      // tool_calls/tool_invocations metrics (which the runner filters by seed-phase
+      // boundary), this metadata field is the full session's tool-call names as
+      // reported, for debugging what actually happened.
       ...(record.toolCalls !== undefined && {
         toolCalls: record.toolCalls.map((call) => call.name),
       }),
