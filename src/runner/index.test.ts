@@ -1150,3 +1150,168 @@ describe("progressEventTypeForVerdict", () => {
     expect(progressEventTypeForVerdict(Verdict.Error)).toBe("scenario:error");
   });
 });
+
+describe("seeded conversation state", () => {
+  it("replays seed turns before the asserted turn, excludes them from metrics.turns, and flags them isSeed", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [
+        { match: "warm up", reply: "Warmed." },
+        { match: "the real question", reply: "The real answer." },
+      ],
+    });
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "replay", turns: [{ user: "warm up" }] },
+        turns: [{ user: "the real question", expect: [] }],
+      }),
+      { driverConfig: { baseUrl } },
+    );
+
+    expect(result.turns).toHaveLength(2);
+    expect(result.turns[0].isSeed).toBe(true);
+    expect(result.turns[0].response?.text).toBe("Warmed.");
+    expect(result.turns[1].isSeed).toBeUndefined();
+    expect(result.turns[1].response?.text).toBe("The real answer.");
+    expect(result.metrics.turns).toBe(1);
+    expect(result.verdict).toBe(Verdict.Pass);
+  });
+
+  it("throws immediately, before any HTTP call, when fork is requested without a configured template", async () => {
+    const baseUrl = await mockBaseUrl();
+
+    await expect(
+      runScenario(
+        scenario({
+          seed: { strategy: "fork", turns: [{ user: "warm up" }] },
+          turns: [{ user: "the real question", expect: [] }],
+        }),
+        { driverConfig: { baseUrl } },
+      ),
+    ).resolves.toMatchObject({ verdict: Verdict.Error });
+
+    expect(mock?.requests).toEqual([]);
+  });
+
+  it("forks the seeded session and runs the asserted turn against the fork", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [
+        { match: "warm up", reply: "Warmed." },
+        { match: "the real question", reply: "The real answer." },
+      ],
+    });
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "fork", turns: [{ user: "warm up" }] },
+        turns: [{ user: "the real question", expect: [] }],
+      }),
+      {
+        driverConfig: {
+          baseUrl,
+          // Nested under `overrides`, not top-level: the default `scenario()` helper
+          // uses the `iris-http` preset, whose driver-construction branch only reads
+          // baseUrl/timeoutMs/retries/headers/retryStatusCodes directly off
+          // driverConfig - everything else (including fork/inject) must go through
+          // `overrides` to reach `createIrisHttpPreset`'s deepMerge.
+          overrides: {
+            fork: {
+              method: "POST",
+              path: "/sessions/{{conversationId}}/fork",
+              extract: { conversationId: "$.sessionId" },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.turns[1].response?.text).toBe("The real answer.");
+    const forkRequestIndex = mock!.requests.findIndex((request) => request.path.endsWith("/fork"));
+    expect(forkRequestIndex).toBeGreaterThan(-1);
+  });
+
+  it("injects seeded history directly, with no seed TurnRecords, then runs the asserted turn", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [{ match: "the real question", reply: "The real answer." }],
+    });
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "inject", turns: [{ user: "seeded question" }] },
+        turns: [{ user: "the real question", expect: [] }],
+      }),
+      {
+        driverConfig: {
+          baseUrl,
+          // Nested under `overrides` for the same reason as the fork test above.
+          overrides: {
+            inject: {
+              method: "POST",
+              path: "/sessions",
+              body: {
+                originChannel: "pupil",
+                originThreadTs: "{{originThreadTs}}",
+                history: "{{history}}",
+              },
+              extract: { conversationId: "$.sessionId" },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.turns).toHaveLength(1);
+    expect(result.turns[0].response?.text).toBe("The real answer.");
+    expect(result.metrics.turns).toBe(1);
+  });
+
+  it("filters seed-phase tool calls out of trajectory.toolCalls and the derived metrics", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [
+        { match: "warm up", reply: "Warmed." },
+        { match: "the real question", reply: "The real answer." },
+      ],
+    });
+
+    let call = 0;
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () => {
+        call += 1;
+        return Promise.resolve({
+          traceCount: 1,
+          toolCalls: [
+            { name: "seed-tool", index: 0, startedAt: "2020-01-01T00:00:00.000Z" },
+            { name: "asserted-tool", index: 1, startedAt: "2099-01-01T00:00:00.000Z" },
+          ],
+        });
+      },
+    };
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "replay", turns: [{ user: "warm up" }] },
+        turns: [{ user: "the real question", expect: [] }],
+        expect: {
+          assertions: [{ type: "tool_not_called", tool: "seed-tool" }],
+          thresholds: [],
+        },
+      }),
+      { driverConfig: { baseUrl }, traceSource: toolSource },
+    );
+
+    expect(call).toBe(1);
+    expect(result.metrics.tool_invocations).toBe(1);
+    expect(result.metrics.tool_calls).toBe(1);
+    expect(result.scores).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "assertion:tool_not_called:seed-tool",
+          verdict: Verdict.Pass,
+        }),
+      ]),
+    );
+  });
+});
