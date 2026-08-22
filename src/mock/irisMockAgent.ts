@@ -94,6 +94,22 @@ function getStringField(body: unknown, field: string): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function extractSeedHistory(
+  body: unknown,
+): Array<{ role: "user" | "assistant"; content: string; at: string }> {
+  if (!body || typeof body !== "object") return [];
+  const history = (body as Record<string, unknown>).history;
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    .map((entry) => ({
+      role: entry.role === "assistant" ? "assistant" : "user",
+      content: typeof entry.content === "string" ? entry.content : "",
+      at: new Date().toISOString(),
+    }));
+}
+
 function getDelayFromText(text: string, fallback: number): number {
   const match = /__delay:(\d+)__/i.exec(text);
   return match ? Number(match[1]) : fallback;
@@ -201,16 +217,39 @@ export function createIrisMockAgent(
         }
 
         const sessionId = randomUUID();
+        const seededHistory = extractSeedHistory(body);
         const session = {
           sessionId,
           originChannel,
           originThreadTs,
           createdAt: new Date().toISOString(),
-          history: [],
+          history: seededHistory,
         };
         sessions.set(sessionId, session);
         spanStore.set(sessionId, []);
         json(res, 201, session);
+        return;
+      }
+
+      const forkMatch = /^\/sessions\/([^/]+)\/fork$/.exec(path);
+      if (method === "POST" && forkMatch) {
+        const source = sessions.get(decodeURIComponent(forkMatch[1]));
+        if (!source) {
+          json(res, 404, { error: "session not found" });
+          return;
+        }
+
+        const sessionId = randomUUID();
+        const forked = {
+          sessionId,
+          originChannel: source.originChannel,
+          originThreadTs: source.originThreadTs,
+          createdAt: new Date().toISOString(),
+          history: [...source.history],
+        };
+        sessions.set(sessionId, forked);
+        spanStore.set(sessionId, []);
+        json(res, 201, forked);
         return;
       }
 
