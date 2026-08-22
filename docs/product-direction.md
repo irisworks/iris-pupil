@@ -480,8 +480,8 @@ makes observe mode and the continuity claim possible.
 9. **⬜ Not started (IRIS-164) — `pupil observe`** — the second `Trajectory` producer. Trace
    source + filter + window, invariant rates, same `RunResult` into the same store so `compare`
    works unchanged.
-10. **⬜ Not started (IRIS-165) — Seeding** (section 5.2) — `seed:` block, `replay` first since
-    it always works, then `fork` and `inject` as agent support allows.
+10. **✅ Done (IRIS-165) — Seeding** (section 5.2) — `seed:` block, `replay`, `fork` (driver
+    declares support via a `fork` request template), `inject` (same, via an `inject` template).
 11. **🔵 In review (IRIS-166, PR #57) — Fixture conventions** (section 5.3) — documented stub
     patterns and compose fragments, not a proxy implementation.
 12. **⬜ Not started — Second `TraceSource`** — OTLP or Phoenix, proving the interface is real.
@@ -499,7 +499,7 @@ individual issues until M9 closes.
 | **v0.2 — CI-gateable**          | 1–5   | 5/5 done                               | Runs in `iris-core` CI **advisory / non-blocking**. Correct plumbing, weak assertions. |
 | **v0.3 — Agent-aware**          | 6–7   | step 6 partial, step 7 todo            | **Internal adoption point.** Blocking gate on trajectory regressions.                  |
 | **v0.4 — Continuous**           | 8–9   | not started                            | Invariants shared across stages; production drift watch. The claim becomes true.       |
-| **v0.5 — Cheap and repeatable** | 10–11 | step 11 in review, step 10 not started | Seeded state and stubbed tools make the PR tier fast and free.                         |
+| **v0.5 — Cheap and repeatable** | 10–11 | step 10 done, step 11 in review          | Seeded state and stubbed tools make the PR tier fast and free.                         |
 | **v0.6 — Broad**                | 12–14 | not started (one Linear placeholder)   | Second trace source, judge, second driver. Open-source launch case.                    |
 
 **Start using it at v0.2, trust it at v0.3.**

@@ -131,6 +131,48 @@ earlier draft of this feature considered changing it to total invocations;
 no existing `tool_calls` threshold or baseline can silently start scoring
 something different.
 
+## Seeded Conversation State
+
+Scenarios can start mid-conversation without paying for every turn that got them there. An
+optional `seed:` block runs before the scenario's own asserted `turns:`:
+
+```yaml
+seed:
+  strategy: replay # replay | fork | inject
+  turns:
+    - user: "..." # scaffolding - never asserted, optimized aggressively
+turns:
+  - user: "..." # the asserted turns
+```
+
+`seed.turns` entries have no `expect` field - the schema itself makes "seed turns are never
+asserted against" true, not just documented. Three strategies, in the order they were built:
+
+- `replay` - actually sends each seed turn through the driver first. Costs real requests, but
+  works against any agent; no capability check.
+- `fork` - replays the seed turns to build real state, then asks the driver to fork that session
+  via a `fork` request template on `RestDriverConfig`, and runs the asserted turns against the
+  fork.
+- `inject` - skips replay entirely and asks the driver to create a session directly from a
+  history payload, via an `inject` request template.
+
+`fork` and `inject` mirror the existing optional `close` request template: a scenario requesting
+one of them is checked against the driver's configured templates before any request is made, and
+an unsupported combination fails immediately with a clear error - never an ambiguous timeout or a
+guessed endpoint.
+
+`ScenarioResult.turns` and `Trajectory.steps` include the seed turns (flagged `isSeed: true`), so
+a broken seed turn is debuggable rather than invisible - but `ScenarioResult.metrics.turns` counts
+only the asserted turns, and seed turns are never passed to assertion evaluation.
+
+One honest limit: `replay` and `fork` make real driver calls during the seed phase, so a tool
+triggered while seeding is indistinguishable - in Langfuse's session-level trace - from one
+triggered during the asserted turns. Pupil filters `trajectory.toolCalls` (and the derived
+`tool_calls`/`tool_invocations` metrics) to drop anything timestamped before the seed phase
+finished, but a tool call with no timestamp is kept rather than guessed away - so a backend that
+doesn't report `startedAt` can still leak seed-phase tool activity into tool assertions. `inject`
+has no seed-phase traffic, so this limitation does not apply to it.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.
