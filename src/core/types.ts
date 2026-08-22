@@ -93,6 +93,17 @@ export interface JsonPathAssertionCheck {
 /** How a tool name in an assertion is compared against an observed call. */
 export type ToolNameMatch = "exact" | "glob";
 
+export type SeedStrategy = "replay" | "fork" | "inject";
+
+export interface SeedTurn {
+  user: string;
+}
+
+export interface ScenarioSeed {
+  strategy: SeedStrategy;
+  turns: SeedTurn[];
+}
+
 export interface ToolCalledAssertionCheck {
   type: "tool_called";
   tool: string;
@@ -180,6 +191,7 @@ export interface Scenario {
   tags: string[];
   metadata: Record<string, unknown>;
   driver: ScenarioDriverRef;
+  seed?: ScenarioSeed;
   turns: ScenarioTurn[];
   expect: ScenarioExpectations;
   sourceFile?: string;
@@ -197,6 +209,7 @@ export interface TurnRecord {
   latencyMs?: number;
   assertions: Score[];
   error?: string;
+  isSeed?: boolean;
 }
 
 /**
