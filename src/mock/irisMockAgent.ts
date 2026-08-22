@@ -102,7 +102,9 @@ function extractSeedHistory(
   if (!Array.isArray(history)) return [];
 
   return history
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    .filter(
+      (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object",
+    )
     .map((entry) => ({
       role: entry.role === "assistant" ? "assistant" : "user",
       content: typeof entry.content === "string" ? entry.content : "",

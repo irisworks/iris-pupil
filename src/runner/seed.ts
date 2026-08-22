@@ -1,4 +1,11 @@
-import { PupilError, type Scenario, type SeedStrategy, type SeedTurn, type ToolCall, type TurnRecord } from "../core/types.js";
+import {
+  PupilError,
+  type Scenario,
+  type SeedStrategy,
+  type SeedTurn,
+  type ToolCall,
+  type TurnRecord,
+} from "../core/types.js";
 import type { RestConversation, RestDriverResponse, SeedHistoryEntry } from "../driver/index.js";
 
 /**

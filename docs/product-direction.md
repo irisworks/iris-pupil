@@ -494,13 +494,13 @@ individual issues until M9 closes.
 
 ## 7. Release ladder and internal adoption
 
-| Release                         | Steps | Status                                 | What it unlocks                                                                        |
-| ------------------------------- | ----- | -------------------------------------- | -------------------------------------------------------------------------------------- |
-| **v0.2 — CI-gateable**          | 1–5   | 5/5 done                               | Runs in `iris-core` CI **advisory / non-blocking**. Correct plumbing, weak assertions. |
-| **v0.3 — Agent-aware**          | 6–7   | step 6 partial, step 7 todo            | **Internal adoption point.** Blocking gate on trajectory regressions.                  |
-| **v0.4 — Continuous**           | 8–9   | not started                            | Invariants shared across stages; production drift watch. The claim becomes true.       |
-| **v0.5 — Cheap and repeatable** | 10–11 | step 10 done, step 11 in review          | Seeded state and stubbed tools make the PR tier fast and free.                         |
-| **v0.6 — Broad**                | 12–14 | not started (one Linear placeholder)   | Second trace source, judge, second driver. Open-source launch case.                    |
+| Release                         | Steps | Status                               | What it unlocks                                                                        |
+| ------------------------------- | ----- | ------------------------------------ | -------------------------------------------------------------------------------------- |
+| **v0.2 — CI-gateable**          | 1–5   | 5/5 done                             | Runs in `iris-core` CI **advisory / non-blocking**. Correct plumbing, weak assertions. |
+| **v0.3 — Agent-aware**          | 6–7   | step 6 partial, step 7 todo          | **Internal adoption point.** Blocking gate on trajectory regressions.                  |
+| **v0.4 — Continuous**           | 8–9   | not started                          | Invariants shared across stages; production drift watch. The claim becomes true.       |
+| **v0.5 — Cheap and repeatable** | 10–11 | step 10 done, step 11 in review      | Seeded state and stubbed tools make the PR tier fast and free.                         |
+| **v0.6 — Broad**                | 12–14 | not started (one Linear placeholder) | Second trace source, judge, second driver. Open-source launch case.                    |
 
 **Start using it at v0.2, trust it at v0.3.**
 

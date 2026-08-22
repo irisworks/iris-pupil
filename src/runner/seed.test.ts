@@ -28,9 +28,7 @@ class FakeSeedDriver implements SeedCapableDriver {
   readonly injectedHistories: readonly SeedHistoryEntry[][] = [];
   private nextId = 0;
 
-  constructor(
-    private readonly capabilities: { fork?: boolean; inject?: boolean } = {},
-  ) {
+  constructor(private readonly capabilities: { fork?: boolean; inject?: boolean } = {}) {
     if (capabilities.fork) this.fork = this.forkImpl.bind(this);
     if (capabilities.inject) this.inject = this.injectImpl.bind(this);
   }
@@ -83,9 +81,7 @@ describe("assertSeedCapability", () => {
 
   it("passes when fork is requested and supported", () => {
     const scenario = baseScenario({ seed: { strategy: "fork", turns: [{ user: "warm up" }] } });
-    expect(() =>
-      assertSeedCapability(scenario, new FakeSeedDriver({ fork: true })),
-    ).not.toThrow();
+    expect(() => assertSeedCapability(scenario, new FakeSeedDriver({ fork: true }))).not.toThrow();
   });
 
   it("does nothing when the scenario has no seed block", () => {

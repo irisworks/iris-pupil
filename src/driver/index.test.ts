@@ -220,9 +220,7 @@ describe("RestDriver", () => {
     const forked = await driver.fork(original);
 
     expect(forked.id).not.toBe(original.id);
-    expect(mock.requests.map((request) => request.path)).toContain(
-      `/sessions/${original.id}/fork`,
-    );
+    expect(mock.requests.map((request) => request.path)).toContain(`/sessions/${original.id}/fork`);
   });
 
   it("throws immediately when fork is called without a configured template", async () => {
