@@ -290,4 +290,59 @@ describe("normalizeScenario", () => {
       { type: "tool_called", tool: "calendar.create", match: "exact" },
     ]);
   });
+
+  it("normalizes a seed block with replay strategy", () => {
+    const scenario = normalizeScenario({
+      id: "seeded",
+      seed: {
+        strategy: "replay",
+        turns: [{ user: "warm up turn one" }, { user: "warm up turn two" }],
+      },
+      input: "the real question",
+    });
+
+    expect(scenario.seed).toEqual({
+      strategy: "replay",
+      turns: [{ user: "warm up turn one" }, { user: "warm up turn two" }],
+    });
+  });
+
+  it("omits seed entirely when the scenario declares none", () => {
+    const scenario = normalizeScenario({ id: "unseeded", input: "hello" });
+    expect(scenario.seed).toBeUndefined();
+  });
+
+  it("rejects a seed turn that declares expect", () => {
+    expect(() =>
+      normalizeScenario(
+        {
+          id: "bad-seed",
+          seed: {
+            strategy: "replay",
+            turns: [{ user: "warm up", expect: [{ type: "contains", value: "x" }] }],
+          },
+          input: "hello",
+        },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:seed\.turns\.0/);
+  });
+
+  it("rejects an empty seed.turns array", () => {
+    expect(() =>
+      normalizeScenario(
+        { id: "empty-seed", seed: { strategy: "fork", turns: [] }, input: "hello" },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:seed\.turns:/);
+  });
+
+  it("rejects an unknown seed strategy", () => {
+    expect(() =>
+      normalizeScenario(
+        { id: "bad-strategy", seed: { strategy: "clone", turns: [{ user: "x" }] }, input: "hello" },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:seed\.strategy:/);
+  });
 });
