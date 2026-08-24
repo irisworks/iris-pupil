@@ -565,7 +565,12 @@ export class LangfuseTraceSource implements TraceSource {
 
     if (context?.traceId) {
       try {
-        const direct = await fetchTraceById(this.config, context.traceId, this.fetchImpl, timeoutMs);
+        const direct = await fetchTraceById(
+          this.config,
+          context.traceId,
+          this.fetchImpl,
+          timeoutMs,
+        );
         if (direct) {
           return {
             traceId: direct.traceId,
