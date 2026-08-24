@@ -29,6 +29,45 @@ describe("loadPupilConfig", () => {
     });
   });
 
+  it("keeps invariants optional when no config policy is set", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.invariants).toBeUndefined();
+  });
+
+  it("deep-merges an invariant policy profile and validates its rate", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "invariants:",
+        "  file: policies/invariants.yaml",
+        "  defaultMaxViolationRate: 0",
+        "profiles:",
+        "  observed:",
+        "    invariants:",
+        "      defaultMaxViolationRate: 0.02",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot, profile: "observed" })).resolves.toMatchObject({
+      invariants: {
+        file: join(tmpRoot, "policies/invariants.yaml"),
+        defaultMaxViolationRate: 0.02,
+      },
+    });
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "invariants:\n  defaultMaxViolationRate: 1.01\n",
+      "utf8",
+    );
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/defaultMaxViolationRate/);
+  });
+
   it("reads requireTrace from the config file", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(

@@ -1,0 +1,82 @@
+id: iris-invariants
+name: Booking flow holds its input-free invariants
+description: >
+  Showcases the `invariants:` block from IRIS-163: checks that hold for *any*
+  conversation, not just this scripted input, and so are the shared currency
+  between PR-time driven runs and (once IRIS-164 lands) overnight population
+  evaluation of production traces.
+
+  Covers every case worth calling out:
+    - a tool-scope assertion invariant (never reach for a retired tool)
+    - a tool-presence assertion invariant (the booking must actually happen)
+    - runner-computed threshold invariants (turns, latency_ms) that hold with
+      or without a trace source
+    - a trace-derived threshold invariant with an explicit `maxViolationRate`,
+      to show that a driven run (n=1) stays strict despite a lenient rate --
+      a single violated sample has violationRate 1, which exceeds any
+      allowance below 1
+    - the `maxViolationRate: 1` edge case: a deliberate opt-out that declares
+      a check for future population evaluation without enforcing it against
+      today's single driven run
+
+  Run against a live IRIS agent on the default port:
+    pupil run examples/scenarios/iris-invariants.yaml
+  Run with the companion repo-level policy composed in:
+    pupil run --config examples/invariants/pupil.config.yaml
+  Run with unverifiable invariants escalated to failures instead of skipping:
+    pupil run examples/scenarios/iris-invariants.yaml --require-trace
+tags:
+  - iris
+  - invariants
+
+driver:
+  type: rest
+  preset: iris-http
+
+turns:
+  - user: Book a standup for tomorrow at 9am
+
+invariants:
+  # Tool-scope invariant: this flow must never fall back to a retired search
+  # tool. Assertion-based, so it needs no scripted output to check against.
+  - assertion:
+      type: tool_not_called
+      tool: search.deprecated_v1
+
+  # Tool-presence invariant: booking must actually create a calendar event.
+  - assertion:
+      type: tool_called
+      tool: calendar.create
+
+  # Runner-computed threshold: always available, trace source or not. A
+  # booking should never sprawl across many turns.
+  - threshold:
+      metric: turns
+      max: 3
+
+  # Runner-computed threshold: latency ceiling holds for every run.
+  - threshold:
+      metric: latency_ms
+      max: 30000
+
+  # Trace-derived threshold with an explicit maxViolationRate. Skips (not
+  # fails) without a trace source. With one sample, strictness comes from the
+  # arithmetic, not this rate: a violation has rate 1, which is still greater
+  # than 0.1.
+  - threshold:
+      metric: tool_invocations
+      max: 6
+    maxViolationRate: 0.1
+
+  # Edge case: maxViolationRate: 1 tolerates a 100% violation rate, so this
+  # check can never fail a driven run -- it is declared here purely to be
+  # picked up once population evaluation (IRIS-164) exists.
+  - threshold:
+      metric: tool_calls
+      max: 1
+    maxViolationRate: 1
+
+expect:
+  assertions:
+    - type: tool_called
+      tool: calendar.create

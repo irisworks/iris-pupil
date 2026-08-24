@@ -475,7 +475,7 @@ makes observe mode and the continuity claim possible.
    `tool_call_count`, `tool_order`, `tool_args` over the `toolCalls` the `TraceSource` already
    returns. The trace-derived metrics themselves (`tool_calls`, `tool_invocations`, `cost_usd`, `input_tokens`,
    `output_tokens`, `total_tokens`) shipped with IRIS-97/158 and are **not** part of this step.
-8. **⬜ Not started (IRIS-163) — Invariants** — the `invariants:` block, `maxViolationRate`,
+8. **✅ Done (IRIS-163) — Invariants** — the `invariants:` block, `maxViolationRate`,
    repo-level policy files (section 4.1).
 9. **⬜ Not started (IRIS-164) — `pupil observe`** — the second `Trajectory` producer. Trace
    source + filter + window, invariant rates, same `RunResult` into the same store so `compare`

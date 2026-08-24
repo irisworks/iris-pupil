@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { z, type ZodError } from "zod";
 import { deepMerge, isRecord } from "./json.js";
@@ -84,6 +84,13 @@ const compareConfigSchema = z
   .strict()
   .default({});
 
+const invariantConfigSchema = z
+  .object({
+    file: z.string().min(1).optional(),
+    defaultMaxViolationRate: z.coerce.number().min(0).max(1).optional(),
+  })
+  .strict();
+
 // Profiles are validated *before* `${VAR}` references are resolved (see
 // loadPupilConfig), so a numeric field may still hold a template string here.
 // The real numeric validation happens in the top-level schema, after the
@@ -134,6 +141,13 @@ const profileCompareConfigSchema = z
   })
   .strict();
 
+const profileInvariantConfigSchema = z
+  .object({
+    file: z.string().min(1).optional(),
+    defaultMaxViolationRate: templatableNumber.optional(),
+  })
+  .strict();
+
 const profileConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).optional(),
@@ -150,6 +164,7 @@ const profileConfigSchema = z
     langfuse: profileLangfuseConfigSchema.optional(),
     target: profileTargetConfigSchema.optional(),
     compare: profileCompareConfigSchema.optional(),
+    invariants: profileInvariantConfigSchema.optional(),
   })
   .strict();
 
@@ -163,10 +178,12 @@ const pupilConfigSchema = z
     langfuse: langfuseConfigSchema,
     target: targetConfigSchema,
     compare: compareConfigSchema,
+    invariants: invariantConfigSchema.optional(),
     profiles: z.record(profileConfigSchema).default({}),
   })
   .strict();
 
+export type InvariantConfig = z.infer<typeof invariantConfigSchema>;
 export type PupilConfig = z.infer<typeof pupilConfigSchema>;
 
 function applyProfile(
@@ -294,5 +311,15 @@ export async function loadPupilConfig(options: LoadConfigOptions = {}): Promise<
     throw formatConfigValidationError(parsed.error, configPath);
   }
 
-  return parsed.data;
+  if (!parsed.data.invariants?.file) {
+    return parsed.data;
+  }
+
+  return {
+    ...parsed.data,
+    invariants: {
+      ...parsed.data.invariants,
+      file: resolve(dirname(configPath), parsed.data.invariants.file),
+    },
+  };
 }

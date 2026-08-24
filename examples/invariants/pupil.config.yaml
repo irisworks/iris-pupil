@@ -1,0 +1,19 @@
+# Standalone demo config for the invariants feature (IRIS-163). Run with:
+#   pupil run --config examples/invariants/pupil.config.yaml
+# This never touches the project's main pupil.config.yaml, so it has no
+# effect on regular CI runs -- it exists purely as a runnable example that
+# composes a repo-level policy file with a scenario's own invariants: block.
+scenarios: examples/scenarios/iris-invariants.yaml
+
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    baseUrl: ${IRIS_BASE_URL:-http://127.0.0.1:3000}
+
+invariants:
+  file: repo-policy.yaml
+  defaultMaxViolationRate: 0
+
+history:
+  dir: .pupil-invariants-demo
