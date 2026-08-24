@@ -3,6 +3,9 @@ import type { JudgeProvider, JudgeRequest, JudgeResult } from "./types.js";
 
 const TOOL_NAME = "select_choice";
 
+/** Applied whenever `config.timeoutMs` is unset, matching LangfuseTraceSource's default. */
+const DEFAULT_JUDGE_TIMEOUT_MS = 3000;
+
 export class JudgeInvocationError extends Error {
   constructor(message: string) {
     super(message);
@@ -67,11 +70,12 @@ export class LlmJudge implements JudgeProvider {
     };
 
     const controller = new AbortController();
-    const timer =
-      this.config.timeoutMs !== undefined
-        ? setTimeout(() => controller.abort(), this.config.timeoutMs)
-        : undefined;
+    const timeoutMs = this.config.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+    // `fetchImpl` is contractually expected to resolve a real `Response` (or reject); a
+    // misbehaving injected implementation that resolves something else is a caller bug,
+    // not something this method guards against.
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.config.baseUrl}/chat/completions`, {
@@ -90,7 +94,7 @@ export class LlmJudge implements JudgeProvider {
         `Judge endpoint request failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimeout(timer);
     }
 
     if (!response.ok) {
@@ -116,12 +120,17 @@ export class LlmJudge implements JudgeProvider {
       throw new JudgeInvocationError("Judge tool call arguments were not a string");
     }
 
-    let args: { reasoning?: string; choice?: unknown };
+    let parsed: unknown;
     try {
-      args = JSON.parse(rawArgs) as { reasoning?: string; choice?: unknown };
+      parsed = JSON.parse(rawArgs) as unknown;
     } catch {
       throw new JudgeInvocationError("Judge tool call arguments were not valid JSON");
     }
+
+    if (!parsed || typeof parsed !== "object") {
+      throw new JudgeInvocationError("Judge tool call arguments were not an object");
+    }
+    const args = parsed as { reasoning?: unknown; choice?: unknown };
 
     if (typeof args.choice !== "string") {
       throw new JudgeInvocationError("Judge selected a non-string choice");
@@ -135,7 +144,7 @@ export class LlmJudge implements JudgeProvider {
 
     return {
       verdict,
-      reason: args.reasoning ?? choice,
+      reason: typeof args.reasoning === "string" ? args.reasoning : choice,
       raw: payload,
     };
   }
@@ -153,7 +162,9 @@ function extractToolCall(payload: unknown): RawToolCall | undefined {
   if (!message || typeof message !== "object") return undefined;
   const toolCalls = (message as { tool_calls?: unknown }).tool_calls;
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return undefined;
-  const toolCall = toolCalls[0] as RawToolCall;
+  const rawToolCall = toolCalls[0];
+  if (!rawToolCall || typeof rawToolCall !== "object") return undefined;
+  const toolCall = rawToolCall as RawToolCall;
   if (toolCall.function?.name !== TOOL_NAME) return undefined;
   return toolCall;
 }

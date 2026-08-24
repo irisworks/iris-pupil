@@ -98,6 +98,17 @@ describe("LlmJudge", () => {
     ).rejects.toThrow(JudgeInvocationError);
   });
 
+  it("throws JudgeInvocationError when a tool_calls array element is null", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ choices: [{ message: { tool_calls: [null] } }] }));
+    const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+
+    await expect(
+      judge.judge({ prompt: "Grade this.", rubric: RUBRIC, output: "code", model: "gpt-4o-mini" }),
+    ).rejects.toThrow(JudgeInvocationError);
+  });
+
   it("throws JudgeInvocationError when the model selects a choice absent from choiceScores", async () => {
     const fetchImpl = vi
       .fn()
@@ -141,6 +152,25 @@ describe("LlmJudge", () => {
     ).rejects.toThrow(JudgeInvocationError);
   });
 
+  it("throws JudgeInvocationError when the tool call's arguments parse to null", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [
+          {
+            message: {
+              tool_calls: [{ function: { name: "select_choice", arguments: "null" } }],
+            },
+          },
+        ],
+      }),
+    );
+    const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+
+    await expect(
+      judge.judge({ prompt: "Grade this.", rubric: RUBRIC, output: "code", model: "gpt-4o-mini" }),
+    ).rejects.toThrow(JudgeInvocationError);
+  });
+
   it("throws JudgeInvocationError when the tool call's choice is not a string", async () => {
     const fetchImpl = vi
       .fn()
@@ -162,6 +192,22 @@ describe("LlmJudge", () => {
     await expect(
       judge.judge({ prompt: "Grade this.", rubric, output: "code", model: "gpt-4o-mini" }),
     ).rejects.toThrow(JudgeInvocationError);
+  });
+
+  it("falls back to the choice string when reasoning is not a string", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(toolCallResponse({ reasoning: 123, choice: "PASS" }));
+    const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+
+    const result = await judge.judge({
+      prompt: "Grade this.",
+      rubric: RUBRIC,
+      output: "code",
+      model: "gpt-4o-mini",
+    });
+
+    expect(result.reason).toBe("PASS");
   });
 
   it("prefers the request's model over the configured default", async () => {
@@ -251,6 +297,37 @@ describe("LlmJudge", () => {
 
       const init = fetchImpl.mock.calls[0][1];
       expect(init.signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies a default timeout when timeoutMs is not configured", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn((_url: string, init: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      });
+      const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+
+      const pending = judge.judge({
+        prompt: "Grade this.",
+        rubric: RUBRIC,
+        output: "code",
+        model: "m",
+      });
+      const assertion = expect(pending).rejects.toThrow(JudgeInvocationError);
+
+      const initBeforeAbort = fetchImpl.mock.calls[0][1];
+      expect(initBeforeAbort.signal).toBeDefined();
+      expect(initBeforeAbort.signal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(3000);
+      await assertion;
+
+      expect(initBeforeAbort.signal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }
