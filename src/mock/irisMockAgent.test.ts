@@ -501,4 +501,45 @@ describe("span store — trace pass on message", () => {
       { name: "email.send", index: 2, error: "smtp down" },
     ]);
   });
+
+  it("aliases recorded tool-call spans under the traceparent trace id by default", async () => {
+    const spanStore = new Map<string, ToolCall[]>();
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["calendar.create"] }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      body: JSON.stringify({ text: "hello" }),
+    });
+
+    expect(spanStore.get("4bf92f3577b34da6a3ce929d0e0e4736")).toEqual(
+      spanStore.get(session.sessionId),
+    );
+  });
+
+  it("does not alias spans under the trace id when the message opts out with __ignore-traceparent__", async () => {
+    const spanStore = new Map<string, ToolCall[]>();
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["calendar.create"] }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      body: JSON.stringify({ text: "hello __ignore-traceparent__" }),
+    });
+
+    expect(spanStore.get("4bf92f3577b34da6a3ce929d0e0e4736")).toBeUndefined();
+    expect(spanStore.get(session.sessionId)).toHaveLength(1);
+  });
 });

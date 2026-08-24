@@ -113,6 +113,13 @@ function findTraceRule(text: string, rules: MockTraceRule[]): MockTraceRule | un
   });
 }
 
+function extractTraceId(header: string | string[] | undefined): string | undefined {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (!value) return undefined;
+  const parts = value.split("-");
+  return parts.length === 4 ? parts[1] : undefined;
+}
+
 function toToolCall(fixture: string | ToolCallFixture, index: number): ToolCall {
   if (typeof fixture === "string") return { name: fixture, index };
   return {
@@ -240,12 +247,21 @@ export function createIrisMockAgent(
         if (spansToAppend !== null) {
           const sessionIdDecoded = decodeURIComponent(messageMatch[1]);
           const existing = spanStore.get(sessionIdDecoded) ?? [];
-          spanStore.set(sessionIdDecoded, [
+          const updated = [
             ...existing,
             ...spansToAppend.map((fixture, offset) =>
               toToolCall(fixture, existing.length + offset),
             ),
-          ]);
+          ];
+          spanStore.set(sessionIdDecoded, updated);
+
+          // Simulates OTel auto-instrumentation adopting the inbound traceparent: a
+          // compliant agent's spans land under the trace id, not just the session id.
+          // __ignore-traceparent__ simulates an agent with no OTel instrumentation.
+          const traceId = extractTraceId(req.headers.traceparent as string | undefined);
+          if (traceId && !text.includes("__ignore-traceparent__")) {
+            spanStore.set(traceId, updated);
+          }
         }
 
         const delayMs = getDelayFromText(text, defaultDelayMs);

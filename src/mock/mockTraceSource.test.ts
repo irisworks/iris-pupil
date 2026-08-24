@@ -19,6 +19,7 @@ describe("MockTraceSource", () => {
     await expect(source.resolve("session-1")).resolves.toEqual({
       traceCount: 1,
       toolCalls: [],
+      resolvedVia: "session",
     });
   });
 
@@ -29,6 +30,7 @@ describe("MockTraceSource", () => {
     await expect(source.resolve("session-1")).resolves.toEqual({
       traceCount: 1,
       toolCalls: [{ name: "web_search", index: 0 }],
+      resolvedVia: "session",
     });
   });
 
@@ -52,6 +54,7 @@ describe("MockTraceSource", () => {
         { name: "calendar_create", index: 1 },
         { name: "email_send", index: 2 },
       ],
+      resolvedVia: "session",
     });
   });
 
@@ -70,6 +73,42 @@ describe("MockTraceSource", () => {
   it("metadataKey is 'mock'", () => {
     const source = new MockTraceSource(new Map());
     expect(source.metadataKey).toBe("mock");
+  });
+
+  it("resolves via traceId first when present in the store", async () => {
+    const spans: ToolCall[] = [{ name: "search", index: 0 }];
+    const store = new Map<string, readonly ToolCall[]>([["trace-1", spans]]);
+    const source = new MockTraceSource(store);
+
+    const record = await source.resolve("session-1", { traceId: "trace-1" });
+
+    expect(record).toMatchObject({ resolvedVia: "traceparent", toolCalls: spans });
+  });
+
+  it("falls back to the session key when traceId is absent from the store", async () => {
+    const spans: ToolCall[] = [{ name: "search", index: 0 }];
+    const store = new Map<string, readonly ToolCall[]>([["session-1", spans]]);
+    const source = new MockTraceSource(store);
+
+    const record = await source.resolve("session-1", { traceId: "trace-missing" });
+
+    expect(record).toMatchObject({ resolvedVia: "session", toolCalls: spans });
+  });
+
+  it("resolves via session when no traceId is given at all", async () => {
+    const spans: ToolCall[] = [{ name: "search", index: 0 }];
+    const store = new Map<string, readonly ToolCall[]>([["session-1", spans]]);
+    const source = new MockTraceSource(store);
+
+    const record = await source.resolve("session-1");
+
+    expect(record).toMatchObject({ resolvedVia: "session", toolCalls: spans });
+  });
+
+  it("returns undefined when neither key is in the store", async () => {
+    const source = new MockTraceSource(new Map());
+
+    await expect(source.resolve("session-1", { traceId: "trace-1" })).resolves.toBeUndefined();
   });
 });
 
