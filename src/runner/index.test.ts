@@ -201,6 +201,84 @@ describe("scenario runner", () => {
     expect(seenConfigs[0]).toMatchObject({ timeoutMs: 7 });
   });
 
+  it("attaches a distinct traceparent per retry attempt", async () => {
+    const traceparents: (string | undefined)[] = [];
+    let attempt = 0;
+
+    const result = await runScenario(scenario(), {
+      retries: 1,
+      driverFactory: () => ({
+        async createConversation(): Promise<RestConversation> {
+          return { id: crypto.randomUUID(), raw: {} };
+        },
+        async send(
+          _conversation: RestConversation,
+          _message: string,
+          requestContext?: { traceparent?: string },
+        ): Promise<RestDriverResponse> {
+          attempt += 1;
+          traceparents.push(requestContext?.traceparent);
+          if (attempt === 1) throw new TypeError("network blip");
+          return { text: "Scheduled.", raw: {} };
+        },
+        async closeConversation(): Promise<void> {},
+      }),
+      traceSource: false,
+    });
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(traceparents).toHaveLength(2);
+    for (const value of traceparents) {
+      expect(value).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    }
+    const traceIdOf = (value: string | undefined) => value?.split("-")[1];
+    expect(traceIdOf(traceparents[0])).not.toBe(traceIdOf(traceparents[1]));
+  });
+
+  it("resolves the trace via traceparent end to end against the mock agent by default", async () => {
+    const bundle = createMockAgentBundle({
+      port: 0,
+      rules: [{ match: /book/i, reply: "Booked." }],
+      traceRules: [{ match: /book/i, toolCalls: ["calendar.create"] }],
+    });
+    mock = bundle.agent;
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const result = await runScenario(
+      scenario({
+        turns: [{ user: "book a standup", expect: [] }],
+        driver: { type: "rest", preset: "iris-http", config: { baseUrl } },
+      }),
+      { traceSource: bundle.traceSource },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.mock).toMatchObject({ correlationStrategy: "traceparent" });
+  });
+
+  it("falls back to session correlation when the agent ignores traceparent", async () => {
+    const bundle = createMockAgentBundle({
+      port: 0,
+      rules: [{ match: /book/i, reply: "Booked." }],
+      traceRules: [{ match: /book/i, toolCalls: ["calendar.create"] }],
+    });
+    mock = bundle.agent;
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const result = await runScenario(
+      scenario({
+        turns: [{ user: "book a standup __ignore-traceparent__", expect: [] }],
+        driver: { type: "rest", preset: "iris-http", config: { baseUrl } },
+      }),
+      { traceSource: bundle.traceSource },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.metadata?.mock).toMatchObject({ correlationStrategy: "session" });
+  });
+
   it("binds each turn's assertions to that turn's own response", async () => {
     const baseUrl = await mockBaseUrl({
       rules: [
@@ -472,11 +550,18 @@ describe("scenario runner", () => {
           { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
           (async (url: string) => {
             calls.push(String(url));
+            const target = String(url);
+            // The runner's generated traceId has no fixture behind it: 404 so
+            // resolve() falls back to the session-based lookup below, same as
+            // before traceId propagation existed.
+            if (!target.includes("sessionId=") && !target.includes("/api/public/traces/trace-1")) {
+              return { ok: false, status: 404, json: async () => ({}) };
+            }
             return {
               ok: true,
               status: 200,
               json: async () =>
-                calls.length === 1
+                target.includes("sessionId=")
                   ? { data: [{ id: "trace-1" }] }
                   : { id: "trace-1", totalCost: 0.02 },
             };
@@ -486,7 +571,7 @@ describe("scenario runner", () => {
       },
     );
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(result.metrics.cost_usd).toBe(0.02);
     expect(result.verdict).toBe(Verdict.Fail);
     expect(result.scores.find((score) => score.name === "threshold:maxCostUsd")?.verdict).toBe(
@@ -500,14 +585,22 @@ describe("scenario runner", () => {
         new FakeDriver(new RestDriverError(400, { error: "bad request" }), [], { count: 0 }),
       traceSource: new LangfuseTraceSource(
         { baseUrl: "http://langfuse.local", publicKey: "pk", secretKey: "sk" },
-        (async (url: string) => ({
-          ok: true,
-          status: 200,
-          json: async () =>
-            String(url).includes("/api/public/traces/trace-err")
-              ? { id: "trace-err", url: "http://langfuse.local/t/trace-err" }
-              : { data: [{ id: "trace-err" }] },
-        })) as unknown as typeof fetch,
+        (async (url: string) => {
+          const target = String(url);
+          if (target.includes("/api/public/traces/trace-err")) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ id: "trace-err", url: "http://langfuse.local/t/trace-err" }),
+            };
+          }
+          if (target.includes("sessionId=")) {
+            return { ok: true, status: 200, json: async () => ({ data: [{ id: "trace-err" }] }) };
+          }
+          // The runner's generated traceId has no fixture behind it: 404 so
+          // resolve() falls back to the session-based lookup above.
+          return { ok: false, status: 404, json: async () => ({}) };
+        }) as unknown as typeof fetch,
         { waitMs: 0 },
       ),
     });
