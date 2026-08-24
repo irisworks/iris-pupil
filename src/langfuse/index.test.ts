@@ -1284,4 +1284,3 @@ describe("extractLangfuseEnrichmentsPerTrace", () => {
     expect(extractLangfuseEnrichmentsPerTrace({ data: [] })).toEqual([]);
   });
 });
-
