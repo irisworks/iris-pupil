@@ -201,6 +201,31 @@ describe("applyTraceEnrichment", () => {
     expect(result.metrics.tool_calls).toBe(0);
     expect(result.metrics.tool_invocations).toBe(0);
   });
+
+  it("records the correlation strategy in metadata when the trace record provides one", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: { traceCount: 1, traceId: "trace-1", resolvedVia: "traceparent" },
+    };
+
+    const status = applyTraceEnrichment(result, "session-1", lookup, "langfuse");
+
+    expect(status).toBe("enriched");
+    expect(result.metadata?.langfuse).toMatchObject({ correlationStrategy: "traceparent" });
+  });
+
+  it("omits correlationStrategy when the trace record does not provide one", () => {
+    const result = makeResult();
+    const lookup: TraceLookupResult = {
+      status: "found",
+      record: { traceCount: 1, traceId: "trace-1" },
+    };
+
+    applyTraceEnrichment(result, "session-1", lookup, "langfuse");
+
+    expect(result.metadata?.langfuse).not.toHaveProperty("correlationStrategy");
+  });
 });
 
 describe("summarizeTraceRun", () => {
