@@ -7,7 +7,13 @@ import {
   type TraceRecord,
   type TraceSource,
 } from "../trace/index.js";
-import { PupilError, type Scenario, type TurnRecord, Verdict } from "../core/types.js";
+import {
+  PupilError,
+  type LoadedInvariant,
+  type Scenario,
+  type TurnRecord,
+  Verdict,
+} from "../core/types.js";
 import {
   RestDriverError,
   type RestConversation,
@@ -23,8 +29,10 @@ import {
   progressEventTypeForVerdict,
   runScenario,
   runScenarios,
+  summarizeResults,
   type RunnerDriver,
 } from "./index.js";
+import type { ScenarioResult } from "../core/types.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -49,6 +57,7 @@ function scenario(overrides: Partial<Scenario> = {}): Scenario {
     },
     turns: [{ user: "please schedule", expect: [] }],
     expect: { assertions: [], thresholds: [] },
+    invariants: [],
     ...overrides,
   };
 }
@@ -903,6 +912,66 @@ describe("scenario runner", () => {
   });
 });
 
+describe("invariants", () => {
+  it("composes repo-level and scenario-level invariants as a pure union", async () => {
+    const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
+    const repoInvariants: LoadedInvariant[] = [
+      { check: { threshold: { metric: "turns", max: 5 } }, source: "repo" },
+    ];
+
+    const result = await runScenario(
+      scenario({ invariants: [{ threshold: { metric: "turns", min: 1 } }] }),
+      {
+        driverConfig: { baseUrl, originThreadTs: "invariants-union" },
+        invariants: repoInvariants,
+      },
+    );
+
+    const names = result.scores.map((score) => score.name);
+    expect(names).toContain("invariant:repo:threshold:turns");
+    expect(names).toContain("invariant:scenario:threshold:turns");
+  });
+
+  it("keeps a driven run strict even when the invariant's own maxViolationRate is lenient", async () => {
+    const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
+    const repoInvariants: LoadedInvariant[] = [
+      {
+        check: { threshold: { metric: "turns", max: 0 }, maxViolationRate: 0.9 },
+        source: "repo",
+      },
+    ];
+
+    const result = await runScenario(scenario(), {
+      driverConfig: { baseUrl, originThreadTs: "invariants-strict" },
+      invariants: repoInvariants,
+    });
+
+    const invariantScore = result.scores.find(
+      (score) => score.name === "invariant:repo:threshold:turns",
+    );
+    expect(invariantScore?.verdict).toBe(Verdict.Fail);
+    expect(result.verdict).toBe(Verdict.Fail);
+  });
+
+  it("escalates an invariant skip under --require-trace when tool evidence is missing", async () => {
+    const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
+
+    const result = await runScenario(
+      scenario({ invariants: [{ assertion: { type: "tool_not_called", tool: "legacy.search" } }] }),
+      {
+        driverConfig: { baseUrl, originThreadTs: "invariants-require-trace" },
+        requireTrace: true,
+      },
+    );
+
+    const invariantScore = result.scores.find(
+      (score) => score.name === "invariant:scenario:assertion:tool_not_called:legacy.search",
+    );
+    expect(invariantScore?.verdict).toBe(Verdict.Fail);
+    expect(invariantScore?.reason).toContain("--require-trace");
+  });
+});
+
 describe("runScenarios target identity", () => {
   it("writes target onto the RunResult when provided", async () => {
     const closes: string[] = [];
@@ -1241,5 +1310,228 @@ describe("progressEventTypeForVerdict", () => {
     expect(progressEventTypeForVerdict(Verdict.NeedsReview)).toBe("scenario:needs_review");
     expect(progressEventTypeForVerdict(Verdict.Fail)).toBe("scenario:fail");
     expect(progressEventTypeForVerdict(Verdict.Error)).toBe("scenario:error");
+  });
+});
+
+describe("seeded conversation state", () => {
+  it("replays seed turns before the asserted turn, excludes them from metrics.turns, and flags them isSeed", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [
+        { match: "warm up", reply: "Warmed." },
+        { match: "the real question", reply: "The real answer." },
+      ],
+    });
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "replay", turns: [{ user: "warm up" }] },
+        turns: [{ user: "the real question", expect: [] }],
+      }),
+      { driverConfig: { baseUrl } },
+    );
+
+    expect(result.turns).toHaveLength(2);
+    expect(result.turns[0].isSeed).toBe(true);
+    expect(result.turns[0].response?.text).toBe("Warmed.");
+    expect(result.turns[1].isSeed).toBeUndefined();
+    expect(result.turns[1].response?.text).toBe("The real answer.");
+    expect(result.metrics.turns).toBe(1);
+    expect(result.verdict).toBe(Verdict.Pass);
+  });
+
+  it("throws immediately, before any HTTP call, when fork is requested without a configured template", async () => {
+    const baseUrl = await mockBaseUrl();
+
+    await expect(
+      runScenario(
+        scenario({
+          seed: { strategy: "fork", turns: [{ user: "warm up" }] },
+          turns: [{ user: "the real question", expect: [] }],
+        }),
+        { driverConfig: { baseUrl } },
+      ),
+    ).resolves.toMatchObject({ verdict: Verdict.Error });
+
+    expect(mock?.requests).toEqual([]);
+  });
+
+  it("forks the seeded session and runs the asserted turn against the fork", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [
+        { match: "warm up", reply: "Warmed." },
+        { match: "the real question", reply: "The real answer." },
+      ],
+    });
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "fork", turns: [{ user: "warm up" }] },
+        turns: [{ user: "the real question", expect: [] }],
+      }),
+      {
+        driverConfig: {
+          baseUrl,
+          // Nested under `overrides`, not top-level: the default `scenario()` helper
+          // uses the `iris-http` preset, whose driver-construction branch only reads
+          // baseUrl/timeoutMs/retries/headers/retryStatusCodes directly off
+          // driverConfig - everything else (including fork/inject) must go through
+          // `overrides` to reach `createIrisHttpPreset`'s deepMerge.
+          overrides: {
+            fork: {
+              method: "POST",
+              path: "/sessions/{{conversationId}}/fork",
+              extract: { conversationId: "$.sessionId" },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.turns[1].response?.text).toBe("The real answer.");
+    const forkRequestIndex = mock!.requests.findIndex((request) => request.path.endsWith("/fork"));
+    expect(forkRequestIndex).toBeGreaterThan(-1);
+  });
+
+  it("injects seeded history directly, with no seed TurnRecords, then runs the asserted turn", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [{ match: "the real question", reply: "The real answer." }],
+    });
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "inject", turns: [{ user: "seeded question" }] },
+        turns: [{ user: "the real question", expect: [] }],
+      }),
+      {
+        driverConfig: {
+          baseUrl,
+          // Nested under `overrides` for the same reason as the fork test above.
+          overrides: {
+            inject: {
+              method: "POST",
+              path: "/sessions",
+              body: {
+                originChannel: "pupil",
+                originThreadTs: "{{originThreadTs}}",
+                history: "{{history}}",
+              },
+              extract: { conversationId: "$.sessionId" },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result.verdict).toBe(Verdict.Pass);
+    expect(result.turns).toHaveLength(1);
+    expect(result.turns[0].response?.text).toBe("The real answer.");
+    expect(result.metrics.turns).toBe(1);
+  });
+
+  it("filters seed-phase tool calls out of trajectory.toolCalls and the derived metrics", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [
+        { match: "warm up", reply: "Warmed." },
+        { match: "the real question", reply: "The real answer." },
+      ],
+    });
+
+    let call = 0;
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () => {
+        call += 1;
+        return Promise.resolve({
+          traceCount: 1,
+          toolCalls: [
+            { name: "seed-tool", index: 0, startedAt: "2020-01-01T00:00:00.000Z" },
+            { name: "asserted-tool", index: 1, startedAt: "2099-01-01T00:00:00.000Z" },
+          ],
+        });
+      },
+    };
+
+    const result = await runScenario(
+      scenario({
+        seed: { strategy: "replay", turns: [{ user: "warm up" }] },
+        turns: [{ user: "the real question", expect: [] }],
+        expect: {
+          assertions: [{ type: "tool_not_called", tool: "seed-tool" }],
+          thresholds: [],
+        },
+      }),
+      { driverConfig: { baseUrl }, traceSource: toolSource },
+    );
+
+    expect(call).toBe(1);
+    expect(result.metrics.tool_invocations).toBe(1);
+    expect(result.metrics.tool_calls).toBe(1);
+    expect(result.scores).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "assertion:tool_not_called:seed-tool",
+          verdict: Verdict.Pass,
+        }),
+      ]),
+    );
+  });
+
+  it("does not filter tool calls at all for a scenario with no seed block", async () => {
+    const baseUrl = await mockBaseUrl({
+      rules: [{ match: "the real question", reply: "The real answer." }],
+    });
+
+    const toolSource: TraceSource = {
+      metadataKey: "mock",
+      resolve: () =>
+        Promise.resolve({
+          traceCount: 1,
+          toolCalls: [{ name: "some-tool", index: 0, startedAt: "2000-01-01T00:00:00.000Z" }],
+        }),
+    };
+
+    const result = await runScenario(
+      scenario({ turns: [{ user: "the real question", expect: [] }] }),
+      { driverConfig: { baseUrl }, traceSource: toolSource },
+    );
+
+    expect(result.metrics.tool_invocations).toBe(1);
+    expect(result.metrics.tool_calls).toBe(1);
+  });
+
+  it("throws immediately, before any HTTP call, when inject is requested without a configured template", async () => {
+    const baseUrl = await mockBaseUrl();
+
+    await expect(
+      runScenario(
+        scenario({
+          seed: { strategy: "inject", turns: [{ user: "seeded question" }] },
+          turns: [{ user: "the real question", expect: [] }],
+        }),
+        { driverConfig: { baseUrl } },
+      ),
+    ).resolves.toMatchObject({ verdict: Verdict.Error });
+
+    expect(mock?.requests).toEqual([]);
+  });
+});
+
+describe("summarizeResults", () => {
+  it("counts each verdict bucket", () => {
+    const results: ScenarioResult[] = [
+      { verdict: Verdict.Pass } as ScenarioResult,
+      { verdict: Verdict.Fail } as ScenarioResult,
+      { verdict: Verdict.NeedsReview } as ScenarioResult,
+      { verdict: Verdict.Error } as ScenarioResult,
+      { verdict: Verdict.Skip } as ScenarioResult,
+    ];
+    expect(summarizeResults(results)).toEqual({
+      total: 5,
+      passed: 1,
+      failed: 1,
+      needsReview: 1,
+      errors: 1,
+    });
   });
 });

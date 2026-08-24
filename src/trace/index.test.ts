@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { Verdict, type RunResult, type ScenarioResult } from "../core/types.js";
-import { applyTraceEnrichment, summarizeTraceRun, type TraceLookupResult } from "./index.js";
+import {
+  applyTraceEnrichment,
+  summarizeTraceRun,
+  metricsFromTraceRecord,
+  trajectoryFromTraceRecord,
+  type TraceLookupResult,
+} from "./index.js";
 
 function makeResult(overrides: Partial<ScenarioResult> = {}): ScenarioResult {
   return {
@@ -33,6 +39,61 @@ function makeRun(results: ScenarioResult[]): RunResult {
     metadata: {},
   };
 }
+
+describe("metricsFromTraceRecord", () => {
+  it("maps cost/token/tool figures and derives tool_calls/tool_invocations", () => {
+    const metrics = metricsFromTraceRecord({
+      traceId: "t1",
+      traceCount: 1,
+      costUsd: 0.02,
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      toolCalls: [
+        { name: "search", index: 0 },
+        { name: "search", index: 1 },
+        { name: "book", index: 2 },
+      ],
+    });
+    expect(metrics).toEqual({
+      cost_usd: 0.02,
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+      tool_calls: 2,
+      tool_invocations: 3,
+    });
+  });
+
+  it("omits tool metrics when toolCalls is undefined (no evidence)", () => {
+    const metrics = metricsFromTraceRecord({ traceId: "t1", traceCount: 1 });
+    expect(metrics).toEqual({});
+  });
+});
+
+describe("trajectoryFromTraceRecord", () => {
+  it("builds a trace-sourced Trajectory with metrics and tool calls", () => {
+    const trajectory = trajectoryFromTraceRecord({
+      traceId: "t1",
+      traceUrl: "http://lf/t/t1",
+      traceCount: 1,
+      costUsd: 0.02,
+      toolCalls: [{ name: "search", index: 0 }],
+    });
+    expect(trajectory).toEqual({
+      source: "trace",
+      steps: [],
+      metrics: { cost_usd: 0.02, tool_calls: 1, tool_invocations: 1 },
+      metadata: { traceId: "t1", traceUrl: "http://lf/t/t1" },
+      toolCalls: [{ name: "search", index: 0 }],
+    });
+  });
+
+  it("omits toolCalls when the record has none (undefined evidence)", () => {
+    const trajectory = trajectoryFromTraceRecord({ traceId: "t1", traceCount: 1 });
+    expect(trajectory.toolCalls).toBeUndefined();
+  });
+});
 
 describe("applyTraceEnrichment", () => {
   it("writes metrics and metadata when record is found", () => {

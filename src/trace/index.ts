@@ -1,5 +1,5 @@
 import { isRecord } from "../core/json.js";
-import type { RunResult, ScenarioResult, ToolCall } from "../core/types.js";
+import type { RunResult, ScenarioResult, ToolCall, Trajectory } from "../core/types.js";
 
 export interface TraceRecord {
   readonly traceId?: string;
@@ -76,6 +76,67 @@ export interface TraceSource {
   resolve(correlationKey: string, context?: TraceLookupContext): Promise<TraceRecord | undefined>;
 }
 
+/** A named population's resolved fetch parameters, after config + CLI-flag merging. */
+export interface TracePopulationQuery {
+  name?: string;
+  tags?: readonly string[];
+  userId?: string;
+  /** Relative ("24h") or ISO 8601. Always required by the time resolvePopulationQuery returns it. */
+  since: string;
+  /** Relative or ISO 8601; defaults to "now" if unset. */
+  until?: string;
+  limit?: number;
+}
+
+/**
+ * Resolves a population of production traces as ready-to-evaluate Trajectories.
+ *
+ * Implementations are backend-specific (Langfuse today); `pupil observe` depends
+ * only on this interface. Unlike TraceSource.resolve() (which returns undefined
+ * for "not found yet" so the runner can skip gracefully), fetch() throwing means
+ * the population could not be retrieved at all — pupil observe has no partial
+ * result to fall back to, so the command fails outright.
+ */
+export interface TracePopulationSource {
+  readonly metadataKey: string;
+  fetch(query: TracePopulationQuery): Promise<Trajectory[]>;
+}
+
+/** Trace-record figures translated into the Trajectory/ScenarioResult metrics namespace. */
+export function metricsFromTraceRecord(record: TraceRecord): Record<string, number> {
+  const metrics: Record<string, number> = {};
+  if (record.costUsd !== undefined) metrics.cost_usd = record.costUsd;
+  if (record.inputTokens !== undefined) metrics.input_tokens = record.inputTokens;
+  if (record.outputTokens !== undefined) metrics.output_tokens = record.outputTokens;
+  if (record.totalTokens !== undefined) metrics.total_tokens = record.totalTokens;
+  if (record.toolCalls !== undefined) {
+    // tool_calls preserves its pre-PR meaning (distinct tool names used) so an
+    // existing threshold/baseline on it cannot silently misfire. tool_invocations
+    // is total call count (efficiency regressions like retry loops).
+    metrics.tool_calls = new Set(record.toolCalls.map((call) => call.name)).size;
+    metrics.tool_invocations = record.toolCalls.length;
+  }
+  return metrics;
+}
+
+/**
+ * Builds a `Trajectory` directly from trace evidence with no conversational
+ * turns — used by `pupil observe`, where a production trace carries tool
+ * calls and metrics but no scenario steps.
+ */
+export function trajectoryFromTraceRecord(record: TraceRecord): Trajectory {
+  return {
+    source: "trace",
+    steps: [],
+    metrics: metricsFromTraceRecord(record),
+    metadata: {
+      ...(record.traceId !== undefined && { traceId: record.traceId }),
+      ...(record.traceUrl !== undefined && { traceUrl: record.traceUrl }),
+    },
+    ...(record.toolCalls !== undefined && { toolCalls: record.toolCalls }),
+  };
+}
+
 /**
  * Writes a lookup outcome onto a scenario result. `correlationKey` is undefined when
  * the run produced no key to look up with; the key is then omitted from metadata so
@@ -110,19 +171,7 @@ export function applyTraceEnrichment(
   }
 
   const { record } = lookup;
-  if (record.costUsd !== undefined) result.metrics.cost_usd = record.costUsd;
-  if (record.inputTokens !== undefined) result.metrics.input_tokens = record.inputTokens;
-  if (record.outputTokens !== undefined) result.metrics.output_tokens = record.outputTokens;
-  if (record.totalTokens !== undefined) result.metrics.total_tokens = record.totalTokens;
-  if (record.toolCalls !== undefined) {
-    // tool_calls preserves its pre-PR meaning (distinct tool names used) so an
-    // existing threshold/baseline on it cannot silently misfire. tool_invocations
-    // is the new signal this PR introduced (total call count, efficiency
-    // regressions like retry loops) — it gets its own name rather than
-    // overloading tool_calls's established meaning.
-    result.metrics.tool_calls = new Set(record.toolCalls.map((call) => call.name)).size;
-    result.metrics.tool_invocations = record.toolCalls.length;
-  }
+  Object.assign(result.metrics, metricsFromTraceRecord(record));
 
   result.metadata = {
     ...(result.metadata ?? {}),
@@ -135,6 +184,10 @@ export function applyTraceEnrichment(
       ...(record.resolvedVia !== undefined && { correlationStrategy: record.resolvedVia }),
       // Names only: run history is JSON and reviewed in PRs, so it stays compact
       // and diffable. Full ToolCall detail reaches evaluators via the Trajectory.
+      // Raw evidence, deliberately unfiltered: unlike trajectory.toolCalls and the
+      // tool_calls/tool_invocations metrics (which the runner filters by seed-phase
+      // boundary), this metadata field is the full session's tool-call names as
+      // reported, for debugging what actually happened.
       ...(record.toolCalls !== undefined && {
         toolCalls: record.toolCalls.map((call) => call.name),
       }),

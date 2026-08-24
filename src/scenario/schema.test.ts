@@ -182,6 +182,65 @@ describe("normalizeScenario", () => {
     expect(scenario.expect.assertions[0]).toMatchObject({ match: "exact" });
   });
 
+  it("normalizes assertion and threshold invariant wrappers", () => {
+    const scenario = normalizeScenario({
+      id: "invariants",
+      input: "hi",
+      invariants: [
+        {
+          assertion: { type: "tool_not_called", tool: "deprecated.legacy_search" },
+          maxViolationRate: 0,
+        },
+        {
+          threshold: { metric: "tool_invocations", max: 4 },
+          maxViolationRate: 0.02,
+        },
+      ],
+    });
+
+    expect(scenario.invariants).toEqual([
+      {
+        assertion: { type: "tool_not_called", tool: "deprecated.legacy_search", match: "exact" },
+        maxViolationRate: 0,
+      },
+      { threshold: { metric: "tool_invocations", max: 4 }, maxViolationRate: 0.02 },
+    ]);
+  });
+
+  it("rejects invariant wrappers without exactly one check", () => {
+    expect(() =>
+      normalizeScenario({
+        id: "missing-invariant-check",
+        input: "hi",
+        invariants: [{}],
+      }),
+    ).toThrow(/exactly one of assertion or threshold/);
+    expect(() =>
+      normalizeScenario({
+        id: "multiple-invariant-checks",
+        input: "hi",
+        invariants: [
+          {
+            assertion: { type: "contains", value: "ok" },
+            threshold: { metric: "latency_ms", max: 1 },
+          },
+        ],
+      }),
+    ).toThrow(/exactly one of assertion or threshold/);
+  });
+
+  it("rejects invariant violation rates outside zero through one", () => {
+    for (const maxViolationRate of [-0.01, 1.01]) {
+      expect(() =>
+        normalizeScenario({
+          id: "invalid-rate",
+          input: "hi",
+          invariants: [{ threshold: { metric: "latency_ms", max: 1 }, maxViolationRate }],
+        }),
+      ).toThrow(/maxViolationRate/);
+    }
+  });
+
   it("reports a single error for a malformed tool assertion", () => {
     expect(() =>
       normalizeScenario(
@@ -289,5 +348,60 @@ describe("normalizeScenario", () => {
     expect(scenario.expect.assertions).toEqual([
       { type: "tool_called", tool: "calendar.create", match: "exact" },
     ]);
+  });
+
+  it("normalizes a seed block with replay strategy", () => {
+    const scenario = normalizeScenario({
+      id: "seeded",
+      seed: {
+        strategy: "replay",
+        turns: [{ user: "warm up turn one" }, { user: "warm up turn two" }],
+      },
+      input: "the real question",
+    });
+
+    expect(scenario.seed).toEqual({
+      strategy: "replay",
+      turns: [{ user: "warm up turn one" }, { user: "warm up turn two" }],
+    });
+  });
+
+  it("omits seed entirely when the scenario declares none", () => {
+    const scenario = normalizeScenario({ id: "unseeded", input: "hello" });
+    expect(scenario.seed).toBeUndefined();
+  });
+
+  it("rejects a seed turn that declares expect", () => {
+    expect(() =>
+      normalizeScenario(
+        {
+          id: "bad-seed",
+          seed: {
+            strategy: "replay",
+            turns: [{ user: "warm up", expect: [{ type: "contains", value: "x" }] }],
+          },
+          input: "hello",
+        },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:seed\.turns\.0/);
+  });
+
+  it("rejects an empty seed.turns array", () => {
+    expect(() =>
+      normalizeScenario(
+        { id: "empty-seed", seed: { strategy: "fork", turns: [] }, input: "hello" },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:seed\.turns:/);
+  });
+
+  it("rejects an unknown seed strategy", () => {
+    expect(() =>
+      normalizeScenario(
+        { id: "bad-strategy", seed: { strategy: "clone", turns: [{ user: "x" }] }, input: "hello" },
+        "bad.yaml",
+      ),
+    ).toThrow(/bad\.yaml:seed\.strategy:/);
   });
 });

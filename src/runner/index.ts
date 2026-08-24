@@ -3,9 +3,11 @@ import { firstString, isRecord } from "../core/json.js";
 import {
   aggregateVerdicts,
   PupilError,
+  type LoadedInvariant,
   type RunResult,
   type Scenario,
   type ScenarioResult,
+  type SeedStrategy,
   type TargetIdentity,
   type ToolCall,
   type Trajectory,
@@ -21,6 +23,7 @@ import {
   type RestDriverConfig,
   type RestDriverConfigOverrides,
   type RestDriverResponse,
+  type SeedHistoryEntry,
 } from "../driver/index.js";
 import {
   aggregateScores,
@@ -29,9 +32,16 @@ import {
   evaluateManualScoring,
   evaluateThresholds,
 } from "../eval/index.js";
+import { evaluateInvariants } from "../eval/invariants.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
 import { applyTraceRequirement } from "../eval/toolAssertions.js";
 import { generateSpanId, generateTraceId, formatTraceparent } from "../trace/traceparent.js";
+import {
+  assertSeedCapability,
+  filterSeedPhaseToolCalls,
+  runSeedPhase,
+  SeedPhaseError,
+} from "./seed.js";
 import {
   applyTraceEnrichment,
   NO_CORRELATION_KEY_REASON,
@@ -50,6 +60,12 @@ export interface RunnerDriver {
     requestContext?: { traceparent?: string },
   ): Promise<RestDriverResponse>;
   closeConversation(conversation: RestConversation): Promise<void>;
+  supportsSeedStrategy?(strategy: SeedStrategy): boolean;
+  fork?(conversation: RestConversation): Promise<RestConversation>;
+  inject?(
+    history: readonly SeedHistoryEntry[],
+    context?: Record<string, string | number | boolean | null | undefined>,
+  ): Promise<RestConversation>;
   dispose?(): void;
 }
 
@@ -94,6 +110,15 @@ export interface RunScenarioOptions {
    * block a pipeline that did not ask for that.
    */
   requireTrace?: boolean;
+  /**
+   * Repo-level policy invariants, loaded once by the caller (loadInvariantFile
+   * does file IO) and composed with the scenario's own `invariants:` block as
+   * a pure union -- neither layer can suppress the other. See
+   * docs/superpowers/specs/2026-08-21-invariants-design.md.
+   */
+  invariants?: LoadedInvariant[];
+  /** From config.invariants.defaultMaxViolationRate; used only when a check sets no maxViolationRate of its own. */
+  defaultMaxViolationRate?: number;
 }
 
 export interface RunScenariosOptions extends RunScenarioOptions {
@@ -112,6 +137,7 @@ export interface RunnerDriverContext {
 interface ScenarioAttemptResult {
   turns: TurnRecord[];
   sessionId?: string;
+  seedCompletedAt?: string;
 }
 
 class ScenarioAttemptError extends Error {
@@ -295,7 +321,7 @@ export function createDrivenTrajectory({
       error: turn.error,
       // Live reference: per-turn scores are assigned after this trajectory is
       // built, and `turn.assertions` targets read them through here.
-      metadata: { assertions: turn.assertions },
+      metadata: { assertions: turn.assertions, ...(turn.isSeed && { isSeed: true }) },
     })),
     ...(currentStepIndex !== undefined && { currentStepIndex }),
     ...(finalResponse !== undefined && { finalResponse }),
@@ -346,7 +372,7 @@ function createErrorResult(
     startedAt,
     completedAt,
     metrics: {
-      turns: turns.length,
+      turns: turns.filter((turn) => !turn.isSeed).length,
       latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
       retries,
     },
@@ -362,21 +388,41 @@ async function executeAttempt(
   timeoutMs: number,
   traceId: string,
 ): Promise<ScenarioAttemptResult> {
+  assertSeedCapability(scenario, driver);
+
   const turns: TurnRecord[] = [];
   let conversation: RestConversation | undefined;
+  let sourceConversation: RestConversation | undefined;
   const timeout = setTimeout(() => driver.dispose?.(), timeoutMs);
 
   try {
-    conversation = await driver.createConversation({
+    const createContext = {
       runId: context.runId,
       scenarioId: scenario.id,
       attempt: context.attempt,
       originThreadTs:
         stringOption(context.config.originThreadTs, "driver.config.originThreadTs") ??
         `${context.runId}:${scenario.id}`,
-    });
+    };
 
-    for (const [index, turn] of scenario.turns.entries()) {
+    let seedResult;
+    try {
+      seedResult = await runSeedPhase(scenario, driver, createContext);
+    } catch (error) {
+      if (error instanceof SeedPhaseError) {
+        conversation = error.conversation;
+        turns.push(...error.turns);
+        throw new ScenarioAttemptError(error.cause, turns, conversation?.id);
+      }
+      throw error;
+    }
+
+    conversation = seedResult.conversation;
+    sourceConversation = seedResult.sourceConversation;
+    turns.push(...seedResult.turns);
+
+    for (const [offset, turn] of scenario.turns.entries()) {
+      const index = seedResult.turns.length + offset;
       const startedAt = now();
       const record: TurnRecord = {
         index,
@@ -408,12 +454,19 @@ async function executeAttempt(
       }
     }
 
-    return { turns, sessionId: conversation.id };
+    return { turns, sessionId: conversation.id, seedCompletedAt: seedResult.seedCompletedAt };
   } catch (error) {
     if (error instanceof ScenarioAttemptError) throw error;
     throw new ScenarioAttemptError(error, turns, conversation?.id);
   } finally {
     clearTimeout(timeout);
+    if (sourceConversation && sourceConversation.id !== conversation?.id) {
+      try {
+        await driver.closeConversation(sourceConversation);
+      } catch {
+        // Best-effort cleanup of the pre-fork session; failures here are not the scenario's failure.
+      }
+    }
     if (conversation) {
       try {
         await driver.closeConversation(conversation);
@@ -471,7 +524,7 @@ export async function runScenario(
         startedAt,
         completedAt,
         metrics: {
-          turns: turns.length,
+          turns: turns.filter((turn) => !turn.isSeed).length,
           latency_ms: Date.parse(completedAt) - Date.parse(startedAt),
           retries: attempt - 1,
         },
@@ -490,6 +543,11 @@ export async function runScenario(
           attemptStartedAtMs,
           traceId,
         );
+        toolCalls = filterSeedPhaseToolCalls(toolCalls, attemptResult.seedCompletedAt);
+        if (toolCalls !== undefined) {
+          baseResult.metrics.tool_calls = new Set(toolCalls.map((call) => call.name)).size;
+          baseResult.metrics.tool_invocations = toolCalls.length;
+        }
       }
       const trajectory = createDrivenTrajectory({
         turns,
@@ -502,9 +560,23 @@ export async function runScenario(
       const thresholdScores = evaluateThresholds(scenario.expect.thresholds, trajectory);
       const manualScores = evaluateManualScoring(scenario.expect.manual);
       const judgeScores = evaluateJudge(scenario.expect.judge);
+      const composedInvariants: LoadedInvariant[] = [
+        ...(options.invariants ?? []),
+        ...(scenario.invariants ?? []).map((check) => ({ check, source: "scenario" as const })),
+      ];
+      const invariantScores = evaluateInvariants(composedInvariants, [trajectory], {
+        defaultMaxViolationRate: options.defaultMaxViolationRate,
+      });
       const turnScores = turns.flatMap((turn) => turn.assertions);
       const scores = applyTraceRequirement(
-        [...turnScores, ...scenarioScores, ...thresholdScores, ...manualScores, ...judgeScores],
+        [
+          ...turnScores,
+          ...scenarioScores,
+          ...thresholdScores,
+          ...manualScores,
+          ...judgeScores,
+          ...invariantScores,
+        ],
         options.requireTrace ?? false,
       );
       const verdict = aggregateScores(scores);
@@ -556,7 +628,7 @@ export async function runScenario(
   return result;
 }
 
-function summarize(results: ScenarioResult[]): RunResult["summary"] {
+export function summarizeResults(results: ScenarioResult[]): RunResult["summary"] {
   return {
     total: results.length,
     passed: results.filter((result) => result.verdict === Verdict.Pass).length,
@@ -607,7 +679,7 @@ export async function runScenarios(
     results,
     startedAt,
     completedAt,
-    summary: summarize(results),
+    summary: summarizeResults(results),
     metadata: options.metadata ?? {},
     ...(options.target !== undefined && { target: options.target }),
   };

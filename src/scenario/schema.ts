@@ -1,5 +1,5 @@
 import { z, type ZodError } from "zod";
-import type { Scenario } from "../core/types.js";
+import type { InvariantCheck, Scenario } from "../core/types.js";
 import { PupilError } from "../core/types.js";
 
 const metadataSchema = z.record(z.unknown()).default({});
@@ -168,6 +168,19 @@ const turnSchema = z
   })
   .strict();
 
+const seedTurnSchema = z
+  .object({
+    user: z.string().min(1, "seed turn requires user"),
+  })
+  .strict();
+
+const seedSchema = z
+  .object({
+    strategy: z.enum(["replay", "fork", "inject"]),
+    turns: z.array(seedTurnSchema).min(1, "seed requires at least one turn"),
+  })
+  .strict();
+
 const thresholdSchema = z
   .object({
     metric: z.string().min(1),
@@ -177,6 +190,22 @@ const thresholdSchema = z
   .strict()
   .refine((value) => value.max !== undefined || value.min !== undefined, {
     message: "threshold requires at least one of min or max",
+  });
+
+const invariantCheckSchema = z
+  .object({
+    assertion: assertionSchema.optional(),
+    threshold: thresholdSchema.optional(),
+    maxViolationRate: z.number().min(0).max(1).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.assertion === undefined) === (value.threshold === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "invariant requires exactly one of assertion or threshold",
+      });
+    }
   });
 
 const manualSchema = z
@@ -215,6 +244,7 @@ const rawScenarioSchema = z
     tags: z.array(z.string()).default([]),
     metadata: metadataSchema.optional(),
     driver: driverSchema.optional(),
+    seed: seedSchema.optional(),
     input: z.unknown().optional(),
     turns: z.array(turnSchema).min(1, "scenario requires at least one turn").optional(),
     expect: expectSchema.optional(),
@@ -222,6 +252,7 @@ const rawScenarioSchema = z
     thresholds: z.array(thresholdSchema).optional(),
     manual: manualSchema.optional(),
     judge: judgeSchema.optional(),
+    invariants: z.array(invariantCheckSchema).default([]),
   })
   .strict()
   .refine((value) => value.input !== undefined || value.turns !== undefined, {
@@ -242,6 +273,19 @@ const inputObjectSchema = z
   .strict();
 
 export type RawScenario = z.infer<typeof rawScenarioSchema>;
+
+/** Normalize invariant wrappers for scenario YAML and repository policy files. */
+export function normalizeInvariantChecks(
+  raw: unknown,
+  sourceFile?: string,
+  pathPrefix: string[] = ["invariants"],
+): InvariantCheck[] {
+  const parsed = z.array(invariantCheckSchema).safeParse(raw);
+  if (!parsed.success) {
+    throw formatScenarioValidationError(parsed.error, sourceFile, pathPrefix);
+  }
+  return parsed.data as InvariantCheck[];
+}
 
 function normalizeInput(input: unknown, sourceFile?: string): Scenario["turns"] {
   if (typeof input === "string") {
@@ -286,6 +330,7 @@ export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
       ...(scenario.driver?.preset !== undefined && { preset: scenario.driver.preset }),
       config: scenario.driver?.config ?? {},
     },
+    ...(scenario.seed !== undefined && { seed: scenario.seed }),
     turns,
     expect: {
       assertions: [...expectations.assertions, ...(scenario.assertions ?? [])],
@@ -293,6 +338,7 @@ export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
       manual: scenario.manual ?? expectations.manual,
       judge: scenario.judge ?? expectations.judge,
     },
+    invariants: scenario.invariants as InvariantCheck[],
     ...(sourceFile !== undefined && { sourceFile }),
   };
 }

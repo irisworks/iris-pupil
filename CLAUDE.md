@@ -139,6 +139,165 @@ earlier draft of this feature considered changing it to total invocations;
 no existing `tool_calls` threshold or baseline can silently start scoring
 something different.
 
+## Seeded Conversation State
+
+Scenarios can start mid-conversation without paying for every turn that got them there. An
+optional `seed:` block runs before the scenario's own asserted `turns:`:
+
+```yaml
+seed:
+  strategy: replay # replay | fork | inject
+  turns:
+    - user: "..." # scaffolding - never asserted, optimized aggressively
+turns:
+  - user: "..." # the asserted turns
+```
+
+`seed.turns` entries have no `expect` field - the schema itself makes "seed turns are never
+asserted against" true, not just documented. Three strategies, in the order they were built:
+
+- `replay` - actually sends each seed turn through the driver first. Costs real requests, but
+  works against any agent; no capability check.
+- `fork` - replays the seed turns to build real state, then asks the driver to fork that session
+  via a `fork` request template on `RestDriverConfig`, and runs the asserted turns against the
+  fork.
+- `inject` - skips replay entirely and asks the driver to create a session directly from a
+  history payload, via an `inject` request template.
+
+`fork` and `inject` mirror the existing optional `close` request template: a scenario requesting
+one of them is checked against the driver's configured templates before any request is made, and
+an unsupported combination fails immediately with a clear error - never an ambiguous timeout or a
+guessed endpoint.
+
+`ScenarioResult.turns` and `Trajectory.steps` include the seed turns (flagged `isSeed: true`), so
+a broken seed turn is debuggable rather than invisible - but `ScenarioResult.metrics.turns` counts
+only the asserted turns, and seed turns are never passed to assertion evaluation.
+
+One honest limit: `replay` and `fork` make real driver calls during the seed phase, so a tool
+triggered while seeding is indistinguishable - in Langfuse's session-level trace - from one
+triggered during the asserted turns. Pupil filters `trajectory.toolCalls` (and the derived
+`tool_calls`/`tool_invocations` metrics) to drop anything timestamped more than a small clock-skew
+tolerance before the seed phase finished - the tolerance absorbs drift between Pupil's host clock
+and the trace backend's, so an asserted-phase call is never discarded for landing "just before"
+the boundary. Anything whose timing cannot be proven - no timestamp at all, or one that does not
+parse - is kept rather than guessed away, and an unparseable boundary disables filtering entirely;
+so a backend that doesn't report usable `startedAt` values can still leak seed-phase tool activity
+into tool assertions. `inject` has no seed-phase traffic, so this limitation does not apply to it.
+
+## Invariants
+
+Scenarios and the project as a whole can declare input-free checks that hold for _any_
+conversation - `invariants:` in a scenario, plus an optional repo-wide policy file at
+`config.invariants.file` (path resolves relative to the config file). Both layers compose as a
+pure union: every check from both is always evaluated, and neither layer can suppress or
+override the other. Each entry is exactly one existing `assertion` (any assertion type the
+scenario schema supports, not just the five tool assertion types) or `threshold` (any metric,
+including the trace-derived `tool_calls` and `tool_invocations`), plus an optional
+`maxViolationRate` in `[0, 1]`. Tool assertions and thresholds are genuinely input-free and safe
+for both drive mode and population evaluation. Text and jsonpath assertions are input-bound: a
+future `pupil observe` (IRIS-164) sample with no conversational turns would resolve
+`response.text` to `undefined` and fail every sample - a spurious 100% violation rate rather than
+a skip - so use them here with that in mind.
+
+`pupil run` evaluates every composed invariant against the single trajectory the scenario just
+produced (one sample). The evaluator itself has no "drive mode" special case: strictness falls
+out of the arithmetic - a single sample's violation rate is always 0 or 1, so any
+`maxViolationRate` below 1 rejects a single violation. Setting `maxViolationRate: 1` is therefore
+a deliberate way to exempt a check from `pupil run` enforcement while still declaring it for
+population evaluation later. `config.invariants.defaultMaxViolationRate` is a fallback used only
+when a check sets no `maxViolationRate` of its own; it has no effect on today's one-sample
+evaluation beyond that same arithmetic, and becomes materially useful once `pupil observe`
+(IRIS-164) evaluates invariants over a population of production traces.
+
+Skip semantics follow the same rule as tool assertions and trace-derived thresholds elsewhere:
+a sample that cannot be checked (missing tool-call evidence, a trace-only metric absent) is
+excluded from the violation count rather than treated as compliant. If every sample skips, the
+invariant itself skips - and `--require-trace` escalates that skip to a failure exactly like it
+does for tool assertions and thresholds today.
+
+Invariant scores are named `invariant:<repo|scenario>:<inner assertion/threshold name>` and flow
+through the same `scores` array, verdict aggregation, `--require-trace` policy, JSON output, and
+JUnit report as every other score - there is no separate invariant verdict type.
+
+`examples/scenarios/iris-invariants.yaml` shows a scenario-level `invariants:` block covering a
+tool-scope assertion, a tool-presence assertion, runner-computed thresholds, a trace-derived
+threshold with an explicit `maxViolationRate`, and the `maxViolationRate: 1` opt-out edge case.
+`examples/invariants/` adds a standalone demo config (`pupil run --config
+examples/invariants/pupil.config.yaml`) that composes a repo-level policy file
+(`repo-policy.yaml`) with that same scenario, to show the pure-union composition rule without
+touching the project's own `pupil.config.yaml`.
+
+### `pupil observe`
+
+`pupil observe <population>` evaluates only the repo-level invariant policy (never a
+scenario's own `invariants:` block — production traffic isn't tied to one scenario id)
+against a named population of production traces fetched from Langfuse. Populations are
+defined under `observe.populations.<name>` in `pupil.config.yaml` (`name`, `tags`, `userId`,
+`since`, `until`, `limit`); every field except `since` is optional, and CLI flags
+(`--since`, `--until`, `--name`, `--tag`, `--user-id`, `--limit`) override the configured
+values the same way `pupil run` flags override scenario driver config. `since`/`until`
+accept `"now"`, a relative duration (`24h`, `7d`, `30m`), or an ISO 8601 timestamp. A
+population name that isn't in `observe.populations` still works as long as `--since` is
+supplied via CLI flags - the config entry is optional scaffolding, not a required registry.
+
+The fetch goes through Langfuse's `v2/observations` endpoint rather than the `v1 traces`
+endpoint `pupil run`'s single-trace lookups use - Langfuse's own migration guidance
+documents a full-table-scan risk for `v1` queries with no bounded time filter, which only
+matters at population scale. Each distinct trace becomes one sample fed to
+`evaluateInvariants`, exactly as `pupil run` feeds it a single sample - the evaluator has no
+mode-specific code path.
+
+`pupil observe` shares `pupil run`'s full CI-gating surface (`--json`, `--junit`, `--strict`,
+`--baseline`, `--require-trace`) and writes to the same `.pupil` history via
+`JsonRunHistoryStore`, stamped `target.mode: "observed"`. The existing hard target-identity
+mismatch rule (exit code 2) already guarantees an observed run is never diffed against a
+driven baseline. A config or fetch failure (bad Langfuse credentials, unknown population
+name, network error) fails the command outright with no history write, since there is no
+partial result to fall back to; an empty population still evaluates through the existing
+zero-samples branch, which returns `Verdict.Skip` for every check — the same severity as `Pass`,
+so an empty population reports green by default. That skip carries the same escalatable
+marker as a missing trace, so `--require-trace` turns a checked-nothing population run into a
+failure instead of a silent green. `pupil observe` also warns on stderr when no repo-level
+invariants are configured at all, and rejects a resolved time window where `since` is not
+strictly before `until`.
+
+`v2/observations` is cursor-paginated (`meta.cursor`, max page size 1000), and `pupil observe`'s
+default `--limit` of 100 means the cursor loop rarely runs more than once for a typical
+population — the first page already fills the limit for anything but a very small time window.
+The change that matters for most real usage isn't the multi-page loop itself; it's what happens
+at the boundary of whatever page(s) were fetched: results are sorted `startTime` descending
+across every observation rather than grouped by trace, so a single trace's observations can
+straddle a page boundary, and a trace larger than `--limit` (an IRIS conversation can easily
+exceed 100 observations) can otherwise fill an entire page on its own.
+`LangfuseTracePopulationSource.fetch` follows `meta.cursor` across pages until it is exhausted,
+the requested `limit` is reached, an empty page is returned, or a hard 20-request safety cap
+trips (a guard against a misunderstood cursor contract, not a documented Langfuse limit).
+Whenever the loop stops for a reason other than a genuinely exhausted cursor, the last-fetched
+trace is dropped rather than kept with a possibly-incomplete tool-call count - under-reporting
+one trace's presence is preferred over silently under-reporting its tool calls - and `fetch()`
+emits a `console.error` `WARNING:` naming the drop, since a silently emptied population would
+otherwise evaluate every invariant to `Verdict.Skip` and roll up to a green `Pass` with nothing
+printed anywhere.
+
+Both dependencies below were confirmed against a live Langfuse instance (a minimal, read-only
+structural check - row shape and ordering only, no trace content persisted), not just assumed:
+
+- `extractToolCalls`'s reliable signal for IRIS's OTel-ingested tool observations is
+  `metadata.attributes["langfuse.observation.type"]`, and the `fields` request parameter asks for
+  `metadata` explicitly (`core,basic,io,trace_context,metadata`). Confirmed live: every returned
+  row carries a populated `metadata` object, and `metadata.attributes["langfuse.observation.type"]`
+  is present on the subset of rows that are tool-type observations, matching what `extractToolCalls`
+  expects.
+- The trailing-trace drop logic depends on `v2/observations` returning results sorted by
+  `startTime` descending even though `buildV2ObservationsUrl` never requests a sort/orderBy
+  parameter explicitly. Confirmed live: results are descending both within one page and across
+  cursor-paginated pages (the first row of a later page has an equal-or-earlier `startTime` than
+  the first row of the page before it).
+
+This was checked once against one live project's recent data, not load-tested or checked across
+every Langfuse deployment configuration - if the hosted API's behavior here ever changes, revisit
+this note.
+
 ## What Pupil Is
 
 Pupil is an open source framework for **continuous quality engineering for AI agents**: testing, evaluating, and preventing regressions as prompts, tools, models, and workflows evolve. It originated in the IRIS ecosystem but is designed to be framework agnostic.

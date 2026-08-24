@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Verdict, type RunResult } from "../core/types.js";
 import { JsonRunHistoryStore } from "../history/index.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
@@ -365,6 +366,98 @@ describe("pupil CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 15000);
+
+  it("loads config.invariants.file and scores its checks during pupil run", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "configured" }],
+    });
+    const address = await mock.listen();
+    const dir = await mkdtemp(join(tmpdir(), "pupil-invariants-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const invariantsPath = join(dir, "invariants.yaml");
+    const historyDir = join(dir, "history");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-invariants-run",
+          "name: CLI invariants run",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        invariantsPath,
+        ["invariants:", "  - threshold:", "      metric: turns", "      max: 5", ""].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        [
+          `scenarios: ${scenarioPath.replace(/\\/g, "\\\\")}`,
+          "driver:",
+          "  preset: iris-http",
+          "  config:",
+          `    baseUrl: http://${address.host}:${address.port}`,
+          "invariants:",
+          `  file: ${invariantsPath.replace(/\\/g, "\\\\")}`,
+          "history:",
+          `  dir: ${historyDir.replace(/\\/g, "\\\\")}`,
+          "",
+        ].join("\n"),
+      );
+
+      const child = spawn(process.execPath, [cliPath, "run", "--config", configPath], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const output = await waitForCli(child);
+
+      expect(output.code).toBe(0);
+      const runId = /Run ([^:]+):/.exec(output.stdout)?.[1];
+      expect(runId).toBeDefined();
+      const runJson = JSON.parse(
+        await readFile(join(historyDir, "runs", `${runId}.json`), "utf-8"),
+      );
+      const scoreNames = runJson.results[0].scores.map((score: { name: string }) => score.name);
+      expect(scoreNames).toContain("invariant:repo:threshold:turns");
+    } finally {
+      await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("fails pupil run loudly when config.invariants.file is set but missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pupil-invariants-missing-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(scenarioPath, minimalScenarioYaml + "\n");
+      await writeFile(
+        configPath,
+        [
+          `scenarios: ${scenarioPath.replace(/\\/g, "\\\\")}`,
+          "invariants:",
+          "  file: does-not-exist.yaml",
+          "",
+        ].join("\n"),
+      );
+
+      const result = spawnSync(process.execPath, [cliPath, "run", "--config", configPath], {
+        encoding: "utf-8",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("does-not-exist.yaml");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
   it("lets CLI driver flags override config file values", async () => {
     const mock = createIrisMockAgent({
@@ -2004,6 +2097,295 @@ describe("pupil CLI", () => {
       expect(payload.baseline).toBeDefined();
     } finally {
       await mock.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+});
+
+describe("pupil observe", () => {
+  let langfuseServer: Server | undefined;
+
+  afterEach(() => {
+    langfuseServer?.close();
+    langfuseServer = undefined;
+  });
+
+  async function startLangfuseStub(payload: unknown): Promise<string> {
+    langfuseServer = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(payload));
+    });
+    await new Promise<void>((resolve) => langfuseServer!.listen(0, "127.0.0.1", resolve));
+    const address = langfuseServer!.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    return `http://127.0.0.1:${port}`;
+  }
+
+  it("evaluates a population and exits 0 when every invariant passes", async () => {
+    const langfuseUrl = await startLangfuseStub({
+      data: [
+        { traceId: "trace-a", type: "TOOL", name: "search", startTime: "2026-08-21T00:00:00.000Z" },
+      ],
+    });
+    const dir = await mkdtemp(join(tmpdir(), "pupil-observe-"));
+    const historyDir = join(dir, "history");
+    const policyPath = join(dir, "repo-policy.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(
+        policyPath,
+        ["invariants:", "  - threshold:", "      metric: tool_calls", "      max: 5", ""].join(
+          "\n",
+        ),
+      );
+      await writeFile(
+        configPath,
+        [
+          "invariants:",
+          "  file: repo-policy.yaml",
+          "langfuse:",
+          `  host: "${langfuseUrl}"`,
+          '  publicKey: "pk"',
+          '  secretKey: "sk"',
+          "observe:",
+          "  populations:",
+          "    checkout-prod:",
+          '      since: "24h"',
+          "",
+        ].join("\n"),
+      );
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "observe",
+            "checkout-prod",
+            "--config",
+            configPath,
+            "--history-dir",
+            historyDir,
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(run.code).toBe(0);
+      const payload = JSON.parse(run.stdout) as { verdict: string };
+      expect(payload.verdict).toBe("pass");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("exits 1 when a population invariant is violated", async () => {
+    const langfuseUrl = await startLangfuseStub({
+      data: [
+        { traceId: "trace-a", type: "TOOL", name: "search", startTime: "2026-08-21T00:00:00.000Z" },
+        { traceId: "trace-a", type: "TOOL", name: "book", startTime: "2026-08-21T00:00:01.000Z" },
+      ],
+    });
+    const dir = await mkdtemp(join(tmpdir(), "pupil-observe-"));
+    const historyDir = join(dir, "history");
+    const policyPath = join(dir, "repo-policy.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(
+        policyPath,
+        ["invariants:", "  - threshold:", "      metric: tool_calls", "      max: 0", ""].join(
+          "\n",
+        ),
+      );
+      await writeFile(
+        configPath,
+        [
+          "invariants:",
+          "  file: repo-policy.yaml",
+          "langfuse:",
+          `  host: "${langfuseUrl}"`,
+          '  publicKey: "pk"',
+          '  secretKey: "sk"',
+          "observe:",
+          "  populations:",
+          "    checkout-prod:",
+          '      since: "24h"',
+          "",
+        ].join("\n"),
+      );
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "observe",
+            "checkout-prod",
+            "--config",
+            configPath,
+            "--history-dir",
+            historyDir,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(run.code).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("exits 2 when comparing an observe run against a driven baseline", async () => {
+    const langfuseUrl = await startLangfuseStub({ data: [] });
+    const dir = await mkdtemp(join(tmpdir(), "pupil-observe-"));
+    const historyDir = join(dir, "history");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(
+        configPath,
+        [
+          "langfuse:",
+          `  host: "${langfuseUrl}"`,
+          '  publicKey: "pk"',
+          '  secretKey: "sk"',
+          "observe:",
+          "  populations:",
+          "    checkout-prod:",
+          '      since: "24h"',
+          "",
+        ].join("\n"),
+      );
+
+      const store = new JsonRunHistoryStore({ dir: historyDir });
+      await store.writeRun({ ...runResult("baseline-driven"), target: { mode: "driven" } });
+      await store.setBaseline("baseline-driven");
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "observe",
+            "checkout-prod",
+            "--config",
+            configPath,
+            "--history-dir",
+            historyDir,
+            "--baseline",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(run.code).toBe(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("exits 1 under --require-trace when the population is empty (checked nothing)", async () => {
+    const langfuseUrl = await startLangfuseStub({ data: [] });
+    const dir = await mkdtemp(join(tmpdir(), "pupil-observe-"));
+    const historyDir = join(dir, "history");
+    const policyPath = join(dir, "repo-policy.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(
+        policyPath,
+        ["invariants:", "  - threshold:", "      metric: tool_calls", "      max: 5", ""].join(
+          "\n",
+        ),
+      );
+      await writeFile(
+        configPath,
+        [
+          "invariants:",
+          "  file: repo-policy.yaml",
+          "langfuse:",
+          `  host: "${langfuseUrl}"`,
+          '  publicKey: "pk"',
+          '  secretKey: "sk"',
+          "observe:",
+          "  populations:",
+          "    checkout-prod:",
+          '      since: "24h"',
+          "",
+        ].join("\n"),
+      );
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "observe",
+            "checkout-prod",
+            "--config",
+            configPath,
+            "--history-dir",
+            historyDir,
+            "--require-trace",
+            "--json",
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(run.code).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("fails fast with a clear error when since is not before until", async () => {
+    const langfuseUrl = await startLangfuseStub({ data: [] });
+    const dir = await mkdtemp(join(tmpdir(), "pupil-observe-"));
+    const historyDir = join(dir, "history");
+    const configPath = join(dir, "pupil.config.yaml");
+
+    try {
+      await writeFile(
+        configPath,
+        [
+          "langfuse:",
+          `  host: "${langfuseUrl}"`,
+          '  publicKey: "pk"',
+          '  secretKey: "sk"',
+          "observe:",
+          "  populations:",
+          "    checkout-prod:",
+          '      since: "1h"',
+          '      until: "24h"',
+          "",
+        ].join("\n"),
+      );
+
+      const run = await waitForCli(
+        spawn(
+          process.execPath,
+          [
+            cliPath,
+            "observe",
+            "checkout-prod",
+            "--config",
+            configPath,
+            "--history-dir",
+            historyDir,
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("invalid time window");
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }, 15000);

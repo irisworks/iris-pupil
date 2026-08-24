@@ -93,6 +93,17 @@ export interface JsonPathAssertionCheck {
 /** How a tool name in an assertion is compared against an observed call. */
 export type ToolNameMatch = "exact" | "glob";
 
+export type SeedStrategy = "replay" | "fork" | "inject";
+
+export interface SeedTurn {
+  user: string;
+}
+
+export interface ScenarioSeed {
+  strategy: SeedStrategy;
+  turns: SeedTurn[];
+}
+
 export interface ToolCalledAssertionCheck {
   type: "tool_called";
   tool: string;
@@ -147,6 +158,27 @@ export interface ThresholdCheck {
   min?: number;
 }
 
+/** A reusable assertion or threshold evaluated across one or more trajectories. */
+export type InvariantCheck =
+  | {
+      assertion: AssertionCheck;
+      threshold?: never;
+      maxViolationRate?: number;
+    }
+  | {
+      assertion?: never;
+      threshold: ThresholdCheck;
+      maxViolationRate?: number;
+    };
+
+export type InvariantSource = "repo" | "scenario";
+
+/** An invariant paired with the policy layer that contributed it. */
+export interface LoadedInvariant {
+  check: InvariantCheck;
+  source: InvariantSource;
+}
+
 export interface ManualScoringConfig {
   required: boolean;
   criteria: string[];
@@ -180,8 +212,10 @@ export interface Scenario {
   tags: string[];
   metadata: Record<string, unknown>;
   driver: ScenarioDriverRef;
+  seed?: ScenarioSeed;
   turns: ScenarioTurn[];
   expect: ScenarioExpectations;
+  invariants: InvariantCheck[];
   sourceFile?: string;
 }
 
@@ -197,6 +231,7 @@ export interface TurnRecord {
   latencyMs?: number;
   assertions: Score[];
   error?: string;
+  isSeed?: boolean;
 }
 
 /**

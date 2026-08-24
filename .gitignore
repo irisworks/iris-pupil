@@ -2,9 +2,12 @@ node_modules/
 dist/
 coverage/
 .pupil/
+.pupil-invariants-demo/
 .tmp/
 docs/superpowers/
 .superpowers/
 .env
 .claude-octopus/
 CLAUDE_tmp.html
+
+.DS_Store

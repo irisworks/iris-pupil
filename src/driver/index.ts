@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { PupilError } from "../core/types.js";
+import { PupilError, type SeedStrategy } from "../core/types.js";
 
 export interface Driver {
   readonly type: string;
@@ -15,6 +15,11 @@ export interface RestRequestTemplate {
   extract?: Record<string, string>;
 }
 
+export interface SeedHistoryEntry {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface RestDriverConfig {
   baseUrl: string;
   headers?: Record<string, string>;
@@ -25,6 +30,8 @@ export interface RestDriverConfig {
   createConversation: RestRequestTemplate;
   send: RestRequestTemplate;
   close?: RestRequestTemplate;
+  fork?: RestRequestTemplate;
+  inject?: RestRequestTemplate;
 }
 
 export interface RestConversation {
@@ -37,7 +44,7 @@ export interface RestDriverResponse {
   raw: unknown;
 }
 
-type TemplateValue = string | number | boolean | null | undefined;
+type TemplateValue = string | number | boolean | null | undefined | readonly SeedHistoryEntry[];
 type TemplateContext = Record<string, TemplateValue>;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -180,6 +187,36 @@ export class RestDriver implements Driver {
       conversationId: conversation.id,
       sessionId: conversation.id,
     });
+  }
+
+  supportsSeedStrategy(strategy: SeedStrategy): boolean {
+    if (strategy === "replay") return true;
+    if (strategy === "fork") return this.config.fork !== undefined;
+    return this.config.inject !== undefined;
+  }
+
+  async fork(conversation: RestConversation): Promise<RestConversation> {
+    if (!this.config.fork) {
+      throw new PupilError("REST driver has no 'fork' template configured");
+    }
+    const raw = await this.executeTemplate(this.config.fork, {
+      conversationId: conversation.id,
+      sessionId: conversation.id,
+    });
+    const idPath = this.config.fork.extract?.conversationId ?? "$.sessionId";
+    return { id: asString(extractJsonPath(raw, idPath), "conversationId"), raw };
+  }
+
+  async inject(
+    history: readonly SeedHistoryEntry[],
+    context: TemplateContext = {},
+  ): Promise<RestConversation> {
+    if (!this.config.inject) {
+      throw new PupilError("REST driver has no 'inject' template configured");
+    }
+    const raw = await this.executeTemplate(this.config.inject, { ...context, history });
+    const idPath = this.config.inject.extract?.conversationId ?? "$.sessionId";
+    return { id: asString(extractJsonPath(raw, idPath), "conversationId"), raw };
   }
 
   dispose(): void {

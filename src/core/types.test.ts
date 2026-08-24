@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { aggregateVerdicts, Verdict, type AssertionCheck, type RunResult } from "./types.js";
+import {
+  aggregateVerdicts,
+  Verdict,
+  type AssertionCheck,
+  type InvariantCheck,
+  type LoadedInvariant,
+  type RunResult,
+  type Scenario,
+  type TurnRecord,
+} from "./types.js";
 
 describe("aggregateVerdicts", () => {
   it("returns pass for an empty set of child verdicts", () => {
@@ -35,6 +44,29 @@ describe("core domain types", () => {
     ];
 
     expect(assertions).toHaveLength(2);
+  });
+
+  it("models assertion and threshold invariant wrappers with their source", () => {
+    const invariants: LoadedInvariant[] = [
+      {
+        source: "repo",
+        check: {
+          assertion: { type: "tool_not_called", tool: "deprecated.legacy_search" },
+          maxViolationRate: 0,
+        },
+      },
+      {
+        source: "scenario",
+        check: {
+          threshold: { metric: "tool_invocations", max: 4 },
+          maxViolationRate: 0.02,
+        },
+      },
+    ];
+
+    const first: InvariantCheck | undefined = invariants[0]?.check;
+    expect(first).toMatchObject({ assertion: { type: "tool_not_called" } });
+    expect(invariants[1]?.source).toBe("scenario");
   });
 
   it("models a reusable run result", () => {
@@ -91,5 +123,33 @@ describe("core domain types", () => {
     };
 
     expect(run.target).toBeUndefined();
+  });
+
+  it("supports an optional seed block and isSeed turn flag", () => {
+    const scenario: Scenario = {
+      id: "seeded",
+      name: "Seeded",
+      tags: [],
+      metadata: {},
+      driver: { type: "rest", config: {} },
+      seed: {
+        strategy: "replay",
+        turns: [{ user: "warm up" }],
+      },
+      turns: [{ user: "ask", expect: [] }],
+      expect: { assertions: [], thresholds: [] },
+      invariants: [],
+    };
+
+    const seedTurn: TurnRecord = {
+      index: 0,
+      user: "warm up",
+      startedAt: new Date().toISOString(),
+      assertions: [],
+      isSeed: true,
+    };
+
+    expect(scenario.seed?.strategy).toBe("replay");
+    expect(seedTurn.isSeed).toBe(true);
   });
 });
