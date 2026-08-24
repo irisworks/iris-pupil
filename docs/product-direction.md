@@ -467,10 +467,12 @@ makes observe mode and the continuity claim possible.
 5. **✅ Done — CI-gate ergonomics.** This repo's own `npm run check` workflow shipped
    (IRIS-152), and IRIS-156 (PR #59) added `run --baseline` auto-compare with exit 1, `--strict`,
    `--json`, `--junit`, and the automatic `$GITHUB_STEP_SUMMARY` append.
-6. **🟡 Partial — `TraceSource` + Langfuse reader + `traceparent` correlation** (section 5.1).
-   The interface extraction (IRIS-158, PR #54) and a mock agent that emits tool spans plus a
-   `MockTraceSource` (IRIS-160, PR #60) have both landed. `traceparent` correlation itself
-   (IRIS-159) is not started, so correlation is still the `sessionId` echo — strategy 2.
+6. **✅ Done (IRIS-159) — `TraceSource` + Langfuse reader + `traceparent` correlation**
+   (section 5.1). The interface extraction (IRIS-158, PR #54), a mock agent that emits tool spans
+   plus a `MockTraceSource` (IRIS-160, PR #60), and `traceparent` propagation with direct-by-id
+   lookup (IRIS-159) have all landed on the Pupil side. Real IRIS still resolves via strategy 2
+   (`sessionId` echo) until iris-core ships inbound `traceparent` propagation — a separate,
+   unfiled ask to that team, not a follow-up to closed PR `#134`.
 7. **✅ Done (IRIS-161) — Tool assertions** — `tool_called`, `tool_not_called`,
    `tool_call_count`, `tool_order`, `tool_args` over the `toolCalls` the `TraceSource` already
    returns. The trace-derived metrics themselves (`tool_calls`, `tool_invocations`, `cost_usd`, `input_tokens`,
