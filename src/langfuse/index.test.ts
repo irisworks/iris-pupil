@@ -562,6 +562,7 @@ describe("LangfuseTraceSource lookup", () => {
       outputTokens: 5,
       totalTokens: 15,
       toolCalls: [{ name: "calendar.create", index: 0 }],
+      resolvedVia: "session",
     });
   });
 
@@ -822,5 +823,69 @@ describe("LangfuseTraceSource lookup", () => {
     await expect(
       new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 }).resolve("session-1"),
     ).resolves.toBeUndefined();
+  });
+
+  it("resolves directly by trace id with a single fetch call, no session polling", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "trace-9", totalCost: 0.01 }),
+      };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1", { traceId: "trace-9" });
+
+    expect(record).toMatchObject({ traceId: "trace-9", resolvedVia: "traceparent" });
+    expect(calls).toEqual(["http://langfuse.local/api/public/traces/trace-9"]);
+  });
+
+  it("falls back to the session lookup when the direct trace-id lookup 404s", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const target = String(url);
+      if (target.includes("/api/public/traces/trace-missing")) {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      if (target.includes("/api/public/traces?")) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: "trace-found" }] }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "trace-found", totalCost: 0.02 }),
+      };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1", { traceId: "trace-missing" });
+
+    expect(record).toMatchObject({ traceId: "trace-found", resolvedVia: "session" });
+  });
+
+  it("marks resolvedVia as session when no traceId is given at all", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const target = String(url);
+      if (target.includes("/api/public/traces?")) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: "trace-found" }] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ id: "trace-found", totalCost: 0.02 }) };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1");
+
+    expect(record).toMatchObject({ resolvedVia: "session" });
   });
 });

@@ -424,6 +424,24 @@ async function fetchLangfuse(
   }
 }
 
+async function fetchTraceById(
+  config: LangfuseConfig,
+  traceId: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<LangfuseEnrichment | undefined> {
+  const auth = Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64");
+  const response = await fetchLangfuse(traceDetailUrl(config, traceId), auth, fetchImpl, timeoutMs);
+  if (!response.ok) {
+    if (response.status === 404) return undefined;
+    throw new Error(`Langfuse lookup failed with status ${response.status}`);
+  }
+  const trace = await response.json();
+  if (!isRecord(trace)) return undefined;
+  const withUrl = { url: `${normalizeBaseUrl(config.baseUrl)}/trace/${traceId}`, ...trace };
+  return extractLangfuseEnrichment({ traces: [withUrl] }, { baseUrl: config.baseUrl });
+}
+
 async function fetchSession(
   config: LangfuseConfig,
   sessionId: string,
@@ -543,11 +561,30 @@ export class LangfuseTraceSource implements TraceSource {
    * ran longer than the ingestion delay polls again immediately instead of waiting twice.
    */
   async resolve(sessionId: string, context?: TraceLookupContext): Promise<TraceRecord | undefined> {
+    const timeoutMs = this.options.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS;
+
+    if (context?.traceId) {
+      const direct = await fetchTraceById(this.config, context.traceId, this.fetchImpl, timeoutMs);
+      if (direct) {
+        return {
+          traceId: direct.traceId,
+          traceUrl: direct.traceUrl,
+          traceCount: direct.traceCount,
+          costUsd: direct.costUsd,
+          inputTokens: direct.inputTokens,
+          outputTokens: direct.outputTokens,
+          totalTokens: direct.totalTokens,
+          toolCalls: direct.toolCalls,
+          resolvedVia: "traceparent",
+        };
+      }
+    }
+
     const enrichment = await lookupSession(
       this.config,
       sessionId,
       this.fetchImpl,
-      this.options.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS,
+      timeoutMs,
       this.options.waitMs ?? DEFAULT_LANGFUSE_WAIT_MS,
       this.options.initialDelayMs ?? DEFAULT_LANGFUSE_INITIAL_DELAY_MS,
       this.options.initialBackoffMs ?? DEFAULT_LANGFUSE_INITIAL_BACKOFF_MS,
@@ -563,6 +600,7 @@ export class LangfuseTraceSource implements TraceSource {
       outputTokens: enrichment.outputTokens,
       totalTokens: enrichment.totalTokens,
       toolCalls: enrichment.toolCalls,
+      resolvedVia: "session",
     };
   }
 }
