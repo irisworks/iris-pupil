@@ -23,6 +23,7 @@ describe("loadPupilConfig", () => {
       driver: { type: "rest", config: {} },
       history: { dir: ".pupil" },
       langfuse: { enabled: "auto" },
+      judge: {},
       target: {},
       compare: {},
       profiles: {},
@@ -182,6 +183,23 @@ describe("loadPupilConfig", () => {
     });
   });
 
+  it("accepts the full judge block, including apiKey, model, and timeoutMs", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "driver:\n  config:\n    baseUrl: http://localhost:5050\njudge:\n  baseUrl: http://litellm.local\n  apiKey: key\n  model: gpt-4o-mini\n  timeoutMs: 10000\n",
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.judge).toEqual({
+      baseUrl: "http://litellm.local",
+      apiKey: "key",
+      model: "gpt-4o-mini",
+      timeoutMs: 10000,
+    });
+  });
+
   it("loads config and resolves environment references", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
@@ -276,6 +294,35 @@ describe("loadPupilConfig", () => {
 
     expect(config.langfuse).toMatchObject({ waitMs: 40000, timeoutMs: 9000, initialDelayMs: 1500 });
     expect(config.compare).toMatchObject({ latencyThresholdPct: 35 });
+  });
+
+  it("resolves ${VAR} templates and profile overrides for the judge block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "judge:",
+        "  baseUrl: ${JUDGE_BASE_URL}",
+        "  apiKey: ${JUDGE_API_KEY:-}",
+        "profiles:",
+        "  staging:",
+        "    judge:",
+        "      baseUrl: ${STAGING_JUDGE_URL}",
+        "      timeoutMs: ${STAGING_JUDGE_TIMEOUT_MS:-9000}",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({
+      cwd: tmpRoot,
+      profile: "staging",
+      env: { STAGING_JUDGE_URL: "https://judge.staging.example.test" },
+    });
+
+    expect(config.judge).toMatchObject({
+      baseUrl: "https://judge.staging.example.test",
+      timeoutMs: 9000,
+    });
   });
 
   it("applies target overrides from a profile", async () => {

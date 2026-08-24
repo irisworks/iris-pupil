@@ -60,6 +60,16 @@ const langfuseConfigSchema = z
   .strict()
   .default({ enabled: "auto" });
 
+const judgeConfigSchema = z
+  .object({
+    baseUrl: z.string().optional(),
+    apiKey: z.string().optional(),
+    model: z.string().optional(),
+    timeoutMs: z.coerce.number().int().positive().optional(),
+  })
+  .strict()
+  .default({});
+
 const optionalTargetString = z.preprocess(
   (value) => (value === "" ? undefined : value),
   z.string().min(1).optional(),
@@ -121,6 +131,15 @@ const profileLangfuseConfigSchema = z
     waitMs: templatableNumber.optional(),
     timeoutMs: templatableNumber.optional(),
     initialDelayMs: templatableNumber.optional(),
+  })
+  .strict();
+
+const profileJudgeConfigSchema = z
+  .object({
+    baseUrl: z.string().optional(),
+    apiKey: z.string().optional(),
+    model: z.string().optional(),
+    timeoutMs: templatableNumber.optional(),
   })
   .strict();
 
@@ -196,6 +215,7 @@ const profileConfigSchema = z
     driver: profileDriverConfigSchema.optional(),
     history: profileHistoryConfigSchema.optional(),
     langfuse: profileLangfuseConfigSchema.optional(),
+    judge: profileJudgeConfigSchema.optional(),
     target: profileTargetConfigSchema.optional(),
     compare: profileCompareConfigSchema.optional(),
     invariants: profileInvariantConfigSchema.optional(),
@@ -211,6 +231,7 @@ const pupilConfigSchema = z
     driver: driverConfigSchema,
     history: historyConfigSchema,
     langfuse: langfuseConfigSchema,
+    judge: judgeConfigSchema,
     target: targetConfigSchema,
     compare: compareConfigSchema,
     invariants: invariantConfigSchema.optional(),
