@@ -148,6 +148,40 @@ const profileInvariantConfigSchema = z
   })
   .strict();
 
+const observePopulationConfigSchema = z
+  .object({
+    name: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    userId: z.string().optional(),
+    since: z.string().min(1),
+    until: z.string().optional(),
+    limit: z.coerce.number().int().positive().optional(),
+  })
+  .strict();
+
+const observeConfigSchema = z
+  .object({
+    populations: z.record(observePopulationConfigSchema).default({}),
+  })
+  .strict();
+
+const profileObservePopulationConfigSchema = z
+  .object({
+    name: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    userId: z.string().optional(),
+    since: z.string().min(1).optional(),
+    until: z.string().optional(),
+    limit: templatableNumber.optional(),
+  })
+  .strict();
+
+const profileObserveConfigSchema = z
+  .object({
+    populations: z.record(profileObservePopulationConfigSchema).optional(),
+  })
+  .strict();
+
 const profileConfigSchema = z
   .object({
     scenarios: z.union([z.string(), z.array(z.string())]).optional(),
@@ -165,6 +199,7 @@ const profileConfigSchema = z
     target: profileTargetConfigSchema.optional(),
     compare: profileCompareConfigSchema.optional(),
     invariants: profileInvariantConfigSchema.optional(),
+    observe: profileObserveConfigSchema.optional(),
   })
   .strict();
 
@@ -179,11 +214,14 @@ const pupilConfigSchema = z
     target: targetConfigSchema,
     compare: compareConfigSchema,
     invariants: invariantConfigSchema.optional(),
+    observe: observeConfigSchema.optional(),
     profiles: z.record(profileConfigSchema).default({}),
   })
   .strict();
 
 export type InvariantConfig = z.infer<typeof invariantConfigSchema>;
+export type ObservePopulationConfig = z.infer<typeof observePopulationConfigSchema>;
+export type ObserveConfig = z.infer<typeof observeConfigSchema>;
 export type PupilConfig = z.infer<typeof pupilConfigSchema>;
 
 function applyProfile(

@@ -6,6 +6,7 @@ import {
   type Trajectory,
 } from "../core/types.js";
 import { assertionName, evaluateAssertion, evaluateThreshold, thresholdName } from "./index.js";
+import { NO_SAMPLES_MARKER } from "./toolAssertions.js";
 
 export interface InvariantEvaluationOptions {
   /** From config.invariants.defaultMaxViolationRate. Used only when a check sets none of its own. */
@@ -44,17 +45,21 @@ export function evaluateInvariant(
   options: InvariantEvaluationOptions = {},
 ): Score {
   if (samples.length === 0) {
-    // No `metadata.skipped` marker here, so --require-trace never escalates this
-    // skip. That's correct today: pupil run always supplies exactly one sample,
-    // so zero samples can't happen in practice. Revisit once pupil observe
-    // (IRIS-164) can produce a genuinely empty trace-window population -- at
-    // that point a --require-trace run going green having checked nothing would
-    // be the wrong outcome, and this branch will need a marker too.
+    // Carries the NO_SAMPLES_MARKER so --require-trace escalates this skip to a
+    // failure: pupil observe (IRIS-164) can hand this a genuinely empty
+    // trace-window population, and a --require-trace run going green having
+    // checked nothing would be the wrong outcome.
     return {
       name: invariantName(loaded.source, checkLabel(loaded.check)),
       verdict: Verdict.Skip,
       reason: "No samples to evaluate",
-      metadata: { check: loaded.check, source: loaded.source, sampleCount: 0, evaluatedCount: 0 },
+      metadata: {
+        check: loaded.check,
+        source: loaded.source,
+        sampleCount: 0,
+        evaluatedCount: 0,
+        skipped: NO_SAMPLES_MARKER,
+      },
     };
   }
 
