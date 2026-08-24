@@ -11,6 +11,7 @@ import {
   type TrajectoryStep,
   Verdict,
 } from "../core/types.js";
+import type { JudgeProvider } from "../judge/types.js";
 import { extractJsonPath } from "../driver/index.js";
 import { formatBounds } from "../core/bounds.js";
 import {
@@ -250,17 +251,53 @@ export function evaluateManualScoring(manual: ManualScoringConfig | undefined): 
   }));
 }
 
-export function evaluateJudge(judge: JudgeConfig | undefined): Score[] {
+export async function evaluateJudge(
+  judge: JudgeConfig | undefined,
+  trajectory: Trajectory,
+  provider: JudgeProvider | undefined,
+): Promise<Score[]> {
   if (!judge?.enabled) return [];
 
-  return [
-    {
-      name: "judge",
-      verdict: Verdict.Skip,
-      reason: "LLM judge not configured",
-      metadata: { judge },
-    },
-  ];
+  if (!provider) {
+    return [
+      {
+        name: "judge",
+        verdict: Verdict.Skip,
+        reason: "LLM judge not configured",
+        metadata: { judge },
+      },
+    ];
+  }
+
+  if (!judge.prompt || !judge.rubric) {
+    return [
+      {
+        name: "judge",
+        verdict: Verdict.Skip,
+        reason: "Judge enabled but scenario has no rubric configured",
+        metadata: { judge },
+      },
+    ];
+  }
+
+  try {
+    const result = await provider.judge({
+      prompt: judge.prompt,
+      rubric: judge.rubric,
+      output: trajectory.finalResponse?.text ?? "",
+      model: judge.model,
+    });
+    return [{ name: "judge", verdict: result.verdict, reason: result.reason, metadata: { judge } }];
+  } catch (error) {
+    return [
+      {
+        name: "judge",
+        verdict: Verdict.Skip,
+        reason: `LLM judge call failed: ${error instanceof Error ? error.message : String(error)}`,
+        metadata: { judge },
+      },
+    ];
+  }
 }
 
 export function thresholdName(threshold: ThresholdCheck): string {

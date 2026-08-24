@@ -402,14 +402,76 @@ describe("manual and judge evaluators", () => {
     expect(aggregateScores(scores)).toBe(Verdict.NeedsReview);
   });
 
-  it("emits a skip score for configured judge blocks without LLM config", () => {
-    const scores = evaluateJudge({ enabled: true, prompt: "Judge this response." });
+  it("emits a skip score for configured judge blocks without a provider", async () => {
+    const scores = await evaluateJudge(
+      { enabled: true, prompt: "Judge this response." },
+      context,
+      undefined,
+    );
 
     expect(scores).toHaveLength(1);
     expect(scores[0]).toMatchObject({
       name: "judge",
       verdict: Verdict.Skip,
       reason: "LLM judge not configured",
+    });
+    expect(aggregateScores(scores)).toBe(Verdict.Pass);
+  });
+
+  it("emits a skip score when enabled but the scenario has no rubric", async () => {
+    const provider = { judge: async () => ({ verdict: Verdict.Pass, reason: "n/a" }) };
+
+    const scores = await evaluateJudge({ enabled: true, prompt: "Judge this." }, context, provider);
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).toMatchObject({
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "Judge enabled but scenario has no rubric configured",
+    });
+  });
+
+  it("scores from a successful provider call", async () => {
+    const provider = {
+      judge: async () => ({ verdict: Verdict.Fail, reason: "Missed the deadline detail." }),
+    };
+    const judge = {
+      enabled: true,
+      prompt: "Judge this.",
+      rubric: { choices: ["A", "B"], choiceScores: { A: Verdict.Pass, B: Verdict.Fail } },
+    };
+
+    const scores = await evaluateJudge(judge, context, provider);
+
+    expect(scores).toEqual([
+      {
+        name: "judge",
+        verdict: Verdict.Fail,
+        reason: "Missed the deadline detail.",
+        metadata: { judge },
+      },
+    ]);
+  });
+
+  it("skips instead of throwing when the provider call fails", async () => {
+    const provider = {
+      judge: async () => {
+        throw new Error("Judge endpoint returned 500");
+      },
+    };
+    const judge = {
+      enabled: true,
+      prompt: "Judge this.",
+      rubric: { choices: ["A"], choiceScores: { A: Verdict.Pass } },
+    };
+
+    const scores = await evaluateJudge(judge, context, provider);
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).toMatchObject({
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "LLM judge call failed: Judge endpoint returned 500",
     });
     expect(aggregateScores(scores)).toBe(Verdict.Pass);
   });
