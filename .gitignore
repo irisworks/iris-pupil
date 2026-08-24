@@ -9,3 +9,5 @@ docs/superpowers/
 .env
 .claude-octopus/
 CLAUDE_tmp.html
+
+.DS_Store
