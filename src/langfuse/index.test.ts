@@ -1122,7 +1122,7 @@ describe("buildV2ObservationsUrl", () => {
     expect(url.pathname).toBe("/api/public/v2/observations");
     expect(url.searchParams.get("fromStartTime")).toBe("2026-08-20T12:00:00.000Z");
     expect(url.searchParams.get("toStartTime")).toBe("2026-08-21T12:00:00.000Z");
-    expect(url.searchParams.get("fields")).toBe("core,basic,io,trace_context,metadata");
+    expect(url.searchParams.get("fields")).toBe("core,basic,io,trace_context,metadata,usage");
     expect(url.searchParams.get("limit")).toBe("100");
   });
 
@@ -1136,21 +1136,22 @@ describe("buildV2ObservationsUrl", () => {
     expect(url.searchParams.get("limit")).toBe("25");
   });
 
-  it("adds userId directly and name/tags as filter conditions", () => {
+  it("adds userId, name, and tags all as filter conditions", () => {
     const url = buildV2ObservationsUrl(
       config,
       { since: "24h", name: "checkout-agent", tags: ["prod", "canary"], userId: "user-1" },
       now,
     );
-    expect(url.searchParams.get("userId")).toBe("user-1");
+    expect(url.searchParams.has("userId")).toBe(false);
     const filter = JSON.parse(url.searchParams.get("filter")!);
     expect(filter).toEqual([
       { type: "string", column: "traceName", operator: "=", value: "checkout-agent" },
       { type: "arrayOptions", column: "tags", operator: "any of", value: ["prod", "canary"] },
+      { type: "string", column: "userId", operator: "=", value: "user-1" },
     ]);
   });
 
-  it("omits the filter param entirely when neither name nor tags are set", () => {
+  it("omits the filter param entirely when neither name, tags, nor userId are set", () => {
     const url = buildV2ObservationsUrl(config, { since: "24h" }, now);
     expect(url.searchParams.has("filter")).toBe(false);
   });

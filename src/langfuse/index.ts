@@ -793,6 +793,13 @@ function populationFilterConditions(query: TracePopulationQuery): Record<string,
       value: [...query.tags],
     });
   }
+  // Sent as a filter column rather than the `userId` query param: Langfuse
+  // documents that a `filter` takes precedence over query-param filters, so a
+  // query combining name/tags with userId would otherwise silently drop the
+  // user constraint.
+  if (query.userId !== undefined) {
+    conditions.push({ type: "string", column: "userId", operator: "=", value: query.userId });
+  }
   return conditions;
 }
 
@@ -821,10 +828,12 @@ export function buildV2ObservationsUrl(
   // it is additive to a field list that already works, so it is low-risk,
   // but it has not been confirmed to be the field group that actually
   // carries `metadata` in the v2/observations response.
-  url.searchParams.set("fields", "core,basic,io,trace_context,metadata");
+  // `usage` is required for cost/token metrics: fields from unrequested groups
+  // are absent (not null) in the v2/observations response, and every alias the
+  // cost/token extractors read lives in the usage/model groups.
+  url.searchParams.set("fields", "core,basic,io,trace_context,metadata,usage");
   url.searchParams.set("limit", String(page.limit ?? query.limit ?? DEFAULT_POPULATION_LIMIT));
   if (page.cursor !== undefined) url.searchParams.set("cursor", page.cursor);
-  if (query.userId !== undefined) url.searchParams.set("userId", query.userId);
 
   const filter = populationFilterConditions(query);
   if (filter.length > 0) url.searchParams.set("filter", JSON.stringify(filter));
