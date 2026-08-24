@@ -29,6 +29,45 @@ describe("loadPupilConfig", () => {
     });
   });
 
+  it("keeps invariants optional when no config policy is set", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+
+    expect(config.invariants).toBeUndefined();
+  });
+
+  it("deep-merges an invariant policy profile and validates its rate", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "invariants:",
+        "  file: policies/invariants.yaml",
+        "  defaultMaxViolationRate: 0",
+        "profiles:",
+        "  observed:",
+        "    invariants:",
+        "      defaultMaxViolationRate: 0.02",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot, profile: "observed" })).resolves.toMatchObject({
+      invariants: {
+        file: join(tmpRoot, "policies/invariants.yaml"),
+        defaultMaxViolationRate: 0.02,
+      },
+    });
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      "invariants:\n  defaultMaxViolationRate: 1.01\n",
+      "utf8",
+    );
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/defaultMaxViolationRate/);
+  });
+
   it("reads requireTrace from the config file", async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
     await writeFile(
@@ -439,5 +478,69 @@ describe("loadPupilConfig", () => {
     const config = await loadPupilConfig({ cwd: tmpRoot });
 
     expect(config.compare).toEqual({});
+  });
+
+  it("parses an observe.populations block", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "observe:",
+        "  populations:",
+        "    checkout-prod:",
+        '      name: "checkout-agent"',
+        '      tags: ["prod"]',
+        '      userId: "user-1"',
+        '      since: "24h"',
+        '      until: "now"',
+        "      limit: 250",
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot });
+    expect(config.observe?.populations["checkout-prod"]).toEqual({
+      name: "checkout-agent",
+      tags: ["prod"],
+      userId: "user-1",
+      since: "24h",
+      until: "now",
+      limit: 250,
+    });
+  });
+
+  it("requires since on every named population", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      ["observe:", "  populations:", "    checkout-prod:", '      name: "checkout-agent"', ""].join(
+        "\n",
+      ),
+    );
+
+    await expect(loadPupilConfig({ cwd: tmpRoot })).rejects.toThrow(/since/);
+  });
+
+  it("allows a profile to override a population's since", async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "pupil-config-"));
+    await writeFile(
+      join(tmpRoot, "pupil.config.yaml"),
+      [
+        "observe:",
+        "  populations:",
+        "    checkout-prod:",
+        '      since: "24h"',
+        "profiles:",
+        "  staging:",
+        "    observe:",
+        "      populations:",
+        "        checkout-prod:",
+        '          since: "7d"',
+        "",
+      ].join("\n"),
+    );
+
+    const config = await loadPupilConfig({ cwd: tmpRoot, profile: "staging" });
+    expect(config.observe?.populations["checkout-prod"]?.since).toBe("7d");
   });
 });

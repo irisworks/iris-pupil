@@ -174,22 +174,52 @@ describe("runSeedPhase", () => {
 describe("filterSeedPhaseToolCalls", () => {
   const calls: ToolCall[] = [
     { name: "seed-tool", index: 0, startedAt: "2026-01-01T00:00:00.000Z" },
-    { name: "asserted-tool", index: 1, startedAt: "2026-01-01T00:00:05.000Z" },
+    { name: "asserted-tool", index: 1, startedAt: "2026-01-01T00:00:30.000Z" },
     { name: "unknown-timing-tool", index: 2 },
   ];
 
-  it("keeps calls at or after the boundary and drops earlier ones", () => {
-    const filtered = filterSeedPhaseToolCalls(calls, "2026-01-01T00:00:02.000Z");
+  it("keeps calls well after the boundary and drops clearly seed-phase ones", () => {
+    const filtered = filterSeedPhaseToolCalls(calls, "2026-01-01T00:00:20.000Z");
     expect(filtered?.map((call) => call.name)).toEqual(["asserted-tool", "unknown-timing-tool"]);
   });
 
+  it("keeps calls inside the clock-skew tolerance below the boundary", () => {
+    const skewed = [
+      ...calls,
+      { name: "skewed-tool", index: 3, startedAt: "2026-01-01T00:00:17.000Z" },
+    ];
+    const filtered = filterSeedPhaseToolCalls(skewed, "2026-01-01T00:00:20.000Z");
+    expect(filtered?.map((call) => call.name)).toEqual([
+      "asserted-tool",
+      "unknown-timing-tool",
+      "skewed-tool",
+    ]);
+  });
+
+  it("keeps calls with an unparseable startedAt rather than guessing them away", () => {
+    const malformed = [
+      ...calls,
+      { name: "malformed-tool", index: 3, startedAt: "not-a-timestamp" },
+    ];
+    const filtered = filterSeedPhaseToolCalls(malformed, "2026-01-01T00:00:20.000Z");
+    expect(filtered?.map((call) => call.name)).toEqual([
+      "asserted-tool",
+      "unknown-timing-tool",
+      "malformed-tool",
+    ]);
+  });
+
   it("keeps calls with no startedAt even when a boundary is set", () => {
-    const filtered = filterSeedPhaseToolCalls(calls, "2026-01-01T00:00:10.000Z");
-    expect(filtered?.map((call) => call.name)).toEqual(["unknown-timing-tool"]);
+    const filtered = filterSeedPhaseToolCalls(calls, "2026-01-01T00:00:20.000Z");
+    expect(filtered?.map((call) => call.name)).toContain("unknown-timing-tool");
   });
 
   it("returns calls unchanged when there is no boundary", () => {
     expect(filterSeedPhaseToolCalls(calls, undefined)).toBe(calls);
+  });
+
+  it("disables filtering when the boundary itself does not parse", () => {
+    expect(filterSeedPhaseToolCalls(calls, "not-a-timestamp")).toBe(calls);
   });
 
   it("returns undefined unchanged when there is no evidence at all", () => {

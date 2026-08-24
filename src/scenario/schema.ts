@@ -1,5 +1,5 @@
 import { z, type ZodError } from "zod";
-import type { Scenario } from "../core/types.js";
+import type { InvariantCheck, Scenario } from "../core/types.js";
 import { PupilError } from "../core/types.js";
 
 const metadataSchema = z.record(z.unknown()).default({});
@@ -192,6 +192,22 @@ const thresholdSchema = z
     message: "threshold requires at least one of min or max",
   });
 
+const invariantCheckSchema = z
+  .object({
+    assertion: assertionSchema.optional(),
+    threshold: thresholdSchema.optional(),
+    maxViolationRate: z.number().min(0).max(1).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.assertion === undefined) === (value.threshold === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "invariant requires exactly one of assertion or threshold",
+      });
+    }
+  });
+
 const manualSchema = z
   .object({
     required: z.boolean().default(true),
@@ -236,6 +252,7 @@ const rawScenarioSchema = z
     thresholds: z.array(thresholdSchema).optional(),
     manual: manualSchema.optional(),
     judge: judgeSchema.optional(),
+    invariants: z.array(invariantCheckSchema).default([]),
   })
   .strict()
   .refine((value) => value.input !== undefined || value.turns !== undefined, {
@@ -256,6 +273,19 @@ const inputObjectSchema = z
   .strict();
 
 export type RawScenario = z.infer<typeof rawScenarioSchema>;
+
+/** Normalize invariant wrappers for scenario YAML and repository policy files. */
+export function normalizeInvariantChecks(
+  raw: unknown,
+  sourceFile?: string,
+  pathPrefix: string[] = ["invariants"],
+): InvariantCheck[] {
+  const parsed = z.array(invariantCheckSchema).safeParse(raw);
+  if (!parsed.success) {
+    throw formatScenarioValidationError(parsed.error, sourceFile, pathPrefix);
+  }
+  return parsed.data as InvariantCheck[];
+}
 
 function normalizeInput(input: unknown, sourceFile?: string): Scenario["turns"] {
   if (typeof input === "string") {
@@ -308,6 +338,7 @@ export function normalizeScenario(raw: unknown, sourceFile?: string): Scenario {
       manual: scenario.manual ?? expectations.manual,
       judge: scenario.judge ?? expectations.judge,
     },
+    invariants: scenario.invariants as InvariantCheck[],
     ...(sourceFile !== undefined && { sourceFile }),
   };
 }

@@ -7,7 +7,13 @@ import {
   type TraceRecord,
   type TraceSource,
 } from "../trace/index.js";
-import { PupilError, type Scenario, type TurnRecord, Verdict } from "../core/types.js";
+import {
+  PupilError,
+  type LoadedInvariant,
+  type Scenario,
+  type TurnRecord,
+  Verdict,
+} from "../core/types.js";
 import {
   RestDriverError,
   type RestConversation,
@@ -23,8 +29,10 @@ import {
   progressEventTypeForVerdict,
   runScenario,
   runScenarios,
+  summarizeResults,
   type RunnerDriver,
 } from "./index.js";
+import type { ScenarioResult } from "../core/types.js";
 
 let mock: IrisMockAgent | undefined;
 
@@ -49,6 +57,7 @@ function scenario(overrides: Partial<Scenario> = {}): Scenario {
     },
     turns: [{ user: "please schedule", expect: [] }],
     expect: { assertions: [], thresholds: [] },
+    invariants: [],
     ...overrides,
   };
 }
@@ -810,6 +819,66 @@ describe("scenario runner", () => {
   });
 });
 
+describe("invariants", () => {
+  it("composes repo-level and scenario-level invariants as a pure union", async () => {
+    const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
+    const repoInvariants: LoadedInvariant[] = [
+      { check: { threshold: { metric: "turns", max: 5 } }, source: "repo" },
+    ];
+
+    const result = await runScenario(
+      scenario({ invariants: [{ threshold: { metric: "turns", min: 1 } }] }),
+      {
+        driverConfig: { baseUrl, originThreadTs: "invariants-union" },
+        invariants: repoInvariants,
+      },
+    );
+
+    const names = result.scores.map((score) => score.name);
+    expect(names).toContain("invariant:repo:threshold:turns");
+    expect(names).toContain("invariant:scenario:threshold:turns");
+  });
+
+  it("keeps a driven run strict even when the invariant's own maxViolationRate is lenient", async () => {
+    const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
+    const repoInvariants: LoadedInvariant[] = [
+      {
+        check: { threshold: { metric: "turns", max: 0 }, maxViolationRate: 0.9 },
+        source: "repo",
+      },
+    ];
+
+    const result = await runScenario(scenario(), {
+      driverConfig: { baseUrl, originThreadTs: "invariants-strict" },
+      invariants: repoInvariants,
+    });
+
+    const invariantScore = result.scores.find(
+      (score) => score.name === "invariant:repo:threshold:turns",
+    );
+    expect(invariantScore?.verdict).toBe(Verdict.Fail);
+    expect(result.verdict).toBe(Verdict.Fail);
+  });
+
+  it("escalates an invariant skip under --require-trace when tool evidence is missing", async () => {
+    const baseUrl = await mockBaseUrl({ rules: [{ match: "schedule", reply: "Scheduled." }] });
+
+    const result = await runScenario(
+      scenario({ invariants: [{ assertion: { type: "tool_not_called", tool: "legacy.search" } }] }),
+      {
+        driverConfig: { baseUrl, originThreadTs: "invariants-require-trace" },
+        requireTrace: true,
+      },
+    );
+
+    const invariantScore = result.scores.find(
+      (score) => score.name === "invariant:scenario:assertion:tool_not_called:legacy.search",
+    );
+    expect(invariantScore?.verdict).toBe(Verdict.Fail);
+    expect(invariantScore?.reason).toContain("--require-trace");
+  });
+});
+
 describe("runScenarios target identity", () => {
   it("writes target onto the RunResult when provided", async () => {
     const closes: string[] = [];
@@ -1352,5 +1421,24 @@ describe("seeded conversation state", () => {
     ).resolves.toMatchObject({ verdict: Verdict.Error });
 
     expect(mock?.requests).toEqual([]);
+  });
+});
+
+describe("summarizeResults", () => {
+  it("counts each verdict bucket", () => {
+    const results: ScenarioResult[] = [
+      { verdict: Verdict.Pass } as ScenarioResult,
+      { verdict: Verdict.Fail } as ScenarioResult,
+      { verdict: Verdict.NeedsReview } as ScenarioResult,
+      { verdict: Verdict.Error } as ScenarioResult,
+      { verdict: Verdict.Skip } as ScenarioResult,
+    ];
+    expect(summarizeResults(results)).toEqual({
+      total: 5,
+      passed: 1,
+      failed: 1,
+      needsReview: 1,
+      errors: 1,
+    });
   });
 });

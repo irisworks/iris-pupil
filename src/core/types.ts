@@ -158,6 +158,27 @@ export interface ThresholdCheck {
   min?: number;
 }
 
+/** A reusable assertion or threshold evaluated across one or more trajectories. */
+export type InvariantCheck =
+  | {
+      assertion: AssertionCheck;
+      threshold?: never;
+      maxViolationRate?: number;
+    }
+  | {
+      assertion?: never;
+      threshold: ThresholdCheck;
+      maxViolationRate?: number;
+    };
+
+export type InvariantSource = "repo" | "scenario";
+
+/** An invariant paired with the policy layer that contributed it. */
+export interface LoadedInvariant {
+  check: InvariantCheck;
+  source: InvariantSource;
+}
+
 export interface ManualScoringConfig {
   required: boolean;
   criteria: string[];
@@ -194,6 +215,7 @@ export interface Scenario {
   seed?: ScenarioSeed;
   turns: ScenarioTurn[];
   expect: ScenarioExpectations;
+  invariants: InvariantCheck[];
   sourceFile?: string;
 }
 

@@ -175,13 +175,25 @@ export async function runSeedPhase(
 }
 
 /**
+ * Tolerance subtracted from the seed boundary to absorb clock skew between the
+ * Pupil host (which stamps `seedCompletedAt`) and the trace backend (which
+ * stamps each call's `startedAt`). Without it, a host clock running ahead of
+ * the backend's would silently discard asserted-phase tool calls that landed
+ * just after seeding - exactly the evidence this filter exists to keep. The
+ * cost is symmetric: a genuine seed-phase call inside the window leaks in,
+ * which matches this codebase's risk-extra-evidence bias.
+ */
+export const SEED_FILTER_CLOCK_SKEW_TOLERANCE_MS = 5_000;
+
+/**
  * `replay`/`fork` make real driver calls during the seed phase, so a tool
  * triggered while seeding is otherwise indistinguishable - in Langfuse's
  * session-level trace - from one triggered during the asserted turns. Drops
- * anything timestamped before the seed phase finished; keeps anything with no
- * timestamp at all, since we cannot prove those were seed-phase and this
- * codebase's existing bias is to risk extra evidence over silently discarding
- * real evidence.
+ * anything timestamped more than the skew tolerance before the seed phase
+ * finished; keeps anything whose timing cannot be proven - no timestamp at
+ * all, or one that does not parse - since this codebase's existing bias is to
+ * risk extra evidence over silently discarding real evidence. An unparseable
+ * boundary disables filtering entirely rather than guessing one.
  */
 export function filterSeedPhaseToolCalls(
   calls: readonly ToolCall[] | undefined,
@@ -189,7 +201,12 @@ export function filterSeedPhaseToolCalls(
 ): readonly ToolCall[] | undefined {
   if (calls === undefined || seedCompletedAt === undefined) return calls;
   const boundaryMs = Date.parse(seedCompletedAt);
-  return calls.filter(
-    (call) => call.startedAt === undefined || Date.parse(call.startedAt) >= boundaryMs,
-  );
+  if (Number.isNaN(boundaryMs)) return calls;
+  const effectiveBoundary = boundaryMs - SEED_FILTER_CLOCK_SKEW_TOLERANCE_MS;
+  return calls.filter((call) => {
+    if (call.startedAt === undefined) return true;
+    const startedMs = Date.parse(call.startedAt);
+    if (Number.isNaN(startedMs)) return true;
+    return startedMs >= effectiveBoundary;
+  });
 }

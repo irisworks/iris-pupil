@@ -1,0 +1,19 @@
+# Repo-wide invariant policy for IRIS-163's demo config
+# (examples/invariants/pupil.config.yaml). Every check here composes with
+# each scenario's own `invariants:` block as a pure union -- both layers are
+# always evaluated, and a scenario cannot suppress a repo-level check. See
+# the "Invariants" section in CLAUDE.md.
+invariants:
+  # No scenario in this project should ever reach for a retired tool. Same
+  # check the demo scenario declares for itself -- this proves composition
+  # doesn't de-duplicate: the repo-level and scenario-level copies both show
+  # up as distinct scores (`invariant:repo:...` and `invariant:scenario:...`).
+  - assertion:
+      type: tool_not_called
+      tool: search.deprecated_v1
+
+  # Cost ceiling that holds for any conversation. Trace-derived, so it skips
+  # rather than fails when no trace source is configured.
+  - threshold:
+      metric: cost_usd
+      max: 0.10

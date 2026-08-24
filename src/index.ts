@@ -1,6 +1,7 @@
 export * from "./core/config.js";
 export * from "./core/types.js";
 export * from "./scenario/index.js";
+export * from "./invariants/index.js";
 export * from "./mock/irisMockAgent.js";
 export { MockTraceSource } from "./mock/mockTraceSource.js";
 export * from "./driver/index.js";
@@ -17,8 +18,16 @@ export {
 } from "./eval/toolAssertions.js";
 
 export {
+  evaluateInvariant,
+  evaluateInvariants,
+  type InvariantEvaluationOptions,
+} from "./eval/invariants.js";
+
+export {
   applyTraceEnrichment,
   summarizeTraceRun,
+  metricsFromTraceRecord,
+  trajectoryFromTraceRecord,
   NO_CORRELATION_KEY_REASON,
   NO_TRACE_FOUND_REASON,
   type TraceSource,
@@ -26,15 +35,26 @@ export {
   type TraceLookupContext,
   type TraceLookupResult,
   type TraceStatus,
+  type TracePopulationSource,
+  type TracePopulationQuery,
 } from "./trace/index.js";
 
 export {
   extractLangfuseEnrichment,
   langfuseConfigFromEnv,
   LangfuseTraceSource,
+  LangfuseTracePopulationSource,
   resolveLangfuseConfig,
   type LangfuseConfig,
   type LangfuseEnrichment,
   type LangfuseSettings,
   type LangfuseTraceSourceOptions,
 } from "./langfuse/index.js";
+
+export {
+  resolvePopulationQuery,
+  buildObserveResult,
+  type BuildObserveResultOptions,
+} from "./observe/index.js";
+
+export { resolveTimeBound } from "./observe/time.js";
