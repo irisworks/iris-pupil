@@ -93,6 +93,27 @@ describe("normalizeScenario", () => {
     });
   });
 
+  it("rejects a judge rubric choice with no matching choiceScores entry, even a prototype property name", () => {
+    expect(() =>
+      normalizeScenario({
+        id: "bad-rubric",
+        input: "Hello",
+        expect: {
+          judge: {
+            enabled: true,
+            prompt: "Judge this.",
+            rubric: {
+              // "toString" exists on Object.prototype, so a naive `choice in choiceScores`
+              // check would wrongly treat it as present even with an empty choiceScores map.
+              choices: ["toString"],
+              choiceScores: {},
+            },
+          },
+        },
+      }),
+    ).toThrow(/every rubric choice must have a matching choiceScores entry/);
+  });
+
   it("defaults manual criteria to a single overall criterion", () => {
     const scenario = normalizeScenario({
       id: "manual-default",

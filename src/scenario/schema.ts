@@ -223,7 +223,7 @@ const judgeRubricSchema = z
     choiceScores: z.record(z.nativeEnum(Verdict)),
   })
   .strict()
-  .refine((value) => value.choices.every((choice) => choice in value.choiceScores), {
+  .refine((value) => value.choices.every((choice) => Object.hasOwn(value.choiceScores, choice)), {
     message: "every rubric choice must have a matching choiceScores entry",
   });
 
