@@ -222,7 +222,7 @@ describe("RestDriver", () => {
   });
 
   it("omits the traceparent header when send() is called without one", async () => {
-    let capturedHeader: string | undefined | null;
+    let capturedHeader: string | string[] | undefined | null;
     server = createServer((req, res) => {
       if (req.url === "/sessions") {
         res.writeHead(201, { "content-type": "application/json" });
