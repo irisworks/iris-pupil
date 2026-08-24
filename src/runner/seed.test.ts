@@ -18,6 +18,7 @@ function baseScenario(overrides: Partial<Scenario> = {}): Scenario {
     driver: { type: "rest", config: {} },
     turns: [{ user: "the real question", expect: [] }],
     expect: { assertions: [], thresholds: [] },
+    invariants: [],
     ...overrides,
   };
 }

@@ -138,6 +138,7 @@ describe("core domain types", () => {
       },
       turns: [{ user: "ask", expect: [] }],
       expect: { assertions: [], thresholds: [] },
+      invariants: [],
     };
 
     const seedTurn: TurnRecord = {
