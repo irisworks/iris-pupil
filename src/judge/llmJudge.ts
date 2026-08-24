@@ -97,7 +97,15 @@ export class LlmJudge implements JudgeProvider {
       throw new JudgeInvocationError(`Judge endpoint returned ${response.status}`);
     }
 
-    const payload = (await response.json()) as unknown;
+    let payload: unknown;
+    try {
+      payload = (await response.json()) as unknown;
+    } catch (error) {
+      throw new JudgeInvocationError(
+        `Judge endpoint response was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     const toolCall = extractToolCall(payload);
     if (!toolCall) {
       throw new JudgeInvocationError("Judge response contained no select_choice tool call");
@@ -108,20 +116,22 @@ export class LlmJudge implements JudgeProvider {
       throw new JudgeInvocationError("Judge tool call arguments were not a string");
     }
 
-    let args: { reasoning?: string; choice?: string };
+    let args: { reasoning?: string; choice?: unknown };
     try {
-      args = JSON.parse(rawArgs) as { reasoning?: string; choice?: string };
+      args = JSON.parse(rawArgs) as { reasoning?: string; choice?: unknown };
     } catch {
       throw new JudgeInvocationError("Judge tool call arguments were not valid JSON");
     }
 
-    const choice = args.choice?.trim();
-    const verdict = choice !== undefined ? request.rubric.choiceScores[choice] : undefined;
-    if (choice === undefined || verdict === undefined) {
-      throw new JudgeInvocationError(
-        `Judge selected an unrecognized choice: ${choice ?? "<none>"}`,
-      );
+    if (typeof args.choice !== "string") {
+      throw new JudgeInvocationError("Judge selected a non-string choice");
     }
+
+    const choice = args.choice.trim();
+    if (!Object.hasOwn(request.rubric.choiceScores, choice)) {
+      throw new JudgeInvocationError(`Judge selected an unrecognized choice: ${choice}`);
+    }
+    const verdict = request.rubric.choiceScores[choice];
 
     return {
       verdict,

@@ -9,7 +9,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function toolCallResponse(args: Record<string, unknown>) {
+function toolCallResponse(args: Record<string, unknown>, name = "select_choice") {
   return jsonResponse({
     choices: [
       {
@@ -17,7 +17,7 @@ function toolCallResponse(args: Record<string, unknown>) {
           tool_calls: [
             {
               function: {
-                name: "select_choice",
+                name,
                 arguments: JSON.stringify(args),
               },
             },
@@ -85,6 +85,19 @@ describe("LlmJudge", () => {
     ).rejects.toThrow(JudgeInvocationError);
   });
 
+  it("throws JudgeInvocationError when the tool call is for the wrong tool name", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        toolCallResponse({ reasoning: "Looks correct.", choice: "PASS" }, "pick_one"),
+      );
+    const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+
+    await expect(
+      judge.judge({ prompt: "Grade this.", rubric: RUBRIC, output: "code", model: "gpt-4o-mini" }),
+    ).rejects.toThrow(JudgeInvocationError);
+  });
+
   it("throws JudgeInvocationError when the model selects a choice absent from choiceScores", async () => {
     const fetchImpl = vi
       .fn()
@@ -111,6 +124,43 @@ describe("LlmJudge", () => {
 
     await expect(
       judge.judge({ prompt: "Grade this.", rubric: RUBRIC, output: "code", model: "gpt-4o-mini" }),
+    ).rejects.toThrow(JudgeInvocationError);
+  });
+
+  it("throws JudgeInvocationError when the judge endpoint returns a 200 with a non-JSON body", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("<html>gateway</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+
+    await expect(
+      judge.judge({ prompt: "Grade this.", rubric: RUBRIC, output: "code", model: "gpt-4o-mini" }),
+    ).rejects.toThrow(JudgeInvocationError);
+  });
+
+  it("throws JudgeInvocationError when the tool call's choice is not a string", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(toolCallResponse({ reasoning: "Uncertain.", choice: 1 }));
+    const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+
+    await expect(
+      judge.judge({ prompt: "Grade this.", rubric: RUBRIC, output: "code", model: "gpt-4o-mini" }),
+    ).rejects.toThrow(JudgeInvocationError);
+  });
+
+  it("throws JudgeInvocationError rather than resolving a prototype-chain value for an unowned choice key", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(toolCallResponse({ reasoning: "Uncertain.", choice: "constructor" }));
+    const judge = new LlmJudge({ baseUrl: "https://judge.example.com/v1" }, fetchImpl);
+    const rubric = { choices: ["PASS"], choiceScores: { PASS: Verdict.Pass } };
+
+    await expect(
+      judge.judge({ prompt: "Grade this.", rubric, output: "code", model: "gpt-4o-mini" }),
     ).rejects.toThrow(JudgeInvocationError);
   });
 
