@@ -223,6 +223,9 @@ export class RestDriver implements Driver {
     }
 
     if (traceparent !== undefined) {
+      for (const key of Object.keys(rendered)) {
+        if (key.toLowerCase() === "traceparent") delete rendered[key];
+      }
       rendered.traceparent = traceparent;
     }
 

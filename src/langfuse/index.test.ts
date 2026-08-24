@@ -871,6 +871,31 @@ describe("LangfuseTraceSource lookup", () => {
     expect(record).toMatchObject({ traceId: "trace-found", resolvedVia: "session" });
   });
 
+  it("falls back to the session lookup when the direct trace-id lookup fails with a non-404 error", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const target = String(url);
+      if (target.includes("/api/public/traces/trace-broken")) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      if (target.includes("/api/public/traces?")) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: "trace-found" }] }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "trace-found", totalCost: 0.02 }),
+      };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1", { traceId: "trace-broken" });
+
+    expect(record).toMatchObject({ traceId: "trace-found", resolvedVia: "session" });
+  });
+
   it("marks resolvedVia as session when no traceId is given at all", async () => {
     const fetchImpl = (async (url: string | URL) => {
       const target = String(url);

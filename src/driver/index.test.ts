@@ -221,6 +221,40 @@ describe("RestDriver", () => {
     expect(capturedHeader).toBe("00-abc-def-01");
   });
 
+  it("does not let a differently-cased scenario header coexist with the canonical traceparent header", async () => {
+    let capturedHeaders: string[] | undefined;
+    let capturedValue: string | undefined;
+    server = createServer((req, res) => {
+      if (req.url === "/sessions") {
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify({ sessionId: "session-1" }));
+        return;
+      }
+      capturedHeaders = req.rawHeaders
+        .filter((_value, index) => index % 2 === 0)
+        .filter((name) => name.toLowerCase() === "traceparent");
+      capturedValue = req.headers.traceparent as string | undefined;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ text: "ok" }));
+    });
+    const baseUrl = await listen(server);
+    const driver = irisDriver(baseUrl, {
+      send: {
+        method: "POST",
+        path: "/sessions/{{conversationId}}/message",
+        headers: { Traceparent: "junk" },
+        body: { text: "{{message}}" },
+        extract: { reply: "$.text" },
+      },
+    });
+    const conversation = await driver.createConversation({ threadTs: "thread-1" });
+
+    await driver.send(conversation, "hello", { traceparent: "00-abc-def-01" });
+
+    expect(capturedHeaders).toHaveLength(1);
+    expect(capturedValue).toBe("00-abc-def-01");
+  });
+
   it("omits the traceparent header when send() is called without one", async () => {
     let capturedHeader: string | string[] | undefined | null;
     server = createServer((req, res) => {

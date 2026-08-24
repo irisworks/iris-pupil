@@ -564,19 +564,25 @@ export class LangfuseTraceSource implements TraceSource {
     const timeoutMs = this.options.timeoutMs ?? DEFAULT_LANGFUSE_TIMEOUT_MS;
 
     if (context?.traceId) {
-      const direct = await fetchTraceById(this.config, context.traceId, this.fetchImpl, timeoutMs);
-      if (direct) {
-        return {
-          traceId: direct.traceId,
-          traceUrl: direct.traceUrl,
-          traceCount: direct.traceCount,
-          costUsd: direct.costUsd,
-          inputTokens: direct.inputTokens,
-          outputTokens: direct.outputTokens,
-          totalTokens: direct.totalTokens,
-          toolCalls: direct.toolCalls,
-          resolvedVia: "traceparent",
-        };
+      try {
+        const direct = await fetchTraceById(this.config, context.traceId, this.fetchImpl, timeoutMs);
+        if (direct) {
+          return {
+            traceId: direct.traceId,
+            traceUrl: direct.traceUrl,
+            traceCount: direct.traceCount,
+            costUsd: direct.costUsd,
+            inputTokens: direct.inputTokens,
+            outputTokens: direct.outputTokens,
+            totalTokens: direct.totalTokens,
+            toolCalls: direct.toolCalls,
+            resolvedVia: "traceparent",
+          };
+        }
+      } catch {
+        // Direct lookup is an optimization only: any failure (non-404 status, network
+        // error, timeout) falls through to the session poll below, which is the
+        // pre-traceparent behavior and the only path that currently works against real IRIS.
       }
     }
 
