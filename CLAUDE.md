@@ -31,6 +31,14 @@ The read-only commands (`list`, `report`, `baseline`, `score`) need nothing from
 
 `pupil run` enriches each scenario result with Langfuse trace evidence (trace id/url, cost, tokens, tool calls) as soon as the scenario finishes, so cost and token thresholds are scored against the enriched metrics. It is best-effort: lookup failures are recorded in `metadata.langfuse` and never change a run's verdict.
 
+Correlation now tries direct trace-id lookup first: the runner generates a W3C trace id per
+scenario attempt and sends it as a `traceparent` header on every driven request. If the agent's
+OTel instrumentation adopts it (standard HTTP auto-instrumentation does this for free), Pupil
+resolves the trace by that known id with a single direct lookup — no polling. If the agent doesn't
+propagate it, correlation falls back unchanged to the existing session-based poll. Either way,
+`metadata.langfuse.correlationStrategy` records which one actually resolved the trace
+(`"traceparent"` or `"session"`).
+
 That still holds: a failed lookup produces `Verdict.Skip`, which has the same severity as `Pass`.
 But tool assertions now _depend_ on this evidence and skip without it, so a green run with skipped
 tool assertions means "not checked", not "verified" - see Tool Assertions below and

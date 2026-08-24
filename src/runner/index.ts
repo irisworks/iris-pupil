@@ -35,6 +35,7 @@ import {
 import { evaluateInvariants } from "../eval/invariants.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
 import { applyTraceRequirement } from "../eval/toolAssertions.js";
+import { generateSpanId, generateTraceId, formatTraceparent } from "../trace/traceparent.js";
 import {
   assertSeedCapability,
   filterSeedPhaseToolCalls,
@@ -53,7 +54,11 @@ export interface RunnerDriver {
   createConversation(
     context?: Record<string, string | number | boolean | null | undefined>,
   ): Promise<RestConversation>;
-  send(conversation: RestConversation, message: string): Promise<RestDriverResponse>;
+  send(
+    conversation: RestConversation,
+    message: string,
+    requestContext?: { traceparent?: string },
+  ): Promise<RestDriverResponse>;
   closeConversation(conversation: RestConversation): Promise<void>;
   supportsSeedStrategy?(strategy: SeedStrategy): boolean;
   fork?(conversation: RestConversation): Promise<RestConversation>;
@@ -187,6 +192,7 @@ async function enrichWithTraceSource(
   result: ScenarioResult,
   source: TraceSource,
   startedAt: number,
+  traceId?: string,
 ): Promise<readonly ToolCall[] | undefined> {
   const key = extractCorrelationKey(result);
   let lookup: TraceLookupResult;
@@ -195,7 +201,7 @@ async function enrichWithTraceSource(
     lookup = { status: "missing", reason: NO_CORRELATION_KEY_REASON };
   } else {
     try {
-      const record = await source.resolve(key, { startedAt });
+      const record = await source.resolve(key, { startedAt, traceId });
       lookup = record ? { status: "found", record } : { status: "missing" };
     } catch (error) {
       lookup = { status: "error", reason: error instanceof Error ? error.message : String(error) };
@@ -380,6 +386,7 @@ async function executeAttempt(
   driver: RunnerDriver,
   context: RunnerDriverContext,
   timeoutMs: number,
+  traceId: string,
 ): Promise<ScenarioAttemptResult> {
   assertSeedCapability(scenario, driver);
 
@@ -426,7 +433,9 @@ async function executeAttempt(
       turns.push(record);
 
       try {
-        const response = await driver.send(conversation, turn.user);
+        const response = await driver.send(conversation, turn.user, {
+          traceparent: formatTraceparent(traceId, generateSpanId()),
+        });
         const completedAt = now();
         record.completedAt = completedAt;
         record.latencyMs = Date.parse(completedAt) - Date.parse(startedAt);
@@ -485,6 +494,7 @@ export async function runScenario(
   let lastError: unknown;
   let lastTurns: TurnRecord[] = [];
   let lastSessionId: string | undefined;
+  let lastTraceId: string | undefined;
   let attemptsUsed = 0;
   let lastAttemptStartedAtMs = startedAtMs;
 
@@ -494,13 +504,15 @@ export async function runScenario(
     attemptsUsed = attempt;
     const attemptStartedAtMs = Date.now();
     lastAttemptStartedAtMs = attemptStartedAtMs;
+    const traceId = generateTraceId();
+    lastTraceId = traceId;
     const config = mergedDriverConfig(scenario, options.projectDriverConfig, options.driverConfig);
     const context = { runId, scenarioId: scenario.id, attempt, config };
     const driver =
       options.driverFactory?.(scenario, context) ?? createDriverForScenario(scenario, context);
 
     try {
-      const attemptResult = await executeAttempt(scenario, driver, context, timeoutMs);
+      const attemptResult = await executeAttempt(scenario, driver, context, timeoutMs, traceId);
       const turns = attemptResult.turns;
       const completedAt = now();
       const baseResult: ScenarioResult = {
@@ -525,7 +537,12 @@ export async function runScenario(
       // Enrich before scoring so cost/token thresholds see the trace metrics.
       let toolCalls: readonly ToolCall[] | undefined;
       if (traceSource) {
-        toolCalls = await enrichWithTraceSource(baseResult, traceSource, attemptStartedAtMs);
+        toolCalls = await enrichWithTraceSource(
+          baseResult,
+          traceSource,
+          attemptStartedAtMs,
+          traceId,
+        );
         toolCalls = filterSeedPhaseToolCalls(toolCalls, attemptResult.seedCompletedAt);
         if (toolCalls !== undefined) {
           baseResult.metrics.tool_calls = new Set(toolCalls.map((call) => call.name)).size;
@@ -599,7 +616,7 @@ export async function runScenario(
   );
   // Failed scenarios are exactly where a trace URL is most useful.
   if (traceSource) {
-    await enrichWithTraceSource(result, traceSource, lastAttemptStartedAtMs);
+    await enrichWithTraceSource(result, traceSource, lastAttemptStartedAtMs, lastTraceId);
   }
   options.progress?.({
     type: "scenario:error",

@@ -501,6 +501,118 @@ describe("span store — trace pass on message", () => {
       { name: "email.send", index: 2, error: "smtp down" },
     ]);
   });
+
+  it("aliases recorded tool-call spans under the traceparent trace id by default", async () => {
+    const spanStore = new Map<string, ToolCall[]>();
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["calendar.create"] }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      body: JSON.stringify({ text: "hello" }),
+    });
+
+    expect(spanStore.get("4bf92f3577b34da6a3ce929d0e0e4736")).toEqual(
+      spanStore.get(session.sessionId),
+    );
+  });
+
+  it("does not alias spans under the trace id when the message opts out with __ignore-traceparent__", async () => {
+    const spanStore = new Map<string, ToolCall[]>();
+    mock = createIrisMockAgent({ port: 0, defaultToolCalls: ["calendar.create"] }, spanStore);
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+    const session = await createSession(baseUrl);
+
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      body: JSON.stringify({ text: "hello __ignore-traceparent__" }),
+    });
+
+    expect(spanStore.get("4bf92f3577b34da6a3ce929d0e0e4736")).toBeUndefined();
+    expect(spanStore.get(session.sessionId)).toHaveLength(1);
+  });
+});
+
+describe("fork and history-seeded session creation", () => {
+  it("forks a session, cloning its history into a new session id", async () => {
+    mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const session = await createSession(baseUrl);
+    await fetch(`${baseUrl}/sessions/${session.sessionId}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "warm up" }),
+    });
+
+    const forkResponse = await fetch(`${baseUrl}/sessions/${session.sessionId}/fork`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(forkResponse.status).toBe(201);
+    const forked = (await forkResponse.json()) as { sessionId: string };
+    expect(forked.sessionId).not.toBe(session.sessionId);
+
+    const historyResponse = await fetch(`${baseUrl}/sessions/${forked.sessionId}/history`);
+    const { history } = (await historyResponse.json()) as { history: unknown[] };
+    expect(history).toHaveLength(2);
+  });
+
+  it("returns 404 when forking an unknown session", async () => {
+    mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/sessions/does-not-exist/fork`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("seeds a new session's history when creating it with an inject-style history payload", async () => {
+    mock = createIrisMockAgent({ port: 0 });
+    const address = await mock.listen();
+    const baseUrl = `http://${address.host}:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        originChannel: "test",
+        originThreadTs: "thread-inject",
+        history: [
+          { role: "user", content: "seeded question" },
+          { role: "assistant", content: "seeded answer" },
+        ],
+      }),
+    });
+    expect(response.status).toBe(201);
+    const session = (await response.json()) as { sessionId: string };
+
+    const historyResponse = await fetch(`${baseUrl}/sessions/${session.sessionId}/history`);
+    const { history } = (await historyResponse.json()) as {
+      history: Array<{ role: string; content: string }>;
+    };
+    expect(history.map((entry) => [entry.role, entry.content])).toEqual([
+      ["user", "seeded question"],
+      ["assistant", "seeded answer"],
+    ]);
+  });
 });
 
 describe("fork and history-seeded session creation", () => {

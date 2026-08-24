@@ -565,6 +565,7 @@ describe("LangfuseTraceSource lookup", () => {
       outputTokens: 5,
       totalTokens: 15,
       toolCalls: [{ name: "calendar.create", index: 0 }],
+      resolvedVia: "session",
     });
   });
 
@@ -825,6 +826,95 @@ describe("LangfuseTraceSource lookup", () => {
     await expect(
       new LangfuseTraceSource(config(stub.baseUrl), undefined, { waitMs: 0 }).resolve("session-1"),
     ).resolves.toBeUndefined();
+  });
+
+  it("resolves directly by trace id with a single fetch call, no session polling", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "trace-9", totalCost: 0.01 }),
+      };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1", { traceId: "trace-9" });
+
+    expect(record).toMatchObject({ traceId: "trace-9", resolvedVia: "traceparent" });
+    expect(calls).toEqual(["http://langfuse.local/api/public/traces/trace-9"]);
+  });
+
+  it("falls back to the session lookup when the direct trace-id lookup 404s", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const target = String(url);
+      if (target.includes("/api/public/traces/trace-missing")) {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      if (target.includes("/api/public/traces?")) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: "trace-found" }] }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "trace-found", totalCost: 0.02 }),
+      };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1", { traceId: "trace-missing" });
+
+    expect(record).toMatchObject({ traceId: "trace-found", resolvedVia: "session" });
+  });
+
+  it("falls back to the session lookup when the direct trace-id lookup fails with a non-404 error", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const target = String(url);
+      if (target.includes("/api/public/traces/trace-broken")) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      if (target.includes("/api/public/traces?")) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: "trace-found" }] }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "trace-found", totalCost: 0.02 }),
+      };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1", { traceId: "trace-broken" });
+
+    expect(record).toMatchObject({ traceId: "trace-found", resolvedVia: "session" });
+  });
+
+  it("marks resolvedVia as session when no traceId is given at all", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const target = String(url);
+      if (target.includes("/api/public/traces?")) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: "trace-found" }] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ id: "trace-found", totalCost: 0.02 }) };
+    }) as unknown as typeof fetch;
+
+    const source = new LangfuseTraceSource(config("http://langfuse.local"), fetchImpl, {
+      waitMs: 0,
+    });
+
+    const record = await source.resolve("session-1");
+
+    expect(record).toMatchObject({ resolvedVia: "session" });
   });
 });
 
@@ -1154,5 +1244,43 @@ describe("buildV2ObservationsUrl", () => {
   it("omits the filter param entirely when neither name, tags, nor userId are set", () => {
     const url = buildV2ObservationsUrl(config, { since: "24h" }, now);
     expect(url.searchParams.has("filter")).toBe(false);
+  });
+});
+
+describe("extractLangfuseEnrichmentsPerTrace", () => {
+  it("returns one enrichment per distinct traceId in a v2 observations payload", () => {
+    const payload = {
+      data: [
+        {
+          traceId: "trace-a",
+          type: "TOOL",
+          name: "search",
+          input: { query: "x" },
+          startTime: "2026-08-21T00:00:00.000Z",
+          usage: { input: 10, output: 5 },
+        },
+        {
+          traceId: "trace-b",
+          type: "TOOL",
+          name: "book",
+          startTime: "2026-08-21T00:00:01.000Z",
+          usage: { input: 20, output: 8 },
+        },
+      ],
+    };
+
+    const enrichments = extractLangfuseEnrichmentsPerTrace(payload);
+    expect(enrichments).toHaveLength(2);
+
+    const byTrace = new Map(enrichments.map((e) => [e.traceId, e]));
+    expect(byTrace.get("trace-a")?.toolCalls.map((c) => c.name)).toEqual(["search"]);
+    expect(byTrace.get("trace-a")?.inputTokens).toBe(10);
+    expect(byTrace.get("trace-b")?.toolCalls.map((c) => c.name)).toEqual(["book"]);
+    expect(byTrace.get("trace-b")?.inputTokens).toBe(20);
+    expect(byTrace.get("trace-a")?.traceCount).toBe(1);
+  });
+
+  it("returns an empty array for a payload with no traces", () => {
+    expect(extractLangfuseEnrichmentsPerTrace({ data: [] })).toEqual([]);
   });
 });

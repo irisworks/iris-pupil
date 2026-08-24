@@ -162,13 +162,21 @@ export class RestDriver implements Driver {
     return { id: asString(extractJsonPath(raw, idPath), "conversationId"), raw };
   }
 
-  async send(conversation: RestConversation, message: string): Promise<RestDriverResponse> {
-    const raw = await this.executeTemplate(this.config.send, {
-      conversationId: conversation.id,
-      sessionId: conversation.id,
-      message,
-      text: message,
-    });
+  async send(
+    conversation: RestConversation,
+    message: string,
+    requestContext?: { traceparent?: string },
+  ): Promise<RestDriverResponse> {
+    const raw = await this.executeTemplate(
+      this.config.send,
+      {
+        conversationId: conversation.id,
+        sessionId: conversation.id,
+        message,
+        text: message,
+      },
+      requestContext?.traceparent,
+    );
     const replyPath = this.config.send.extract?.reply ?? "$.text";
     return { text: asString(extractJsonPath(raw, replyPath), "reply"), raw };
   }
@@ -221,10 +229,11 @@ export class RestDriver implements Driver {
   private async executeTemplate(
     template: RestRequestTemplate,
     context: TemplateContext,
+    traceparent?: string,
   ): Promise<unknown> {
     const method = renderTemplate(template.method ?? "POST", context).toUpperCase();
     const path = renderTemplate(template.path, context);
-    const headers = this.renderHeaders(template.headers, context);
+    const headers = this.renderHeaders(template.headers, context, traceparent);
     const body =
       template.body === undefined ? undefined : renderTemplateValue(template.body, context);
 
@@ -234,6 +243,7 @@ export class RestDriver implements Driver {
   private renderHeaders(
     requestHeaders: Record<string, string> | undefined,
     context: TemplateContext,
+    traceparent?: string,
   ): Record<string, string> {
     const headers: Record<string, string> = {
       ...(this.config.headers ?? {}),
@@ -248,6 +258,14 @@ export class RestDriver implements Driver {
     for (const [key, value] of Object.entries(headers)) {
       rendered[key] = renderTemplate(value, context);
     }
+
+    if (traceparent !== undefined) {
+      for (const key of Object.keys(rendered)) {
+        if (key.toLowerCase() === "traceparent") delete rendered[key];
+      }
+      rendered.traceparent = traceparent;
+    }
+
     return rendered;
   }
 
