@@ -1246,3 +1246,42 @@ describe("buildV2ObservationsUrl", () => {
     expect(url.searchParams.has("filter")).toBe(false);
   });
 });
+
+describe("extractLangfuseEnrichmentsPerTrace", () => {
+  it("returns one enrichment per distinct traceId in a v2 observations payload", () => {
+    const payload = {
+      data: [
+        {
+          traceId: "trace-a",
+          type: "TOOL",
+          name: "search",
+          input: { query: "x" },
+          startTime: "2026-08-21T00:00:00.000Z",
+          usage: { input: 10, output: 5 },
+        },
+        {
+          traceId: "trace-b",
+          type: "TOOL",
+          name: "book",
+          startTime: "2026-08-21T00:00:01.000Z",
+          usage: { input: 20, output: 8 },
+        },
+      ],
+    };
+
+    const enrichments = extractLangfuseEnrichmentsPerTrace(payload);
+    expect(enrichments).toHaveLength(2);
+
+    const byTrace = new Map(enrichments.map((e) => [e.traceId, e]));
+    expect(byTrace.get("trace-a")?.toolCalls.map((c) => c.name)).toEqual(["search"]);
+    expect(byTrace.get("trace-a")?.inputTokens).toBe(10);
+    expect(byTrace.get("trace-b")?.toolCalls.map((c) => c.name)).toEqual(["book"]);
+    expect(byTrace.get("trace-b")?.inputTokens).toBe(20);
+    expect(byTrace.get("trace-a")?.traceCount).toBe(1);
+  });
+
+  it("returns an empty array for a payload with no traces", () => {
+    expect(extractLangfuseEnrichmentsPerTrace({ data: [] })).toEqual([]);
+  });
+});
+
