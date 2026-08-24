@@ -45,8 +45,14 @@ expect:
       The agent was first asked to write a recursive factorial in Python, then
       asked to add ValueError for negative inputs. Evaluate the final response:
       does it include a working factorial with proper negative-input validation?
+      Select PASS if it raises ValueError (or equivalent) for negative n, still
+      handles n=0 correctly, the recursion or iteration is correct, and the
+      code is readable and complete. Select NEEDS_REVIEW if it is close but has
+      a minor issue. Select FAIL if negative-input validation is missing or the
+      factorial logic is broken.
     rubric:
-      - Raises ValueError (or equivalent) for negative n
-      - Still handles n=0 correctly
-      - Recursion or iteration is correct
-      - Code is readable and complete
+      choices: [PASS, NEEDS_REVIEW, FAIL]
+      choiceScores:
+        PASS: pass
+        NEEDS_REVIEW: needs_review
+        FAIL: fail

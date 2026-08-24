@@ -403,7 +403,7 @@ describe("manual and judge evaluators", () => {
   });
 
   it("emits a skip score for configured judge blocks without LLM config", () => {
-    const scores = evaluateJudge({ enabled: true, prompt: "Judge this response.", rubric: [] });
+    const scores = evaluateJudge({ enabled: true, prompt: "Judge this response." });
 
     expect(scores).toHaveLength(1);
     expect(scores[0]).toMatchObject({

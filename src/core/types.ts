@@ -186,10 +186,16 @@ export interface ManualScoringConfig {
   rubric?: string[];
 }
 
+/** Forced-tool-call choice set: every entry in `choices` must have a matching `choiceScores` entry. */
+export interface JudgeRubric {
+  choices: string[];
+  choiceScores: Record<string, Verdict>;
+}
+
 export interface JudgeConfig {
   enabled: boolean;
   prompt?: string;
-  rubric?: string[];
+  rubric?: JudgeRubric;
   model?: string;
 }
 

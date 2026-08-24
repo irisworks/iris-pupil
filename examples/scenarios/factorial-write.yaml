@@ -39,8 +39,14 @@ expect:
       The agent was asked to write a Python factorial function that handles n=0.
       Evaluate whether the response includes: a correct recursive or iterative
       implementation, a base case for 0 (returning 1), and runnable Python syntax.
+      Select PASS if all of the following hold: returns 1 for n=0, handles
+      positive integers correctly, uses valid Python syntax, and has no
+      obvious off-by-one errors. Select NEEDS_REVIEW if the implementation is
+      close but has a minor issue. Select FAIL if the function is missing,
+      incorrect, or not valid Python.
     rubric:
-      - Returns 1 for n=0
-      - Handles positive integers correctly
-      - Uses valid Python syntax
-      - No obvious off-by-one errors
+      choices: [PASS, NEEDS_REVIEW, FAIL]
+      choiceScores:
+        PASS: pass
+        NEEDS_REVIEW: needs_review
+        FAIL: fail

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Verdict } from "../core/types.js";
 import { normalizeScenario } from "./schema.js";
 
 describe("normalizeScenario", () => {
@@ -64,7 +65,10 @@ describe("normalizeScenario", () => {
           enabled: true,
           model: "gpt-4.1-mini",
           prompt: "Judge task completion.",
-          rubric: ["No clarification required"],
+          rubric: {
+            choices: ["PASS", "FAIL"],
+            choiceScores: { PASS: Verdict.Pass, FAIL: Verdict.Fail },
+          },
         },
       },
     });
@@ -83,6 +87,10 @@ describe("normalizeScenario", () => {
     expect(scenario.expect.manual?.criteria).toEqual(["correctness", "safety"]);
     expect(scenario.expect.manual?.rubric).toEqual(["Calendar event created"]);
     expect(scenario.expect.judge?.model).toBe("gpt-4.1-mini");
+    expect(scenario.expect.judge?.rubric).toEqual({
+      choices: ["PASS", "FAIL"],
+      choiceScores: { PASS: Verdict.Pass, FAIL: Verdict.Fail },
+    });
   });
 
   it("defaults manual criteria to a single overall criterion", () => {

@@ -703,7 +703,7 @@ describe("scenario runner", () => {
         expect: {
           assertions: [],
           thresholds: [],
-          judge: { enabled: true, prompt: "Judge this response.", rubric: [] },
+          judge: { enabled: true, prompt: "Judge this response." },
         },
       }),
       {

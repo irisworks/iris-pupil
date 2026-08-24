@@ -1,6 +1,6 @@
 import { z, type ZodError } from "zod";
 import type { InvariantCheck, Scenario } from "../core/types.js";
-import { PupilError } from "../core/types.js";
+import { PupilError, Verdict } from "../core/types.js";
 
 const metadataSchema = z.record(z.unknown()).default({});
 
@@ -217,11 +217,21 @@ const manualSchema = z
   })
   .strict();
 
+const judgeRubricSchema = z
+  .object({
+    choices: z.array(z.string().min(1)).min(1, "rubric requires at least one choice"),
+    choiceScores: z.record(z.nativeEnum(Verdict)),
+  })
+  .strict()
+  .refine((value) => value.choices.every((choice) => choice in value.choiceScores), {
+    message: "every rubric choice must have a matching choiceScores entry",
+  });
+
 const judgeSchema = z
   .object({
     enabled: z.boolean().default(true),
     prompt: z.string().optional(),
-    rubric: z.array(z.string()).default([]),
+    rubric: judgeRubricSchema.optional(),
     model: z.string().optional(),
   })
   .strict();
