@@ -143,7 +143,7 @@ Still missing, despite appearing in the type model or the vision:
 | Tool-call **assertions**              | **shipped** (IRIS-161) — adds `tool_called`, `tool_not_called`, `tool_call_count`, `tool_order`, and `tool_args` assertions evaluated against trace evidence. |
 | Trajectory from traces                | `Trajectory.source` allows `"trace"`, but only the driven producer exists. Needs IRIS-164 (`pupil observe`).                                                  |
 | `traceparent` correlation             | not started (IRIS-159) — correlation today is the `sessionId` echo, see §5                                                                                    |
-| LLM judge                             | config parses; `evaluateJudge` returns a `skip` score reading `LLM judge not configured`                                                                      |
+| LLM judge                             | **shipped** (IRIS-172–174) — forced-tool-call rubric scoring, skip-safe when unconfigured, see CLAUDE.md's LLM Judge section                                  |
 | Driver registry / 2nd driver          | not started — the runner hardcodes `if (scenario.driver.type !== "rest") throw`                                                                               |
 | Invariants, seeding, 2nd trace source | not started (IRIS-163, IRIS-165, IRIS-167)                                                                                                                    |
 | Manual scoring (`pupil score`)        | **shipped** (IRIS-96)                                                                                                                                         |

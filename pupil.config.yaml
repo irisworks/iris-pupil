@@ -37,6 +37,17 @@ langfuse:
   # Total trace lookup window, measured from scenario start when available.
   waitMs: ${LANGFUSE_WAIT_MS:-25000}
 
+# LLM judge, for scenarios that set expect.judge.prompt/rubric. "Configured" only
+# requires baseUrl to resolve (some OpenAI-compatible backends, e.g. Ollama/vLLM,
+# need no key); a scenario's own judge.model overrides the model below, so one
+# LiteLLM-routed baseUrl can serve multiple judge models per scenario. Unset (the
+# default) means every judge score skips rather than fails.
+# judge:
+#   baseUrl: ${JUDGE_BASE_URL}
+#   apiKey: ${JUDGE_API_KEY:-}
+#   model: gpt-4o-mini
+#   timeoutMs: 10000
+
 # target:
 #   system: my-agent             # which agent (optional; namespaces a shared history store)
 #   environment: ${DEPLOY_ENV:-} # staging | production | pr-123 (optional)

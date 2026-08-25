@@ -35,6 +35,7 @@ expect:
       max: 0.05
   judge:
     enabled: true
+    model: gpt-4o-mini # overrides project-level judge.model; routed through the configured LiteLLM baseUrl
     prompt: >
       The agent was asked to write a Python factorial function that handles n=0.
       Evaluate whether the response includes: a correct recursive or iterative

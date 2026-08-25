@@ -1,0 +1,59 @@
+id: factorial-judge-rubric
+name: Agent writes a documented factorial function
+description: >
+  Demonstrates a custom, lettered, non-linear choice->score rubric for the LLM
+  judge — mirroring the Autoevals `templates/factuality.yaml` pattern (prompt
+  with placeholders, lettered choices, a choice->score map that doesn't sort
+  monotonically with the letters) instead of the simpler PASS/NEEDS_REVIEW/FAIL
+  rubric used by factorial-write.yaml and factorial-refine.yaml.
+tags:
+  - code-gen
+  - factorial
+  - judge-example
+
+driver:
+  type: rest
+  preset: iris-http
+  config:
+    timeoutMs: 120000
+
+input: >
+  Write a factorial function in Python that handles n=0, and include a
+  docstring explaining what it does.
+
+expect:
+  assertions:
+    - type: contains
+      target: response.text
+      value: "def factorial"
+  thresholds:
+    - metric: latency_ms
+      max: 1000000
+    - metric: cost_usd
+      max: 0.05
+  judge:
+    enabled: true
+    prompt: >
+      The agent was asked to write a Python factorial function that handles
+      n=0 and includes a docstring. Grade the final response with exactly one
+      of the following letters:
+
+      A: The function is correct (handles n=0, correct for positive
+      integers) AND includes a docstring.
+      B: The function is correct but has no docstring, or the docstring is
+      missing/incomplete.
+      C: The function is present but has a logic error (wrong result for
+      n=0 or another input), regardless of documentation.
+      D: No factorial function was provided at all.
+    rubric:
+      # Non-linear on purpose: a correct-but-undocumented answer (B) scores
+      # worse than a fully correct-and-documented one (A), while a buggy
+      # attempt (C) and no attempt at all (D) both fail — letter order does
+      # not predict score order, the same property Autoevals' own
+      # factuality template relies on.
+      choices: [A, B, C, D]
+      choiceScores:
+        A: pass
+        B: needs_review
+        C: fail
+        D: fail
