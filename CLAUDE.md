@@ -139,6 +139,48 @@ earlier draft of this feature considered changing it to total invocations;
 no existing `tool_calls` threshold or baseline can silently start scoring
 something different.
 
+## LLM Judge
+
+Scenarios can ask a model to score the agent's final reply against a custom rubric, for qualities
+text/jsonpath assertions can't express (tone, correctness of an open-ended answer, adherence to a
+policy). A scenario opts in with `expect.judge.enabled: true` (default `true` when the block is
+present at all) plus a `prompt` and a `rubric: {choices, choiceScores}` - `choices` is the list of
+labels the model may pick, `choiceScores` maps each one to a `Verdict`, and every choice must have
+a matching score or the scenario fails schema validation.
+
+Judge configuration lives in `pupil.config.yaml`'s `judge` block (`baseUrl`, `apiKey`, `model`,
+`timeoutMs`) first, then the environment (`JUDGE_BASE_URL`, `JUDGE_API_KEY` - `LITELLM_API_KEY` is
+also accepted - `JUDGE_MODEL`, `JUDGE_TIMEOUT_MS`), matching the config-over-env precedence used
+for Langfuse. A judge is "configured" once `baseUrl` resolves - no API key is required, since some
+OpenAI-compatible backends (Ollama, vLLM) don't need one. `judge.model` in a scenario overrides the
+project-level `model`, so one LiteLLM-routed backend can serve multiple judge models per scenario.
+
+The provider mirrors Autoevals' forced-tool-call trick: it POSTs to `${baseUrl}/chat/completions`
+with a `select_choice` tool whose `choice` field is enum-constrained to the rubric's `choices`,
+forces `tool_choice` to that function, and puts a free-form `reasoning` field _before_ `choice` in
+the tool schema so the model reasons before it commits. The response's `choice` is looked up in
+`choiceScores` for the verdict; `reasoning` (or the raw choice, if the model didn't explain itself)
+becomes the score's `reason`.
+
+There are three ways a judge score comes back as `Verdict.Skip` rather than a real verdict, and
+only two of them are "we tried and failed":
+
+- No judge is configured at all (`judge` block resolves to nothing) - reason
+  `"LLM judge not configured"`. This is a deliberate absence, not a failure, so `--require-trace`
+  never escalates it.
+- A judge is configured but the scenario sets no `judge.prompt`/`judge.rubric` - nothing to check.
+- A judge is configured and the scenario asks for a verdict, but the call itself failed (timeout,
+  non-2xx, malformed tool-call arguments, or a returned `choice` absent from `choiceScores`) - the
+  error message becomes the skip's `reason`.
+
+The last two carry the same escalatable marker tool assertions use, so `--require-trace` turns
+"we tried and failed to check" into a failure while leaving "no judge configured" as a skip either
+way - matching the Tool Assertions policy above. `examples/scenarios/factorial-write.yaml` and
+`factorial-refine.yaml` show a 3-choice `PASS`/`NEEDS_REVIEW`/`FAIL` rubric in use;
+`examples/scenarios/factorial-judge-rubric.yaml` shows a lettered, non-linear `choiceScores` map
+(choices don't have to sort monotonically into verdicts) mirroring Autoevals' own
+`templates/factuality.yaml` pattern.
+
 ## Seeded Conversation State
 
 Scenarios can start mid-conversation without paying for every turn that got them there. An

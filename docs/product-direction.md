@@ -2,9 +2,12 @@
 
 Status: draft for review · 2026-08-19 · baseline commit `d9265c6`
 
-Revision 2. Supersedes the first draft, which assumed Pupil could build and start the agent it
+Revision 3. Supersedes revision 2, which described the LLM judge as unimplemented — IRIS-172
+through IRIS-174 shipped it since. Corrected below.
+
+Revision 2 superseded the first draft, which assumed Pupil could build and start the agent it
 evaluates, and which overstated our differentiation on trajectory assertions. Both corrected
-below.
+there.
 
 ## 1. Vision
 
@@ -98,8 +101,9 @@ incl.), 288 tests across 20 files.
    baseline-migration consequence.
 7. **Driver abstraction is REST-shaped and not pluggable.** `Driver` is `{ readonly type }`;
    the runner hardcodes `if (scenario.driver.type !== "rest") throw`. No registry.
-8. **No LLM judge; manual scoring shipped.** Judge config parses and nothing consumes it —
-   still a gap. Manual scoring (`pupil score`) landed in IRIS-96 and is no longer a gap.
+8. **LLM judge and manual scoring both shipped.** The judge (IRIS-172–174) forces a rubric
+   tool-call, scoring `Verdict` from a `choiceScores` map, and skips safely when unconfigured or
+   unrequested. Manual scoring (`pupil score`) landed in IRIS-96. Neither is a gap anymore.
 
 ### Verified Linear state (irisflow team, iris-pupil project)
 
@@ -108,19 +112,19 @@ available. Grouped by milestone; verify against Linear directly before planning,
 snapshot as of `d9265c6`. The M6/M7/M9 rows below were re-derived from merged pull requests
 rather than a live Linear query, so treat issue states as PR-accurate and Linear-unconfirmed.
 
-| Milestone                        | Issues                                                                                                                              |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| M0 Scaffold and CLI              | 82 done                                                                                                                             |
-| M1 Scenario Schema and Loader    | 83, 84, 85, 86 done                                                                                                                 |
-| M2 Mock Agent and Driver         | 87, 89 done; 88 (template engine) canceled — folded into 87                                                                         |
-| M3 Runner Scoring and History    | 90, 91, 92, 93 done                                                                                                                 |
-| M4 Compare, Report, and Baseline | 94, 95, 96 done                                                                                                                     |
-| M5 Langfuse and Live IRIS        | 97, 98 done; 99 (docs polish) canceled — superseded by this issue, IRIS-157                                                         |
-| M6 v0.2 CI-gateable              | 151, 152, 153, 154, 155, 156 done · **157 (this doc)** in progress — the milestone's last open item                                 |
-| M7 v0.3 Agent-aware              | 158, 160 done · 161 (tool assertions) todo, now unblocked · 159 (traceparent) not started                                           |
-| M8 v0.4 Continuous               | 163 (invariants), 164 (`pupil observe`) not started                                                                                 |
-| M9 v0.5 Cheap and repeatable     | 166 (fixture conventions) in review, PR #57 · 165 (seeding) not started                                                             |
-| M10 v0.6 Broad                   | 167 (second TraceSource, LLM judge, driver registry) not started — deliberately left as one placeholder, to be split when M9 closes |
+| Milestone                        | Issues                                                                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| M0 Scaffold and CLI              | 82 done                                                                                                                                      |
+| M1 Scenario Schema and Loader    | 83, 84, 85, 86 done                                                                                                                          |
+| M2 Mock Agent and Driver         | 87, 89 done; 88 (template engine) canceled — folded into 87                                                                                  |
+| M3 Runner Scoring and History    | 90, 91, 92, 93 done                                                                                                                          |
+| M4 Compare, Report, and Baseline | 94, 95, 96 done                                                                                                                              |
+| M5 Langfuse and Live IRIS        | 97, 98 done; 99 (docs polish) canceled — superseded by this issue, IRIS-157                                                                  |
+| M6 v0.2 CI-gateable              | 151, 152, 153, 154, 155, 156 done · **157 (this doc)** in progress — the milestone's last open item                                          |
+| M7 v0.3 Agent-aware              | 158, 160 done · 161 (tool assertions) todo, now unblocked · 159 (traceparent) not started                                                    |
+| M8 v0.4 Continuous               | 163 (invariants), 164 (`pupil observe`) not started                                                                                          |
+| M9 v0.5 Cheap and repeatable     | 166 (fixture conventions) in review, PR #57 · 165 (seeding) not started                                                                      |
+| M10 v0.6 Broad                   | 167 (second TraceSource, LLM judge, driver registry) — LLM judge shipped (172, 173, 174); second TraceSource and driver registry not started |
 
 Small hardening issues not tied to a milestone (all done): 104 (reject dual input/turns), 105
 (error on missing explicit configPath), 106 (reject duplicate scenario ids), 107 (PR #1 review
@@ -303,11 +307,12 @@ landscape can produce today:
 
 ### 4.4 Honest limit on the word "quality"
 
-There are no datasets, A/B experiments, human annotation at scale, or judge. What this
-architecture delivers is **behavioural quality** — trajectory conformance, policy compliance,
-cost, regression. Keep the headline, let the subtitle carry the honesty: _the same behavioural
-assertions, from pull request to production traffic._ The judge later extends toward answer
-quality.
+There are no datasets, A/B experiments, or human annotation at scale. What this architecture
+delivers is **behavioural quality** — trajectory conformance, policy compliance, cost,
+regression — plus an opt-in LLM judge for open-ended reply quality where a scenario supplies a
+rubric. Keep the headline, let the subtitle carry the honesty: _the same behavioural assertions,
+from pull request to production traffic._ The judge extends today's behavioural quality toward
+answer quality; it is not a substitute for datasets or human annotation at scale.
 
 ## 5. Two tiers, one format
 
@@ -487,22 +492,23 @@ makes observe mode and the continuity claim possible.
 11. **🔵 In review (IRIS-166, PR #57) — Fixture conventions** (section 5.3) — documented stub
     patterns and compose fragments, not a proxy implementation.
 12. **⬜ Not started — Second `TraceSource`** — OTLP or Phoenix, proving the interface is real.
-13. **⬜ Not started — LLM judge**, opt-in, deterministic verdicts unaffected when unconfigured.
+13. **✅ Done (IRIS-172–174) — LLM judge**, opt-in, deterministic verdicts unaffected when
+    unconfigured — forced-tool-call rubric scoring, shipped ahead of this build-plan position.
 14. **Driver registry + second driver: ⬜ not started. Manual scoring (`pupil score`): ✅ done**
     (IRIS-96, shipped ahead of this build-plan position).
 
-Steps 12–14 are held as one Linear placeholder (IRIS-167), deliberately not split into
-individual issues until M9 closes.
+Steps 12–14 were held as one Linear placeholder (IRIS-167); step 13 shipped out of it first,
+leaving the second `TraceSource` and driver registry as the placeholder's remaining scope.
 
 ## 7. Release ladder and internal adoption
 
-| Release                         | Steps | Status                               | What it unlocks                                                                        |
-| ------------------------------- | ----- | ------------------------------------ | -------------------------------------------------------------------------------------- |
-| **v0.2 — CI-gateable**          | 1–5   | 5/5 done                             | Runs in `iris-core` CI **advisory / non-blocking**. Correct plumbing, weak assertions. |
-| **v0.3 — Agent-aware**          | 6–7   | step 6 partial, step 7 todo          | **Internal adoption point.** Blocking gate on trajectory regressions.                  |
-| **v0.4 — Continuous**           | 8–9   | not started                          | Invariants shared across stages; production drift watch. The claim becomes true.       |
-| **v0.5 — Cheap and repeatable** | 10–11 | step 10 done, step 11 in review      | Seeded state and stubbed tools make the PR tier fast and free.                         |
-| **v0.6 — Broad**                | 12–14 | not started (one Linear placeholder) | Second trace source, judge, second driver. Open-source launch case.                    |
+| Release                         | Steps | Status                                      | What it unlocks                                                                        |
+| ------------------------------- | ----- | ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **v0.2 — CI-gateable**          | 1–5   | 5/5 done                                    | Runs in `iris-core` CI **advisory / non-blocking**. Correct plumbing, weak assertions. |
+| **v0.3 — Agent-aware**          | 6–7   | step 6 partial, step 7 todo                 | **Internal adoption point.** Blocking gate on trajectory regressions.                  |
+| **v0.4 — Continuous**           | 8–9   | not started                                 | Invariants shared across stages; production drift watch. The claim becomes true.       |
+| **v0.5 — Cheap and repeatable** | 10–11 | step 10 done, step 11 in review             | Seeded state and stubbed tools make the PR tier fast and free.                         |
+| **v0.6 — Broad**                | 12–14 | step 13 (judge) done, 12 and 14 not started | Second trace source, judge, second driver. Open-source launch case.                    |
 
 **Start using it at v0.2, trust it at v0.3.**
 
