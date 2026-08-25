@@ -270,11 +270,13 @@ export async function evaluateJudge(
   }
 
   if (!judge.prompt || !judge.rubric) {
+    const missing =
+      !judge.prompt && !judge.rubric ? "prompt or rubric" : !judge.prompt ? "prompt" : "rubric";
     return [
       {
         name: "judge",
         verdict: Verdict.Skip,
-        reason: "Judge enabled but scenario has no rubric configured",
+        reason: `Judge enabled but scenario has no ${missing} configured`,
         metadata: { judge },
       },
     ];
