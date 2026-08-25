@@ -20,6 +20,8 @@ import {
 import { finishRun } from "./finishRun.js";
 import { loadInvariantFile } from "../invariants/index.js";
 import { LangfuseTraceSource, LangfuseTracePopulationSource } from "../langfuse/index.js";
+import { resolveJudgeConfig } from "../judge/config.js";
+import { LlmJudge } from "../judge/llmJudge.js";
 import { createIrisMockAgent } from "../mock/irisMockAgent.js";
 import { buildObserveResult, resolvePopulationQuery } from "../observe/index.js";
 import { resolveTimeBound } from "../observe/time.js";
@@ -328,6 +330,13 @@ program
           options.langfuse === false
             ? false
             : (LangfuseTraceSource.fromSettings(config.langfuse) ?? false),
+        // Same reasoning as traceSource above: the CLI has already consulted config
+        // and env via resolveJudgeConfig, so an unresolved result means "off", not
+        // "let the runner re-resolve from env only."
+        judgeProvider: (() => {
+          const judgeConfig = resolveJudgeConfig({ settings: config.judge });
+          return judgeConfig ? new LlmJudge(judgeConfig) : false;
+        })(),
         target: mergedTarget,
         requireTrace: Boolean(options.requireTrace) || config.requireTrace,
         invariants,

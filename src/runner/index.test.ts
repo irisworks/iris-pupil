@@ -865,6 +865,7 @@ describe("scenario runner", () => {
         driverFactory: () =>
           new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
         traceSource: false,
+        judgeProvider: false,
         requireTrace: true,
       },
     );

@@ -367,6 +367,102 @@ describe("pupil CLI", () => {
     }
   }, 15000);
 
+  it("resolves the judge provider from pupil.config.yaml's judge: block", async () => {
+    const mock = createIrisMockAgent({
+      port: 0,
+      rules: [{ match: "hello", reply: "configured" }],
+    });
+    const address = await mock.listen();
+
+    const judgeServer = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    function: {
+                      name: "select_choice",
+                      arguments: JSON.stringify({ reasoning: "Looks good.", choice: "A" }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => judgeServer.listen(0, "127.0.0.1", resolve));
+    const judgeAddress = judgeServer.address();
+    const judgePort = typeof judgeAddress === "object" && judgeAddress ? judgeAddress.port : 0;
+
+    const dir = await mkdtemp(join(tmpdir(), "pupil-judge-config-run-"));
+    const scenarioPath = join(dir, "scenario.yaml");
+    const configPath = join(dir, "pupil.config.yaml");
+    const historyDir = join(dir, "history-from-config");
+
+    try {
+      await writeFile(
+        scenarioPath,
+        [
+          "id: cli-judge-config-run",
+          "name: CLI judge config run",
+          "driver:",
+          "  type: rest",
+          "  preset: iris-http",
+          "input: hello",
+          "expect:",
+          "  assertions: []",
+          "  judge:",
+          "    enabled: true",
+          "    prompt: Judge this response.",
+          "    rubric:",
+          "      choices: [A, B]",
+          "      choiceScores:",
+          "        A: pass",
+          "        B: fail",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        configPath,
+        [
+          `scenarios: ${scenarioPath.replace(/\\/g, "\\\\")}`,
+          "driver:",
+          "  preset: iris-http",
+          "  config:",
+          `    baseUrl: http://${address.host}:${address.port}`,
+          "    originThreadTs: from-config",
+          "history:",
+          `  dir: ${historyDir.replace(/\\/g, "\\\\")}`,
+          "judge:",
+          `  baseUrl: http://127.0.0.1:${judgePort}`,
+          "",
+        ].join("\n"),
+      );
+
+      const output = await waitForCli(
+        spawn(process.execPath, [cliPath, "run", "--config", configPath, "--json"], {
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      );
+
+      expect(output.code).toBe(0);
+      const payload = JSON.parse(output.stdout) as {
+        scenarios: Array<{ scores: Array<{ name: string; verdict: string; reason: string }> }>;
+      };
+      const judgeScore = payload.scenarios[0]?.scores.find((score) => score.name === "judge");
+      expect(judgeScore).toMatchObject({ verdict: "pass", reason: "Looks good." });
+    } finally {
+      await mock.close();
+      judgeServer.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("loads config.invariants.file and scores its checks during pupil run", async () => {
     const mock = createIrisMockAgent({
       port: 0,
