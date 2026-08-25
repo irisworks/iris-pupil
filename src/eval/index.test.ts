@@ -14,6 +14,7 @@ import {
   evaluateThreshold,
   evaluateThresholds,
 } from "./index.js";
+import { NO_JUDGE_VERDICT_MARKER } from "./toolAssertions.js";
 
 const context: Trajectory = {
   source: "driven",
@@ -415,6 +416,9 @@ describe("manual and judge evaluators", () => {
       verdict: Verdict.Skip,
       reason: "LLM judge not configured",
     });
+    // No skipped marker: a missing provider is a configuration gap, not something
+    // --require-trace should be able to escalate (see applyTraceRequirement).
+    expect(scores[0]?.metadata.skipped).toBeUndefined();
     expect(aggregateScores(scores)).toBe(Verdict.Pass);
   });
 
@@ -428,6 +432,7 @@ describe("manual and judge evaluators", () => {
       name: "judge",
       verdict: Verdict.Skip,
       reason: "Judge enabled but scenario has no rubric configured",
+      metadata: expect.objectContaining({ skipped: NO_JUDGE_VERDICT_MARKER }),
     });
   });
 
@@ -533,6 +538,7 @@ describe("manual and judge evaluators", () => {
       name: "judge",
       verdict: Verdict.Skip,
       reason: "LLM judge call failed: Judge endpoint returned 500",
+      metadata: expect.objectContaining({ skipped: NO_JUDGE_VERDICT_MARKER }),
     });
     expect(aggregateScores(scores)).toBe(Verdict.Pass);
   });

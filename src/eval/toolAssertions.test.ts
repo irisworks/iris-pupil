@@ -3,6 +3,7 @@ import { Verdict, type ToolAssertionCheck, type ToolCall, type Trajectory } from
 import {
   applyTraceRequirement,
   evaluateToolAssertion,
+  NO_JUDGE_VERDICT_MARKER,
   NO_TOOL_EVIDENCE_MARKER,
   NO_TOOL_EVIDENCE_REASON,
   NO_TRACE_METRIC_MARKER,
@@ -329,7 +330,7 @@ describe("applyTraceRequirement", () => {
     expect(escalated?.metadata.skipped).toBeUndefined();
   });
 
-  it("never escalates a judge skip, which is a config gap rather than a trace gap", () => {
+  it("never escalates an unconfigured-provider judge skip, which is a config gap rather than a trace gap", () => {
     const judgeSkip = {
       name: "judge",
       verdict: Verdict.Skip,
@@ -340,5 +341,22 @@ describe("applyTraceRequirement", () => {
     const [untouched] = applyTraceRequirement([judgeSkip], true);
 
     expect(untouched?.verdict).toBe(Verdict.Skip);
+  });
+
+  it("escalates a judge skip caused by a broken scenario or a failed provider call", () => {
+    const judgeSkip = {
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "Judge enabled but scenario has no rubric configured",
+      metadata: { judge: { enabled: true }, skipped: NO_JUDGE_VERDICT_MARKER },
+    };
+
+    const [escalated] = applyTraceRequirement([judgeSkip], true);
+
+    expect(escalated?.verdict).toBe(Verdict.Fail);
+    expect(escalated?.metadata.skipped).toBeUndefined();
+    expect(escalated?.reason).toBe(
+      "Judge enabled but scenario has no rubric configured (failing because --require-trace is set)",
+    );
   });
 });

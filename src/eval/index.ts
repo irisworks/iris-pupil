@@ -19,6 +19,7 @@ import {
   isToolAssertion,
   toolAssertionName,
   NO_TRACE_METRIC_MARKER,
+  NO_JUDGE_VERDICT_MARKER,
 } from "./toolAssertions.js";
 
 export type AssertionEvaluationContext = Trajectory;
@@ -277,7 +278,7 @@ export async function evaluateJudge(
         name: "judge",
         verdict: Verdict.Skip,
         reason: `Judge enabled but scenario has no ${missing} configured`,
-        metadata: { judge },
+        metadata: { judge, skipped: NO_JUDGE_VERDICT_MARKER },
       },
     ];
   }
@@ -296,7 +297,7 @@ export async function evaluateJudge(
         name: "judge",
         verdict: Verdict.Skip,
         reason: `LLM judge call failed: ${error instanceof Error ? error.message : String(error)}`,
-        metadata: { judge },
+        metadata: { judge, skipped: NO_JUDGE_VERDICT_MARKER },
       },
     ];
   }
