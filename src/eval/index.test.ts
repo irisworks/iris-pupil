@@ -14,6 +14,7 @@ import {
   evaluateThreshold,
   evaluateThresholds,
 } from "./index.js";
+import { NO_JUDGE_VERDICT_MARKER } from "./toolAssertions.js";
 
 const context: Trajectory = {
   source: "driven",
@@ -402,14 +403,142 @@ describe("manual and judge evaluators", () => {
     expect(aggregateScores(scores)).toBe(Verdict.NeedsReview);
   });
 
-  it("emits a skip score for configured judge blocks without LLM config", () => {
-    const scores = evaluateJudge({ enabled: true, prompt: "Judge this response.", rubric: [] });
+  it("emits a skip score for configured judge blocks without a provider", async () => {
+    const scores = await evaluateJudge(
+      { enabled: true, prompt: "Judge this response." },
+      context,
+      undefined,
+    );
 
     expect(scores).toHaveLength(1);
     expect(scores[0]).toMatchObject({
       name: "judge",
       verdict: Verdict.Skip,
       reason: "LLM judge not configured",
+    });
+    // No skipped marker: a missing provider is a configuration gap, not something
+    // --require-trace should be able to escalate (see applyTraceRequirement).
+    expect(scores[0]?.metadata.skipped).toBeUndefined();
+    expect(aggregateScores(scores)).toBe(Verdict.Pass);
+  });
+
+  it("emits a skip score when enabled but the scenario has no rubric", async () => {
+    const provider = { judge: async () => ({ verdict: Verdict.Pass, reason: "n/a" }) };
+
+    const scores = await evaluateJudge({ enabled: true, prompt: "Judge this." }, context, provider);
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).toMatchObject({
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "Judge enabled but scenario has no rubric configured",
+      metadata: expect.objectContaining({ skipped: NO_JUDGE_VERDICT_MARKER }),
+    });
+  });
+
+  it("emits a skip score naming the prompt, not the rubric, when only the prompt is missing", async () => {
+    const provider = { judge: async () => ({ verdict: Verdict.Pass, reason: "n/a" }) };
+    const judge = {
+      enabled: true,
+      rubric: { choices: ["A"], choiceScores: { A: Verdict.Pass } },
+    };
+
+    const scores = await evaluateJudge(judge, context, provider);
+
+    expect(scores[0]).toMatchObject({
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "Judge enabled but scenario has no prompt configured",
+    });
+  });
+
+  it("scores from a successful provider call", async () => {
+    const provider = {
+      judge: async () => ({ verdict: Verdict.Fail, reason: "Missed the deadline detail." }),
+    };
+    const judge = {
+      enabled: true,
+      prompt: "Judge this.",
+      rubric: { choices: ["A", "B"], choiceScores: { A: Verdict.Pass, B: Verdict.Fail } },
+    };
+
+    const scores = await evaluateJudge(judge, context, provider);
+
+    expect(scores).toEqual([
+      {
+        name: "judge",
+        verdict: Verdict.Fail,
+        reason: "Missed the deadline detail.",
+        metadata: { judge },
+      },
+    ]);
+  });
+
+  it("passes the trajectory's final response text, rubric, prompt, and model to the provider", async () => {
+    let seenRequest: unknown;
+    const provider = {
+      judge: async (request: unknown) => {
+        seenRequest = request;
+        return { verdict: Verdict.Pass, reason: "ok" };
+      },
+    };
+    const judge = {
+      enabled: true,
+      prompt: "Judge this.",
+      model: "gpt-4o-mini",
+      rubric: { choices: ["A"], choiceScores: { A: Verdict.Pass } },
+    };
+
+    await evaluateJudge(judge, context, provider);
+
+    expect(seenRequest).toEqual({
+      prompt: "Judge this.",
+      rubric: judge.rubric,
+      output: "I booked the meeting for Tuesday.",
+      model: "gpt-4o-mini",
+    });
+  });
+
+  it("passes an empty output string when the trajectory has no final response", async () => {
+    let seenOutput: unknown;
+    const provider = {
+      judge: async (request: { output: unknown }) => {
+        seenOutput = request.output;
+        return { verdict: Verdict.Pass, reason: "ok" };
+      },
+    };
+    const judge = {
+      enabled: true,
+      prompt: "Judge this.",
+      rubric: { choices: ["A"], choiceScores: { A: Verdict.Pass } },
+    };
+    const noResponseContext: Trajectory = { ...context, finalResponse: undefined };
+
+    await evaluateJudge(judge, noResponseContext, provider);
+
+    expect(seenOutput).toBe("");
+  });
+
+  it("skips instead of throwing when the provider call fails", async () => {
+    const provider = {
+      judge: async () => {
+        throw new Error("Judge endpoint returned 500");
+      },
+    };
+    const judge = {
+      enabled: true,
+      prompt: "Judge this.",
+      rubric: { choices: ["A"], choiceScores: { A: Verdict.Pass } },
+    };
+
+    const scores = await evaluateJudge(judge, context, provider);
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).toMatchObject({
+      name: "judge",
+      verdict: Verdict.Skip,
+      reason: "LLM judge call failed: Judge endpoint returned 500",
+      metadata: expect.objectContaining({ skipped: NO_JUDGE_VERDICT_MARKER }),
     });
     expect(aggregateScores(scores)).toBe(Verdict.Pass);
   });

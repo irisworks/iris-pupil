@@ -27,6 +27,14 @@ export const NO_TRACE_METRIC_MARKER = "no_trace_metric";
 /** Marker for an invariant check skipped because the population had zero samples. */
 export const NO_SAMPLES_MARKER = "no_samples";
 
+/**
+ * Marker for a judge skip caused by a broken scenario (enabled with no
+ * prompt/rubric) or a provider call that threw - distinct from "no provider
+ * configured at all", which stays unmarked and un-escalatable (see
+ * applyTraceRequirement).
+ */
+export const NO_JUDGE_VERDICT_MARKER = "no_judge_verdict";
+
 const TOOL_ASSERTION_TYPES = new Set([
   "tool_called",
   "tool_not_called",
@@ -248,16 +256,19 @@ const ESCALATABLE_MARKERS = new Set<unknown>([
   NO_TOOL_EVIDENCE_MARKER,
   NO_TRACE_METRIC_MARKER,
   NO_SAMPLES_MARKER,
+  NO_JUDGE_VERDICT_MARKER,
 ]);
 
 /**
  * Opt-in policy pass: turns "we could not check" into a failure.
  *
  * Escalates skips caused by absent trace evidence — both tool assertions and
- * thresholds on trace-derived metrics. A judge skip is deliberately excluded:
- * "LLM judge not configured" is a configuration gap, not a tracing gap, so
- * --require-trace would be the wrong flag to fail it. Runs after evaluation and
- * before verdict aggregation.
+ * thresholds on trace-derived metrics — plus judge skips that mean "we tried
+ * and could not get a verdict" (scenario enabled with no prompt/rubric, or the
+ * provider call itself threw). A judge skip for "no provider configured at
+ * all" is deliberately excluded: that is a configuration gap, not something
+ * --require-trace should be responsible for. Runs after evaluation and before
+ * verdict aggregation.
  */
 export function applyTraceRequirement(scores: readonly Score[], requireTrace: boolean): Score[] {
   if (!requireTrace) return [...scores];
@@ -274,7 +285,7 @@ export function applyTraceRequirement(scores: readonly Score[], requireTrace: bo
     return {
       ...entry,
       verdict: Verdict.Fail,
-      reason: `${NO_TOOL_EVIDENCE_REASON} (failing because --require-trace is set)`,
+      reason: `${entry.reason} (failing because --require-trace is set)`,
       metadata,
     };
   });

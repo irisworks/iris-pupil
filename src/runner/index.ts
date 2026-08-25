@@ -35,6 +35,9 @@ import {
 import { evaluateInvariants } from "../eval/invariants.js";
 import { LangfuseTraceSource } from "../langfuse/index.js";
 import { applyTraceRequirement } from "../eval/toolAssertions.js";
+import { LlmJudge } from "../judge/llmJudge.js";
+import { resolveJudgeConfig } from "../judge/config.js";
+import type { JudgeProvider } from "../judge/types.js";
 import { generateSpanId, generateTraceId, formatTraceparent } from "../trace/traceparent.js";
 import {
   assertSeedCapability,
@@ -104,6 +107,15 @@ export interface RunScenarioOptions {
    * A `TraceSource`: that backend is used and no fallback is consulted.
    */
   traceSource?: TraceSource | false;
+  /**
+   * LLM-as-judge backend used to score `expect.judge` blocks.
+   *
+   * Omitted: falls back to an `LlmJudge` built from `judge.baseUrl`/env config, matching
+   * the `traceSource` fallback pattern. Resolves to a skip when nothing is configured.
+   * `false`: judge scoring is disabled outright (always skips).
+   * A `JudgeProvider`: that provider is used and no fallback is consulted.
+   */
+  judgeProvider?: JudgeProvider | false;
   /**
    * When true, tool assertions that skipped for missing trace evidence are
    * escalated to failures. Default false, so a trace backend outage cannot
@@ -182,6 +194,20 @@ function extractCorrelationKey(result: ScenarioResult): string | undefined {
 function resolveTraceSource(option: TraceSource | false | undefined): TraceSource | undefined {
   if (option === false) return undefined;
   return option ?? LangfuseTraceSource.fromSettings();
+}
+
+/**
+ * `false` disables the judge entirely; an explicit provider is used as given. Omitting
+ * the option falls back to an `LlmJudge` built from `judge.baseUrl`/env, resolving to
+ * undefined (and therefore a skip) when nothing is configured.
+ */
+function resolveJudgeProvider(
+  option: JudgeProvider | false | undefined,
+): JudgeProvider | undefined {
+  if (option === false) return undefined;
+  if (option) return option;
+  const config = resolveJudgeConfig();
+  return config ? new LlmJudge(config) : undefined;
 }
 
 /**
@@ -486,6 +512,7 @@ export async function runScenario(
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
   const traceSource = resolveTraceSource(options.traceSource);
+  const judgeProvider = resolveJudgeProvider(options.judgeProvider);
   const maxAttempts = (options.retries ?? 0) + 1;
   const timeoutMs =
     options.timeoutMs ??
@@ -559,7 +586,7 @@ export async function runScenario(
       const scenarioScores = evaluateAssertions(scenario.expect.assertions, trajectory);
       const thresholdScores = evaluateThresholds(scenario.expect.thresholds, trajectory);
       const manualScores = evaluateManualScoring(scenario.expect.manual);
-      const judgeScores = evaluateJudge(scenario.expect.judge);
+      const judgeScores = await evaluateJudge(scenario.expect.judge, trajectory, judgeProvider);
       const composedInvariants: LoadedInvariant[] = [
         ...(options.invariants ?? []),
         ...(scenario.invariants ?? []).map((check) => ({ check, source: "scenario" as const })),

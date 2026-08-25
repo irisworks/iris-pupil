@@ -703,12 +703,13 @@ describe("scenario runner", () => {
         expect: {
           assertions: [],
           thresholds: [],
-          judge: { enabled: true, prompt: "Judge this response.", rubric: [] },
+          judge: { enabled: true, prompt: "Judge this response." },
         },
       }),
       {
         driverFactory: () =>
           new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        judgeProvider: false,
       },
     );
 
@@ -716,6 +717,36 @@ describe("scenario runner", () => {
     expect(result.scores.find((score) => score.name === "judge")).toMatchObject({
       verdict: Verdict.Skip,
       reason: "LLM judge not configured",
+    });
+  });
+
+  it("scores from an injected judgeProvider", async () => {
+    const judgeProvider = {
+      judge: async () => ({ verdict: Verdict.Fail, reason: "Missing the requested date." }),
+    };
+
+    const result = await runScenario(
+      scenario({
+        expect: {
+          assertions: [],
+          thresholds: [],
+          judge: {
+            enabled: true,
+            prompt: "Judge this response.",
+            rubric: { choices: ["A"], choiceScores: { A: Verdict.Pass } },
+          },
+        },
+      }),
+      {
+        driverFactory: () =>
+          new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
+        judgeProvider,
+      },
+    );
+
+    expect(result.scores.find((score) => score.name === "judge")).toMatchObject({
+      verdict: Verdict.Fail,
+      reason: "Missing the requested date.",
     });
   });
 
@@ -834,6 +865,7 @@ describe("scenario runner", () => {
         driverFactory: () =>
           new FakeDriver({ text: "Scheduled.", raw: { status: "ok" } }, [], { count: 0 }),
         traceSource: false,
+        judgeProvider: false,
         requireTrace: true,
       },
     );

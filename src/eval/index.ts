@@ -11,6 +11,7 @@ import {
   type TrajectoryStep,
   Verdict,
 } from "../core/types.js";
+import type { JudgeProvider } from "../judge/types.js";
 import { extractJsonPath } from "../driver/index.js";
 import { formatBounds } from "../core/bounds.js";
 import {
@@ -18,6 +19,7 @@ import {
   isToolAssertion,
   toolAssertionName,
   NO_TRACE_METRIC_MARKER,
+  NO_JUDGE_VERDICT_MARKER,
 } from "./toolAssertions.js";
 
 export type AssertionEvaluationContext = Trajectory;
@@ -250,17 +252,55 @@ export function evaluateManualScoring(manual: ManualScoringConfig | undefined): 
   }));
 }
 
-export function evaluateJudge(judge: JudgeConfig | undefined): Score[] {
+export async function evaluateJudge(
+  judge: JudgeConfig | undefined,
+  trajectory: Trajectory,
+  provider: JudgeProvider | undefined,
+): Promise<Score[]> {
   if (!judge?.enabled) return [];
 
-  return [
-    {
-      name: "judge",
-      verdict: Verdict.Skip,
-      reason: "LLM judge not configured",
-      metadata: { judge },
-    },
-  ];
+  if (!provider) {
+    return [
+      {
+        name: "judge",
+        verdict: Verdict.Skip,
+        reason: "LLM judge not configured",
+        metadata: { judge },
+      },
+    ];
+  }
+
+  if (!judge.prompt || !judge.rubric) {
+    const missing =
+      !judge.prompt && !judge.rubric ? "prompt or rubric" : !judge.prompt ? "prompt" : "rubric";
+    return [
+      {
+        name: "judge",
+        verdict: Verdict.Skip,
+        reason: `Judge enabled but scenario has no ${missing} configured`,
+        metadata: { judge, skipped: NO_JUDGE_VERDICT_MARKER },
+      },
+    ];
+  }
+
+  try {
+    const result = await provider.judge({
+      prompt: judge.prompt,
+      rubric: judge.rubric,
+      output: trajectory.finalResponse?.text ?? "",
+      model: judge.model,
+    });
+    return [{ name: "judge", verdict: result.verdict, reason: result.reason, metadata: { judge } }];
+  } catch (error) {
+    return [
+      {
+        name: "judge",
+        verdict: Verdict.Skip,
+        reason: `LLM judge call failed: ${error instanceof Error ? error.message : String(error)}`,
+        metadata: { judge, skipped: NO_JUDGE_VERDICT_MARKER },
+      },
+    ];
+  }
 }
 
 export function thresholdName(threshold: ThresholdCheck): string {

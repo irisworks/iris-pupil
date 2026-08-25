@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Verdict } from "../core/types.js";
 import { normalizeScenario } from "./schema.js";
 
 describe("normalizeScenario", () => {
@@ -64,7 +65,10 @@ describe("normalizeScenario", () => {
           enabled: true,
           model: "gpt-4.1-mini",
           prompt: "Judge task completion.",
-          rubric: ["No clarification required"],
+          rubric: {
+            choices: ["PASS", "FAIL"],
+            choiceScores: { PASS: Verdict.Pass, FAIL: Verdict.Fail },
+          },
         },
       },
     });
@@ -83,6 +87,31 @@ describe("normalizeScenario", () => {
     expect(scenario.expect.manual?.criteria).toEqual(["correctness", "safety"]);
     expect(scenario.expect.manual?.rubric).toEqual(["Calendar event created"]);
     expect(scenario.expect.judge?.model).toBe("gpt-4.1-mini");
+    expect(scenario.expect.judge?.rubric).toEqual({
+      choices: ["PASS", "FAIL"],
+      choiceScores: { PASS: Verdict.Pass, FAIL: Verdict.Fail },
+    });
+  });
+
+  it("rejects a judge rubric choice with no matching choiceScores entry, even a prototype property name", () => {
+    expect(() =>
+      normalizeScenario({
+        id: "bad-rubric",
+        input: "Hello",
+        expect: {
+          judge: {
+            enabled: true,
+            prompt: "Judge this.",
+            rubric: {
+              // "toString" exists on Object.prototype, so a naive `choice in choiceScores`
+              // check would wrongly treat it as present even with an empty choiceScores map.
+              choices: ["toString"],
+              choiceScores: {},
+            },
+          },
+        },
+      }),
+    ).toThrow(/every rubric choice must have a matching choiceScores entry/);
   });
 
   it("defaults manual criteria to a single overall criterion", () => {
